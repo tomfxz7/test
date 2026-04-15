@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.2.0';
+const APP_VERSION = 'v1.2.1';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -554,6 +554,7 @@ export default function App() {
   const [dragCurrentPos, setDragCurrentPos] = useState(null);
   const [hasDragMovement, setHasDragMovement] = useState(false);
   const activeDragPointerIdRef = useRef(null);
+  const lastDragPointerYRef = useRef(null);
 
   useEffect(() => {
     const normalizeProjects = (rawProjects) => {
@@ -679,6 +680,7 @@ export default function App() {
     setDragCurrentPos({ x: e.clientX, y: e.clientY });
     setHasDragMovement(false);
     activeDragPointerIdRef.current = e.pointerId;
+    lastDragPointerYRef.current = e.clientY;
   };
   const calculateDropIndex = useCallback((clientY) => {
     if (draggedIndex === null) return null;
@@ -720,6 +722,7 @@ export default function App() {
     setDragCurrentPos(null);
     setHasDragMovement(false);
     activeDragPointerIdRef.current = null;
+    lastDragPointerYRef.current = null;
   }, [draggedIndex, dropIndex, hasDragMovement, reorderAtDrop, saveToUndo]);
 
   useEffect(() => {
@@ -733,6 +736,7 @@ export default function App() {
     const trackDrag = (e) => {
       if (activeDragPointerIdRef.current !== null && e.pointerId !== activeDragPointerIdRef.current) return;
       setDragCurrentPos({ x: e.clientX, y: e.clientY });
+      lastDragPointerYRef.current = e.clientY;
       if (dragStartPos) {
         const moved = Math.hypot(e.clientX - dragStartPos.x, e.clientY - dragStartPos.y) > 6;
         if (moved && !hasDragMovement) setHasDragMovement(true);
@@ -740,10 +744,30 @@ export default function App() {
       const nextDropIndex = calculateDropIndex(e.clientY);
       if (nextDropIndex !== null) setDropIndex(nextDropIndex);
     };
+    const autoScrollInterval = setInterval(() => {
+      if (lastDragPointerYRef.current === null) return;
+      const y = lastDragPointerYRef.current;
+      const edge = 90;
+      const maxSpeed = 9; // px/tick
+      let scrollDelta = 0;
+      if (y < edge) {
+        const ratio = (edge - y) / edge;
+        scrollDelta = -Math.max(1, Math.round(maxSpeed * ratio));
+      } else if (y > window.innerHeight - edge) {
+        const ratio = (y - (window.innerHeight - edge)) / edge;
+        scrollDelta = Math.max(1, Math.round(maxSpeed * ratio));
+      }
+      if (scrollDelta !== 0) {
+        window.scrollBy({ top: scrollDelta, behavior: 'auto' });
+        const nextDropIndex = calculateDropIndex(y);
+        if (nextDropIndex !== null) setDropIndex(nextDropIndex);
+      }
+    }, 16);
     window.addEventListener('pointermove', trackDrag, { passive: true });
     window.addEventListener('pointerup', stopDrag);
     window.addEventListener('pointercancel', stopDrag);
     return () => {
+      clearInterval(autoScrollInterval);
       document.body.style.userSelect = '';
       document.body.style.touchAction = '';
       window.removeEventListener('pointermove', trackDrag);
@@ -1060,6 +1084,7 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
   const activePointers = useRef(new Map()); const lastPinch = useRef(null);
   const annotationsRef = useRef(annotations); useEffect(() => { annotationsRef.current = annotations; }, [annotations]);
   const handwritingTimerRef = useRef(null); const handwritingStrokesRef = useRef([]); const [isAutoOcrLoading, setIsAutoOcrLoading] = useState(false);
+  const clipboardReadInFlightRef = useRef(false);
 
   useEffect(() => {
     if (initialItem && initialItem.images) {
@@ -1137,22 +1162,29 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
   }, [activeImageId]);
   const handleImageUpload = (e) => { const files = Array.from(e.target.files); addImagesFromFiles(files); e.target.value = ''; };
   const readImagesFromClipboardAPI = useCallback(async () => {
+    if (clipboardReadInFlightRef.current) return false;
     if (!navigator.clipboard?.read) return false;
+    clipboardReadInFlightRef.current = true;
     try {
-      const clipboardItems = await navigator.clipboard.read();
-      const files = [];
-      for (const item of clipboardItems) {
-        const imageType = item.types.find(t => t.startsWith('image/'));
-        if (!imageType) continue;
-        const blob = await item.getType(imageType);
-        files.push(new File([blob], `clipboard-${Date.now()}.png`, { type: imageType }));
-      }
-      if (files.length > 0) {
-        addImagesFromFiles(files);
-        return true;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const clipboardItems = await navigator.clipboard.read();
+        const files = [];
+        for (const item of clipboardItems) {
+          const imageType = item.types.find(t => t.startsWith('image/'));
+          if (!imageType) continue;
+          const blob = await item.getType(imageType);
+          files.push(new File([blob], `clipboard-${Date.now()}.png`, { type: imageType }));
+        }
+        if (files.length > 0) {
+          addImagesFromFiles(files);
+          return true;
+        }
+        if (attempt === 0) await new Promise(r => setTimeout(r, 120));
       }
     } catch (err) {
       // iPad Safari では権限/仕様で失敗しうるため黙って通常フローへフォールバック
+    } finally {
+      clipboardReadInFlightRef.current = false;
     }
     return false;
   }, [addImagesFromFiles]);
@@ -1184,7 +1216,8 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
       if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'v') return;
       if (document.activeElement.tagName === 'TEXTAREA' || document.activeElement.tagName === 'INPUT') return;
       // iPadでpasteイベントが画像を渡さないケースの回避
-      setTimeout(() => { readImagesFromClipboardAPI(); }, 0);
+      e.preventDefault();
+      readImagesFromClipboardAPI();
     };
     window.addEventListener('keydown', handlePasteShortcut);
     return () => window.removeEventListener('keydown', handlePasteShortcut);
