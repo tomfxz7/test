@@ -1055,12 +1055,31 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
         const loadedImages = await Promise.all(initialItem.images.map(async (img) => {
           return new Promise((resolve) => {
             const imageElement = new Image();
-            imageElement.onload = () => { resolve({ id: img.id, baseImage: { src: img.baseImage, element: imageElement, width: img.baseWidth, height: img.baseHeight }, annotations: img.annotations || [], history: [], redoHistory: [] }); };
-            imageElement.src = img.baseImage;
+            const baseSrc = img.baseImage || img.image;
+            if (!baseSrc) {
+              resolve(null);
+              return;
+            }
+            imageElement.onload = () => {
+              resolve({
+                id: img.id,
+                baseImage: {
+                  src: baseSrc,
+                  element: imageElement,
+                  width: img.baseWidth || imageElement.naturalWidth,
+                  height: img.baseHeight || imageElement.naturalHeight
+                },
+                annotations: img.annotations || [],
+                history: [],
+                redoHistory: []
+              });
+            };
+            imageElement.src = baseSrc;
           });
         }));
-        setImagesData(loadedImages);
-        if (loadedImages.length > 0) { setBaseImage(loadedImages[0].baseImage); setAnnotations(loadedImages[0].annotations); setActiveImageId(loadedImages[0].id); setRedoStack([]); }
+        const validImages = loadedImages.filter(Boolean);
+        setImagesData(validImages);
+        if (validImages.length > 0) { setBaseImage(validImages[0].baseImage); setAnnotations(validImages[0].annotations); setActiveImageId(validImages[0].id); setRedoStack([]); }
       };
       loadImages();
     }
@@ -1229,7 +1248,19 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
   const handleSave = () => {
     let finalImagesData = [...imagesData];
     if (activeImageId && baseImage) { const currentFinal = captureCurrentCanvas(); finalImagesData = finalImagesData.map(img => img.id === activeImageId ? { ...img, annotations: annotationsRef.current, finalImage: currentFinal } : img ); }
-    onSave({ id: initialItem ? initialItem.id : Date.now().toString(), images: finalImagesData.map(img => ({ id: img.id, image: img.finalImage || img.baseImage.src, baseImage: img.baseImage.src, baseWidth: img.baseWidth, baseHeight: img.baseHeight, annotations: img.annotations })), memo, layout: layoutSettings });
+    onSave({
+      id: initialItem ? initialItem.id : Date.now().toString(),
+      images: finalImagesData.map(img => ({
+        id: img.id,
+        image: img.finalImage || img.baseImage.src,
+        baseImage: img.baseImage.src,
+        baseWidth: img.baseImage.width,
+        baseHeight: img.baseImage.height,
+        annotations: img.annotations
+      })),
+      memo,
+      layout: layoutSettings
+    });
   };
 
   useEffect(() => {
