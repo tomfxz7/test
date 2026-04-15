@@ -17,6 +17,11 @@ const ToolType = {
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
 const APP_VERSION = 'v1.1.0';
+// NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
+const APP_DB_NAME = 'eval_report_db';
+const APP_DB_VERSION = 1;
+const APP_DB_STORE = 'app_data';
+const PROJECTS_KEY = 'eval_report_projects';
 
 // オフスクリーンキャンバス
 let offCanvas = null;
@@ -346,6 +351,46 @@ const loadPptxGenJS = async () => {
   });
 };
 
+const openAppDB = () => {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') {
+      reject(new Error('IndexedDB is not supported in this environment.'));
+      return;
+    }
+    const request = indexedDB.open(APP_DB_NAME, APP_DB_VERSION);
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains(APP_DB_STORE)) db.createObjectStore(APP_DB_STORE);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('Failed to open IndexedDB.'));
+  });
+};
+
+const idbGet = async (key) => {
+  const db = await openAppDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(APP_DB_STORE, 'readonly');
+    const store = tx.objectStore(APP_DB_STORE);
+    const request = store.get(key);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('IndexedDB read failed.'));
+    tx.oncomplete = () => db.close();
+    tx.onabort = tx.onerror = () => db.close();
+  });
+};
+
+const idbSet = async (key, value) => {
+  const db = await openAppDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(APP_DB_STORE, 'readwrite');
+    const store = tx.objectStore(APP_DB_STORE);
+    store.put(value, key);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onabort = tx.onerror = () => { db.close(); reject(tx.error || new Error('IndexedDB write failed.')); };
+  });
+};
+
 const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, baseW) => {
   const pRatio = drawW / baseW;
   annotations.forEach(ann => {
@@ -486,24 +531,8 @@ const LayoutRect = ({ rect, onChange, onDragStart, label, bgImg, isMemo, contain
 
 // --- Main App Component ---
 export default function App() {
-  const [projects, setProjects] = useState(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem('eval_report_projects');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          return parsed.map(p => ({
-            ...p,
-            items: p.items.map(item => {
-              if (item.images) return item;
-              return { ...item, images: item.baseImage ? [{ id: 'img_legacy_' + item.id, image: item.image, baseImage: item.baseImage, baseWidth: item.baseWidth, baseHeight: item.baseHeight, annotations: item.annotations || [] }] : [] };
-            })
-          }));
-        }
-      } catch (e) { console.error(e); }
-    }
-    return [];
-  });
+  const [projects, setProjects] = useState([]);
+  const [isProjectsLoaded, setIsProjectsLoaded] = useState(false);
 
   const [currentView, setCurrentView] = useState('home');
   const [activeProjectId, setActiveProjectId] = useState(null);
@@ -520,12 +549,71 @@ export default function App() {
 
   // --- Drag & Drop state ---
   const [draggedIndex, setDraggedIndex] = useState(null);
-  const [dragOverIndex, setDragOverIndex] = useState(null);
+  const [dropIndex, setDropIndex] = useState(null);
+  const [dragStartPos, setDragStartPos] = useState(null);
+  const [dragCurrentPos, setDragCurrentPos] = useState(null);
+  const [hasDragMovement, setHasDragMovement] = useState(false);
+  const activeDragPointerIdRef = useRef(null);
 
   useEffect(() => {
-    try { localStorage.setItem('eval_report_projects', JSON.stringify(projects)); } 
-    catch (e) { if (e.name === 'QuotaExceededError') alert('保存容量の上限に達しました。不要なプロジェクトや画像を削除してください。'); }
-  }, [projects]);
+    const normalizeProjects = (rawProjects) => {
+      if (!Array.isArray(rawProjects)) return [];
+      return rawProjects.map(p => ({
+        ...p,
+        items: (p.items || []).map(item => {
+          if (item.images) return item;
+          return {
+            ...item,
+            images: item.baseImage
+              ? [{ id: 'img_legacy_' + item.id, image: item.image, baseImage: item.baseImage, baseWidth: item.baseWidth, baseHeight: item.baseHeight, annotations: item.annotations || [] }]
+              : []
+          };
+        })
+      }));
+    };
+
+    const loadProjects = async () => {
+      if (typeof window === 'undefined') { setIsProjectsLoaded(true); return; }
+      try {
+        const savedFromIDB = await idbGet(PROJECTS_KEY);
+        if (savedFromIDB) {
+          setProjects(normalizeProjects(savedFromIDB));
+          setIsProjectsLoaded(true);
+          return;
+        }
+
+        // LocalStorage からの初回移行
+        const legacy = localStorage.getItem(PROJECTS_KEY);
+        if (legacy) {
+          const parsedLegacy = JSON.parse(legacy);
+          const normalizedLegacy = normalizeProjects(parsedLegacy);
+          setProjects(normalizedLegacy);
+          await idbSet(PROJECTS_KEY, normalizedLegacy);
+          localStorage.removeItem(PROJECTS_KEY);
+        }
+      } catch (e) {
+        console.error(e);
+        alert('データの読み込みに失敗しました。ブラウザのストレージ設定をご確認ください。');
+      } finally {
+        setIsProjectsLoaded(true);
+      }
+    };
+
+    loadProjects();
+  }, []);
+
+  useEffect(() => {
+    if (!isProjectsLoaded) return;
+    const saveProjects = async () => {
+      try {
+        await idbSet(PROJECTS_KEY, projects);
+      } catch (e) {
+        console.error(e);
+        alert('保存容量の上限に達したか、保存に失敗しました。不要なプロジェクトや画像を削除してください。');
+      }
+    };
+    saveProjects();
+  }, [projects, isProjectsLoaded]);
 
   useEffect(() => { const key = localStorage.getItem('gemini_api_key'); if (key) setApiKeyInput(key); }, []);
 
@@ -586,36 +674,71 @@ export default function App() {
     }
     saveToUndo();
     setDraggedIndex(idx);
+    setDropIndex(idx);
+    setDragStartPos({ x: e.clientX, y: e.clientY });
+    setDragCurrentPos({ x: e.clientX, y: e.clientY });
+    setHasDragMovement(false);
+    activeDragPointerIdRef.current = e.pointerId;
   };
-  const handleDragEnter = (targetIdx) => {
-    if (draggedIndex === null || draggedIndex === targetIdx) return;
-    setDragOverIndex(targetIdx);
+  const calculateDropIndex = useCallback((clientY) => {
+    if (draggedIndex === null) return null;
+    const cards = Array.from(document.querySelectorAll('[data-item-index]'))
+      .map(el => ({ el, idx: Number(el.getAttribute('data-item-index')) }))
+      .filter(entry => !Number.isNaN(entry.idx) && entry.idx !== draggedIndex)
+      .sort((a, b) => a.idx - b.idx);
+    if (cards.length === 0) return 0;
+    let insertion = cards.length;
+    for (let i = 0; i < cards.length; i++) {
+      const rect = cards[i].el.getBoundingClientRect();
+      const mid = rect.top + rect.height / 2;
+      if (clientY < mid) {
+        insertion = i;
+        break;
+      }
+    }
+    return insertion;
+  }, [draggedIndex]);
+
+  const reorderAtDrop = useCallback((fromIdx, toIdxWithoutDragged) => {
     setProjects(prev => prev.map(p => {
       if (p.id !== activeProjectId) return p;
       const newItems = [...p.items];
-      const draggedItem = newItems[draggedIndex];
-      newItems.splice(draggedIndex, 1);
-      newItems.splice(targetIdx, 0, draggedItem);
+      const [draggedItem] = newItems.splice(fromIdx, 1);
+      newItems.splice(toIdxWithoutDragged, 0, draggedItem);
       return { ...p, items: newItems };
     }));
-    setDraggedIndex(targetIdx);
-  };
+  }, [activeProjectId]);
+
   const handleDragEnd = useCallback(() => {
+    if (draggedIndex !== null && dropIndex !== null && hasDragMovement && draggedIndex !== dropIndex) {
+      saveToUndo();
+      reorderAtDrop(draggedIndex, dropIndex);
+    }
     setDraggedIndex(null);
-    setDragOverIndex(null);
-  }, []);
+    setDropIndex(null);
+    setDragStartPos(null);
+    setDragCurrentPos(null);
+    setHasDragMovement(false);
+    activeDragPointerIdRef.current = null;
+  }, [draggedIndex, dropIndex, hasDragMovement, reorderAtDrop, saveToUndo]);
 
   useEffect(() => {
     if (draggedIndex === null) return;
     document.body.style.userSelect = 'none';
     document.body.style.touchAction = 'none';
-    const stopDrag = () => handleDragEnd();
+    const stopDrag = (e) => {
+      if (activeDragPointerIdRef.current !== null && e?.pointerId !== undefined && e.pointerId !== activeDragPointerIdRef.current) return;
+      handleDragEnd();
+    };
     const trackDrag = (e) => {
-      const hovered = document.elementFromPoint(e.clientX, e.clientY);
-      const card = hovered?.closest?.('[data-item-index]');
-      if (!card) return;
-      const targetIdx = Number(card.getAttribute('data-item-index'));
-      if (!Number.isNaN(targetIdx)) handleDragEnter(targetIdx);
+      if (activeDragPointerIdRef.current !== null && e.pointerId !== activeDragPointerIdRef.current) return;
+      setDragCurrentPos({ x: e.clientX, y: e.clientY });
+      if (dragStartPos) {
+        const moved = Math.hypot(e.clientX - dragStartPos.x, e.clientY - dragStartPos.y) > 6;
+        if (moved && !hasDragMovement) setHasDragMovement(true);
+      }
+      const nextDropIndex = calculateDropIndex(e.clientY);
+      if (nextDropIndex !== null) setDropIndex(nextDropIndex);
     };
     window.addEventListener('pointermove', trackDrag, { passive: true });
     window.addEventListener('pointerup', stopDrag);
@@ -627,7 +750,7 @@ export default function App() {
       window.removeEventListener('pointerup', stopDrag);
       window.removeEventListener('pointercancel', stopDrag);
     };
-  }, [draggedIndex, handleDragEnd, handleDragEnter]);
+  }, [draggedIndex, handleDragEnd, calculateDropIndex, dragStartPos, hasDragMovement]);
 
   // --- Delete Item Function (Reliable) ---
   const deleteItem = (itemId) => {
@@ -639,6 +762,14 @@ export default function App() {
       }));
     }
   };
+
+  if (!isProjectsLoaded) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center text-gray-500 font-bold">
+        データを読み込み中...
+      </div>
+    );
+  }
 
   if (currentView === 'home') {
     return (
@@ -746,59 +877,67 @@ export default function App() {
             {project.items.map((item, index) => {
               const images = item.images || [];
               const isDragging = draggedIndex === index;
+              const dragDx = isDragging && dragStartPos && dragCurrentPos ? dragCurrentPos.x - dragStartPos.x : 0;
+              const dragDy = isDragging && dragStartPos && dragCurrentPos ? dragCurrentPos.y - dragStartPos.y : 0;
               return (
-                <div 
-                  key={item.id} 
-                  data-item-index={index}
-                  onPointerEnter={() => {
-                    if (draggedIndex !== null) handleDragEnter(index);
-                  }}
-                  onPointerDown={(e) => {
-                    // グリップ（GripVertical）もしくはヘッダー部分を掴んだときだけドラッグ開始
-                    if (e.target.closest('.drag-handle')) {
-                       handleDragStart(index, e);
-                    }
-                  }}
-                  className={`bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden print:border-gray-300 print:shadow-none break-inside-avoid relative transition-all duration-300 ease-out group ${isDragging ? 'opacity-40 scale-[0.98] z-0 grayscale' : 'z-10'}`}
-                >
-                  <div className="bg-gray-50 px-4 py-2 border-b text-gray-500 font-medium flex justify-between items-center select-none drag-handle cursor-grab active:cursor-grabbing" style={{ touchAction: 'none' }}>
-                    <div className="flex items-center gap-3">
-                      <GripVertical size={20} className="text-gray-400" />
-                      <span className="font-bold text-gray-700">No. {index + 1}</span>
-                    </div>
-                    <div className="flex items-center gap-2 print:hidden pointer-events-auto">
-                      <button 
-                        type="button"
-                        onPointerDown={(e) => e.stopPropagation()}
-                        onClick={(e) => { e.stopPropagation(); setEditingItem(item); setCurrentView('item-editor'); }} 
-                        className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition font-bold text-sm"
-                      >
-                        <Edit size={16} /> 編集
-                      </button>
-                      <button 
-                        type="button"
-                        onPointerDown={(e) => e.stopPropagation()} // ドラッグ開始を阻止
-                        onPointerUp={(e) => e.stopPropagation()}
-                        onClick={(e) => { e.stopPropagation(); deleteItem(item.id); }} 
-                        className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition font-bold text-sm"
-                      >
-                        <Trash2 size={16} /> 削除
-                      </button>
-                    </div>
-                  </div>
-                  <div className="pointer-events-none">
-                    {images.length > 0 && (
-                      <div className={`w-full grid gap-1 bg-gray-100 border-b p-2 ${images.length === 1 ? 'grid-cols-1' : images.length === 2 ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-3'}`}>
-                        {images.map(img => (
-                          <div key={img.id} className="bg-white flex justify-center items-center p-1 rounded shadow-sm relative">
-                            <img src={img.image || img.baseImage} alt="Report Item" className="w-full h-auto max-h-[30vh] object-contain" />
-                          </div>
-                        ))}
+                <React.Fragment key={item.id}>
+                  {draggedIndex !== null && hasDragMovement && dropIndex === index && !(dropIndex === project.items.length - 1 && index === project.items.length - 1) && (
+                    <div className="h-1.5 bg-blue-500/70 rounded-full mx-2 shadow-sm" />
+                  )}
+                  <div
+                    data-item-index={index}
+                    onPointerDown={(e) => {
+                      if (e.target.closest('.drag-handle')) handleDragStart(index, e);
+                    }}
+                    className={`bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden print:border-gray-300 print:shadow-none break-inside-avoid relative group ${isDragging ? 'z-50 shadow-2xl ring-2 ring-blue-200 transition-none' : 'z-10 transition-all duration-200 ease-out'}`}
+                    style={{
+                      transform: isDragging ? `translate(${dragDx}px, ${dragDy}px) scale(1.02)` : 'translate(0, 0) scale(1)',
+                      opacity: isDragging ? 0.95 : 1,
+                      cursor: isDragging ? 'grabbing' : 'default'
+                    }}
+                  >
+                    <div className="bg-gray-50 px-4 py-2 border-b text-gray-500 font-medium flex justify-between items-center select-none drag-handle cursor-grab active:cursor-grabbing" style={{ touchAction: 'none' }}>
+                      <div className="flex items-center gap-3">
+                        <GripVertical size={20} className="text-gray-400" />
+                        <span className="font-bold text-gray-700">No. {index + 1}</span>
                       </div>
-                    )}
-                    {item.memo && <div className="p-6 text-gray-800 whitespace-pre-wrap text-base leading-relaxed line-clamp-3">{item.memo}</div>}
+                      <div className="flex items-center gap-2 print:hidden pointer-events-auto">
+                        <button 
+                          type="button"
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => { e.stopPropagation(); setEditingItem(item); setCurrentView('item-editor'); }} 
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition font-bold text-sm"
+                        >
+                          <Edit size={16} /> 編集
+                        </button>
+                        <button 
+                          type="button"
+                          onPointerDown={(e) => e.stopPropagation()} // ドラッグ開始を阻止
+                          onPointerUp={(e) => e.stopPropagation()}
+                          onClick={(e) => { e.stopPropagation(); deleteItem(item.id); }} 
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition font-bold text-sm"
+                        >
+                          <Trash2 size={16} /> 削除
+                        </button>
+                      </div>
+                    </div>
+                    <div className="pointer-events-none">
+                      {images.length > 0 && (
+                        <div className={`w-full grid gap-1 bg-gray-100 border-b p-2 ${images.length === 1 ? 'grid-cols-1' : images.length === 2 ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-3'}`}>
+                          {images.map(img => (
+                            <div key={img.id} className="bg-white flex justify-center items-center p-1 rounded shadow-sm relative">
+                              <img src={img.image || img.baseImage} alt="Report Item" className="w-full h-auto max-h-[30vh] object-contain" />
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {item.memo && <div className="p-6 text-gray-800 whitespace-pre-wrap text-base leading-relaxed line-clamp-3">{item.memo}</div>}
+                    </div>
                   </div>
-                </div>
+                  {draggedIndex !== null && hasDragMovement && index === project.items.length - 1 && dropIndex === project.items.length - 1 && (
+                    <div className="h-1.5 bg-blue-500/70 rounded-full mx-2 shadow-sm" />
+                  )}
+                </React.Fragment>
               );
             })}
             {project.items.length === 0 && (
