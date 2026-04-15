@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.1.0';
+const APP_VERSION = 'v1.1.1';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -1005,6 +1005,15 @@ export default function App() {
 
 // --- Item Editor Component ---
 function ItemEditor({ onCancel, onSave, initialItem }) {
+  const resolveStoredImageSrc = useCallback((imgObj) => {
+    if (!imgObj) return '';
+    if (typeof imgObj.baseImage === 'string' && imgObj.baseImage.trim()) return imgObj.baseImage;
+    if (imgObj.baseImage && typeof imgObj.baseImage === 'object' && typeof imgObj.baseImage.src === 'string' && imgObj.baseImage.src.trim()) return imgObj.baseImage.src;
+    if (typeof imgObj.image === 'string' && imgObj.image.trim()) return imgObj.image;
+    if (imgObj.image && typeof imgObj.image === 'object' && typeof imgObj.image.src === 'string' && imgObj.image.src.trim()) return imgObj.image.src;
+    return '';
+  }, []);
+
   const [memo, setMemo] = useState(initialItem ? initialItem.memo : '');
   const [imagesData, setImagesData] = useState([]);
   const [activeImageId, setActiveImageId] = useState(null);
@@ -1055,7 +1064,7 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
         const loadedImages = await Promise.all(initialItem.images.map(async (img) => {
           return new Promise((resolve) => {
             const imageElement = new Image();
-            const baseSrc = img.baseImage || img.image;
+            const baseSrc = resolveStoredImageSrc(img);
             if (!baseSrc) {
               resolve(null);
               return;
@@ -1083,7 +1092,7 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
       };
       loadImages();
     }
-  }, [initialItem]);
+  }, [initialItem, resolveStoredImageSrc]);
 
   useEffect(() => { if (layoutSettings.template !== 'custom') { const newLayout = calculateTemplateLayout(layoutSettings.template, imagesData); setLayoutSettings(prev => ({ ...prev, memoRect: newLayout.memoRect, customImageRects: newLayout.customImageRects })); } }, [layoutSettings.template, imagesData.length]);
 
@@ -1250,14 +1259,18 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
     if (activeImageId && baseImage) { const currentFinal = captureCurrentCanvas(); finalImagesData = finalImagesData.map(img => img.id === activeImageId ? { ...img, annotations: annotationsRef.current, finalImage: currentFinal } : img ); }
     onSave({
       id: initialItem ? initialItem.id : Date.now().toString(),
-      images: finalImagesData.map(img => ({
+      images: finalImagesData.map(img => {
+        const safeBaseSrc = typeof img.baseImage?.src === 'string' ? img.baseImage.src : resolveStoredImageSrc(img);
+        const safeFinalSrc = typeof img.finalImage === 'string' && img.finalImage ? img.finalImage : safeBaseSrc;
+        return ({
         id: img.id,
-        image: img.finalImage || img.baseImage.src,
-        baseImage: img.baseImage.src,
-        baseWidth: img.baseImage.width,
-        baseHeight: img.baseImage.height,
+        image: safeFinalSrc,
+        baseImage: safeBaseSrc,
+        baseWidth: img.baseImage?.width || 1200,
+        baseHeight: img.baseImage?.height || 800,
         annotations: img.annotations
-      })),
+      });
+      }),
       memo,
       layout: layoutSettings
     });
