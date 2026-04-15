@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.2.3';
+const APP_VERSION = 'v1.2.4';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -546,6 +546,8 @@ export default function App() {
   const [isExportSettingsOpen, setIsExportSettingsOpen] = useState(false);
   const [pptxSettings, setPptxSettings] = useState({ showPageNumber: true });
   const [isExportingPPTX, setIsExportingPPTX] = useState(false);
+  const [listImageContextMenu, setListImageContextMenu] = useState(null);
+  const listLongPressTimerRef = useRef(null);
 
   // --- Drag & Drop state ---
   const [draggedIndex, setDraggedIndex] = useState(null);
@@ -795,6 +797,42 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    const closeListImageMenu = (e) => {
+      if (e.target.closest('.list-image-context-menu')) return;
+      setListImageContextMenu(null);
+    };
+    window.addEventListener('pointerdown', closeListImageMenu);
+    return () => {
+      window.removeEventListener('pointerdown', closeListImageMenu);
+      if (listLongPressTimerRef.current) clearTimeout(listLongPressTimerRef.current);
+    };
+  }, []);
+
+  const copyListImage = async (src) => {
+    try {
+      if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+        alert('このブラウザでは画像コピーに対応していません。');
+        return;
+      }
+      const blob = await (await fetch(src)).blob();
+      await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+      alert('画像をコピーしました。');
+    } catch (e) {
+      console.error(e);
+      alert('画像コピーに失敗しました。');
+    }
+  };
+
+  const saveListImage = (src) => {
+    const link = document.createElement('a');
+    link.href = src;
+    link.download = `report-list-image-${Date.now()}.jpg`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   if (!isProjectsLoaded) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center text-gray-500 font-bold">
@@ -953,11 +991,31 @@ export default function App() {
                         </button>
                       </div>
                     </div>
-                    <div className="pointer-events-none">
+                    <div>
                       {images.length > 0 && (
                         <div className={`w-full grid gap-1 bg-gray-100 border-b p-2 ${images.length === 1 ? 'grid-cols-1' : images.length === 2 ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-3'}`}>
                           {images.map(img => (
-                            <div key={img.id} className="bg-white flex justify-center items-center p-1 rounded shadow-sm relative">
+                            <div
+                              key={img.id}
+                              className="bg-white flex justify-center items-center p-1 rounded shadow-sm relative"
+                              onContextMenu={(e) => {
+                                e.preventDefault();
+                                const src = img.image || img.baseImage;
+                                if (!src) return;
+                                setListImageContextMenu({ src, x: e.clientX, y: e.clientY });
+                              }}
+                              onPointerDown={(e) => {
+                                if (e.pointerType !== 'touch') return;
+                                if (listLongPressTimerRef.current) clearTimeout(listLongPressTimerRef.current);
+                                const src = img.image || img.baseImage;
+                                if (!src) return;
+                                listLongPressTimerRef.current = setTimeout(() => {
+                                  setListImageContextMenu({ src, x: e.clientX, y: e.clientY });
+                                }, 550);
+                              }}
+                              onPointerUp={() => { if (listLongPressTimerRef.current) clearTimeout(listLongPressTimerRef.current); }}
+                              onPointerCancel={() => { if (listLongPressTimerRef.current) clearTimeout(listLongPressTimerRef.current); }}
+                            >
                               <img src={img.image || img.baseImage} alt="Report Item" className="w-full h-auto max-h-[30vh] object-contain" />
                             </div>
                           ))}
@@ -984,6 +1042,13 @@ export default function App() {
         <div className="fixed bottom-8 right-8 z-40 print:hidden">
           <button onClick={() => { setEditingItem(null); setCurrentView('item-editor'); }} className="flex items-center justify-center w-20 h-20 bg-blue-600 text-white rounded-full shadow-xl hover:bg-blue-700 hover:scale-105 transition-transform"><Plus size={40} /></button>
         </div>
+
+        {listImageContextMenu && (
+          <div className="fixed z-[90] list-image-context-menu bg-white border border-gray-200 rounded-xl shadow-2xl p-1.5 min-w-[170px]" style={{ left: Math.min(listImageContextMenu.x, (typeof window !== 'undefined' ? window.innerWidth : 1024) - 190), top: Math.min(listImageContextMenu.y, (typeof window !== 'undefined' ? window.innerHeight : 768) - 120) }}>
+            <button onClick={() => { copyListImage(listImageContextMenu.src); setListImageContextMenu(null); }} className="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-100 font-medium text-gray-700">画像をコピー</button>
+            <button onClick={() => { saveListImage(listImageContextMenu.src); setListImageContextMenu(null); }} className="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-100 font-medium text-gray-700">画像を保存</button>
+          </div>
+        )}
 
         {isExportSettingsOpen && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[80] p-4 font-sans">
