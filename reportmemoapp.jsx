@@ -576,7 +576,13 @@ export default function App() {
   };
 
   // --- Sort Functions (Unified for DnD) ---
-  const handleDragStart = (idx) => { setDraggedIndex(idx); };
+  const handleDragStart = (idx, e) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    setDraggedIndex(idx);
+  };
   const handleDragEnter = (targetIdx) => {
     if (draggedIndex === null || draggedIndex === targetIdx) return;
     setDragOverIndex(targetIdx);
@@ -590,7 +596,21 @@ export default function App() {
     }));
     setDraggedIndex(targetIdx);
   };
-  const handleDragEnd = () => { setDraggedIndex(null); setDragOverIndex(null); };
+  const handleDragEnd = useCallback(() => {
+    setDraggedIndex(null);
+    setDragOverIndex(null);
+  }, []);
+
+  useEffect(() => {
+    if (draggedIndex === null) return;
+    const stopDrag = () => handleDragEnd();
+    window.addEventListener('pointerup', stopDrag);
+    window.addEventListener('pointercancel', stopDrag);
+    return () => {
+      window.removeEventListener('pointerup', stopDrag);
+      window.removeEventListener('pointercancel', stopDrag);
+    };
+  }, [draggedIndex, handleDragEnd]);
 
   // --- Delete Item Function (Reliable) ---
   const deleteItem = (itemId) => {
@@ -684,33 +704,35 @@ export default function App() {
               return (
                 <div 
                   key={item.id} 
-                  onDragOver={(e) => { e.preventDefault(); handleDragEnter(index); }}
+                  onPointerEnter={() => {
+                    if (draggedIndex !== null) handleDragEnter(index);
+                  }}
                   onPointerDown={(e) => {
                     // グリップ（GripVertical）もしくはヘッダー部分を掴んだときだけドラッグ開始
                     if (e.target.closest('.drag-handle')) {
-                       handleDragStart(index);
+                       handleDragStart(index, e);
                     }
                   }}
-                  onPointerUp={handleDragEnd}
                   className={`bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden print:border-gray-300 print:shadow-none break-inside-avoid relative transition-all duration-300 ease-out group ${isDragging ? 'opacity-40 scale-[0.98] z-0 grayscale' : 'z-10'}`}
-                  style={{ 
-                    touchAction: 'none' // Pointerイベントによるドラッグを可能にするため
-                  }}
                 >
-                  <div className="bg-gray-50 px-4 py-2 border-b text-gray-500 font-medium flex justify-between items-center select-none drag-handle cursor-grab active:cursor-grabbing">
+                  <div className="bg-gray-50 px-4 py-2 border-b text-gray-500 font-medium flex justify-between items-center select-none drag-handle cursor-grab active:cursor-grabbing" style={{ touchAction: 'none' }}>
                     <div className="flex items-center gap-3">
                       <GripVertical size={20} className="text-gray-400" />
                       <span className="font-bold text-gray-700">No. {index + 1}</span>
                     </div>
                     <div className="flex items-center gap-2 print:hidden pointer-events-auto">
                       <button 
+                        type="button"
+                        onPointerDown={(e) => e.stopPropagation()}
                         onClick={(e) => { e.stopPropagation(); setEditingItem(item); setCurrentView('item-editor'); }} 
                         className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition font-bold text-sm"
                       >
                         <Edit size={16} /> 編集
                       </button>
                       <button 
+                        type="button"
                         onPointerDown={(e) => e.stopPropagation()} // ドラッグ開始を阻止
+                        onPointerUp={(e) => e.stopPropagation()}
                         onClick={(e) => { e.stopPropagation(); deleteItem(item.id); }} 
                         className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition font-bold text-sm"
                       >
