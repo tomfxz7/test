@@ -675,6 +675,7 @@ export default function App() {
       e.stopPropagation();
       if (e.currentTarget?.setPointerCapture) e.currentTarget.setPointerCapture(e.pointerId);
     }
+    saveToUndo();
     setDraggedIndex(idx);
     setDropIndex(idx);
     setDragStartPos({ x: e.clientX, y: e.clientY });
