@@ -17,6 +17,7 @@ const ToolType = {
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
 const APP_VERSION = 'v1.1.0';
+// NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
 const APP_DB_STORE = 'app_data';
