@@ -17,6 +17,11 @@ const ToolType = {
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
 const APP_VERSION = 'v1.1.0';
+// NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
+const APP_DB_NAME = 'eval_report_db';
+const APP_DB_VERSION = 1;
+const APP_DB_STORE = 'app_data';
+const PROJECTS_KEY = 'eval_report_projects';
 
 // オフスクリーンキャンバス
 let offCanvas = null;
@@ -346,6 +351,46 @@ const loadPptxGenJS = async () => {
   });
 };
 
+const openAppDB = () => {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') {
+      reject(new Error('IndexedDB is not supported in this environment.'));
+      return;
+    }
+    const request = indexedDB.open(APP_DB_NAME, APP_DB_VERSION);
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains(APP_DB_STORE)) db.createObjectStore(APP_DB_STORE);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('Failed to open IndexedDB.'));
+  });
+};
+
+const idbGet = async (key) => {
+  const db = await openAppDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(APP_DB_STORE, 'readonly');
+    const store = tx.objectStore(APP_DB_STORE);
+    const request = store.get(key);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('IndexedDB read failed.'));
+    tx.oncomplete = () => db.close();
+    tx.onabort = tx.onerror = () => db.close();
+  });
+};
+
+const idbSet = async (key, value) => {
+  const db = await openAppDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(APP_DB_STORE, 'readwrite');
+    const store = tx.objectStore(APP_DB_STORE);
+    store.put(value, key);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onabort = tx.onerror = () => { db.close(); reject(tx.error || new Error('IndexedDB write failed.')); };
+  });
+};
+
 const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, baseW) => {
   const pRatio = drawW / baseW;
   annotations.forEach(ann => {
@@ -486,24 +531,8 @@ const LayoutRect = ({ rect, onChange, onDragStart, label, bgImg, isMemo, contain
 
 // --- Main App Component ---
 export default function App() {
-  const [projects, setProjects] = useState(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem('eval_report_projects');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          return parsed.map(p => ({
-            ...p,
-            items: p.items.map(item => {
-              if (item.images) return item;
-              return { ...item, images: item.baseImage ? [{ id: 'img_legacy_' + item.id, image: item.image, baseImage: item.baseImage, baseWidth: item.baseWidth, baseHeight: item.baseHeight, annotations: item.annotations || [] }] : [] };
-            })
-          }));
-        }
-      } catch (e) { console.error(e); }
-    }
-    return [];
-  });
+  const [projects, setProjects] = useState([]);
+  const [isProjectsLoaded, setIsProjectsLoaded] = useState(false);
 
   const [currentView, setCurrentView] = useState('home');
   const [activeProjectId, setActiveProjectId] = useState(null);
@@ -523,9 +552,64 @@ export default function App() {
   const [dragOverIndex, setDragOverIndex] = useState(null);
 
   useEffect(() => {
-    try { localStorage.setItem('eval_report_projects', JSON.stringify(projects)); } 
-    catch (e) { if (e.name === 'QuotaExceededError') alert('保存容量の上限に達しました。不要なプロジェクトや画像を削除してください。'); }
-  }, [projects]);
+    const normalizeProjects = (rawProjects) => {
+      if (!Array.isArray(rawProjects)) return [];
+      return rawProjects.map(p => ({
+        ...p,
+        items: (p.items || []).map(item => {
+          if (item.images) return item;
+          return {
+            ...item,
+            images: item.baseImage
+              ? [{ id: 'img_legacy_' + item.id, image: item.image, baseImage: item.baseImage, baseWidth: item.baseWidth, baseHeight: item.baseHeight, annotations: item.annotations || [] }]
+              : []
+          };
+        })
+      }));
+    };
+
+    const loadProjects = async () => {
+      if (typeof window === 'undefined') { setIsProjectsLoaded(true); return; }
+      try {
+        const savedFromIDB = await idbGet(PROJECTS_KEY);
+        if (savedFromIDB) {
+          setProjects(normalizeProjects(savedFromIDB));
+          setIsProjectsLoaded(true);
+          return;
+        }
+
+        // LocalStorage からの初回移行
+        const legacy = localStorage.getItem(PROJECTS_KEY);
+        if (legacy) {
+          const parsedLegacy = JSON.parse(legacy);
+          const normalizedLegacy = normalizeProjects(parsedLegacy);
+          setProjects(normalizedLegacy);
+          await idbSet(PROJECTS_KEY, normalizedLegacy);
+          localStorage.removeItem(PROJECTS_KEY);
+        }
+      } catch (e) {
+        console.error(e);
+        alert('データの読み込みに失敗しました。ブラウザのストレージ設定をご確認ください。');
+      } finally {
+        setIsProjectsLoaded(true);
+      }
+    };
+
+    loadProjects();
+  }, []);
+
+  useEffect(() => {
+    if (!isProjectsLoaded) return;
+    const saveProjects = async () => {
+      try {
+        await idbSet(PROJECTS_KEY, projects);
+      } catch (e) {
+        console.error(e);
+        alert('保存容量の上限に達したか、保存に失敗しました。不要なプロジェクトや画像を削除してください。');
+      }
+    };
+    saveProjects();
+  }, [projects, isProjectsLoaded]);
 
   useEffect(() => { const key = localStorage.getItem('gemini_api_key'); if (key) setApiKeyInput(key); }, []);
 
@@ -639,6 +723,14 @@ export default function App() {
       }));
     }
   };
+
+  if (!isProjectsLoaded) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center text-gray-500 font-bold">
+        データを読み込み中...
+      </div>
+    );
+  }
 
   if (currentView === 'home') {
     return (
