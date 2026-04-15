@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.2.1';
+const APP_VERSION = 'v1.2.2';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -552,6 +552,8 @@ export default function App() {
   const [dropIndex, setDropIndex] = useState(null);
   const [dragStartPos, setDragStartPos] = useState(null);
   const [dragCurrentPos, setDragCurrentPos] = useState(null);
+  const [dragStartScrollY, setDragStartScrollY] = useState(0);
+  const [dragCurrentScrollY, setDragCurrentScrollY] = useState(0);
   const [hasDragMovement, setHasDragMovement] = useState(false);
   const activeDragPointerIdRef = useRef(null);
   const lastDragPointerYRef = useRef(null);
@@ -678,6 +680,8 @@ export default function App() {
     setDropIndex(idx);
     setDragStartPos({ x: e.clientX, y: e.clientY });
     setDragCurrentPos({ x: e.clientX, y: e.clientY });
+    setDragStartScrollY(window.scrollY);
+    setDragCurrentScrollY(window.scrollY);
     setHasDragMovement(false);
     activeDragPointerIdRef.current = e.pointerId;
     lastDragPointerYRef.current = e.clientY;
@@ -720,6 +724,8 @@ export default function App() {
     setDropIndex(null);
     setDragStartPos(null);
     setDragCurrentPos(null);
+    setDragStartScrollY(0);
+    setDragCurrentScrollY(0);
     setHasDragMovement(false);
     activeDragPointerIdRef.current = null;
     lastDragPointerYRef.current = null;
@@ -736,6 +742,7 @@ export default function App() {
     const trackDrag = (e) => {
       if (activeDragPointerIdRef.current !== null && e.pointerId !== activeDragPointerIdRef.current) return;
       setDragCurrentPos({ x: e.clientX, y: e.clientY });
+      setDragCurrentScrollY(window.scrollY);
       lastDragPointerYRef.current = e.clientY;
       if (dragStartPos) {
         const moved = Math.hypot(e.clientX - dragStartPos.x, e.clientY - dragStartPos.y) > 6;
@@ -759,6 +766,7 @@ export default function App() {
       }
       if (scrollDelta !== 0) {
         window.scrollBy({ top: scrollDelta, behavior: 'auto' });
+        setDragCurrentScrollY(window.scrollY);
         const nextDropIndex = calculateDropIndex(y);
         if (nextDropIndex !== null) setDropIndex(nextDropIndex);
       }
@@ -902,7 +910,7 @@ export default function App() {
               const images = item.images || [];
               const isDragging = draggedIndex === index;
               const dragDx = isDragging && dragStartPos && dragCurrentPos ? dragCurrentPos.x - dragStartPos.x : 0;
-              const dragDy = isDragging && dragStartPos && dragCurrentPos ? dragCurrentPos.y - dragStartPos.y : 0;
+              const dragDy = isDragging && dragStartPos && dragCurrentPos ? (dragCurrentPos.y - dragStartPos.y) + (dragCurrentScrollY - dragStartScrollY) : 0;
               return (
                 <React.Fragment key={item.id}>
                   {draggedIndex !== null && hasDragMovement && dropIndex === index && !(dropIndex === project.items.length - 1 && index === project.items.length - 1) && (
@@ -1085,6 +1093,7 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
   const annotationsRef = useRef(annotations); useEffect(() => { annotationsRef.current = annotations; }, [annotations]);
   const handwritingTimerRef = useRef(null); const handwritingStrokesRef = useRef([]); const [isAutoOcrLoading, setIsAutoOcrLoading] = useState(false);
   const clipboardReadInFlightRef = useRef(false);
+  const lastPasteEventAtRef = useRef(0);
 
   useEffect(() => {
     if (initialItem && initialItem.images) {
@@ -1191,6 +1200,7 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
 
   useEffect(() => {
     const handleGlobalPaste = async (e) => {
+      lastPasteEventAtRef.current = Date.now();
       if (isLayoutModalOpen || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.tagName === 'INPUT') return;
       const items = e.clipboardData?.items;
       const imageFiles = [];
@@ -1215,9 +1225,10 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
     const handlePasteShortcut = (e) => {
       if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'v') return;
       if (document.activeElement.tagName === 'TEXTAREA' || document.activeElement.tagName === 'INPUT') return;
-      // iPadでpasteイベントが画像を渡さないケースの回避
-      e.preventDefault();
-      readImagesFromClipboardAPI();
+      // iPadでpasteイベントが来ないケースのみフォールバック読み取り
+      setTimeout(() => {
+        if (Date.now() - lastPasteEventAtRef.current > 160) readImagesFromClipboardAPI();
+      }, 180);
     };
     window.addEventListener('keydown', handlePasteShortcut);
     return () => window.removeEventListener('keydown', handlePasteShortcut);
