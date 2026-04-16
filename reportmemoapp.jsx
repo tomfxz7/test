@@ -16,12 +16,29 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.2.5';
+const APP_VERSION = 'v1.3.0';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
 const APP_DB_STORE = 'app_data';
 const PROJECTS_KEY = 'eval_report_projects';
+const normalizeProjects = (rawProjects) => {
+  if (!Array.isArray(rawProjects)) return [];
+  return rawProjects.map(p => ({
+    ...p,
+    id: p.id || Date.now().toString() + Math.random().toString(36).slice(2, 7),
+    createdAt: p.createdAt || new Date(),
+    items: (p.items || []).map(item => {
+      if (item.images) return item;
+      return {
+        ...item,
+        images: item.baseImage
+          ? [{ id: 'img_legacy_' + item.id, image: item.image, baseImage: item.baseImage, baseWidth: item.baseWidth, baseHeight: item.baseHeight, annotations: item.annotations || [] }]
+          : []
+      };
+    })
+  }));
+};
 
 // オフスクリーンキャンバス
 let offCanvas = null;
@@ -553,8 +570,14 @@ export default function App() {
   const [isExportSettingsOpen, setIsExportSettingsOpen] = useState(false);
   const [pptxSettings, setPptxSettings] = useState({ showPageNumber: true });
   const [isExportingPPTX, setIsExportingPPTX] = useState(false);
+  const [isGlobalExportOpen, setIsGlobalExportOpen] = useState(false);
+  const [isGlobalImportOpen, setIsGlobalImportOpen] = useState(false);
+  const [selectedExportProjectIds, setSelectedExportProjectIds] = useState([]);
+  const [globalImportMode, setGlobalImportMode] = useState('append');
   const [listImageContextMenu, setListImageContextMenu] = useState(null);
   const listLongPressTimerRef = useRef(null);
+  const projectImportInputRef = useRef(null);
+  const globalImportInputRef = useRef(null);
 
   // --- Drag & Drop state ---
   const [draggedIndex, setDraggedIndex] = useState(null);
@@ -568,22 +591,6 @@ export default function App() {
   const lastDragPointerYRef = useRef(null);
 
   useEffect(() => {
-    const normalizeProjects = (rawProjects) => {
-      if (!Array.isArray(rawProjects)) return [];
-      return rawProjects.map(p => ({
-        ...p,
-        items: (p.items || []).map(item => {
-          if (item.images) return item;
-          return {
-            ...item,
-            images: item.baseImage
-              ? [{ id: 'img_legacy_' + item.id, image: item.image, baseImage: item.baseImage, baseWidth: item.baseWidth, baseHeight: item.baseHeight, annotations: item.annotations || [] }]
-              : []
-          };
-        })
-      }));
-    };
-
     const loadProjects = async () => {
       if (typeof window === 'undefined') { setIsProjectsLoaded(true); return; }
       try {
@@ -628,6 +635,7 @@ export default function App() {
   }, [projects, isProjectsLoaded]);
 
   useEffect(() => { const key = localStorage.getItem('gemini_api_key'); if (key) setApiKeyInput(key); }, []);
+  useEffect(() => { if (isGlobalExportOpen) setSelectedExportProjectIds(projects.map(p => p.id)); }, [isGlobalExportOpen, projects]);
 
   // Clear undo history on project change
   useEffect(() => { setUndoHistory([]); }, [activeProjectId]);
@@ -675,6 +683,110 @@ export default function App() {
       await pptx.writeFile({ fileName: `${project.title}_export.pptx` });
       setIsExportSettingsOpen(false);
     } catch (error) { console.error("PPTX Export Error:", error); alert("PPTXの書き出しに失敗しました。"); } finally { setIsExportingPPTX(false); }
+  };
+
+  const saveJsonFile = async (dataObj, fileName) => {
+    const json = JSON.stringify(dataObj, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const file = new File([blob], fileName, { type: 'application/json' });
+    const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+    const isIPad = /iPad/.test(ua) || (/Macintosh/.test(ua) && typeof navigator !== 'undefined' && navigator.maxTouchPoints > 1);
+    if (isIPad && navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: fileName, text: 'JSONを保存または共有します。' });
+        return;
+      } catch (e) {
+        if (e?.name !== 'AbortError') console.warn('iPad share failed. fallback to download.', e);
+      }
+    }
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const sanitizeFileName = (name) => (name || 'export').replace(/[\\/:*?"<>|]/g, '_');
+
+  const handleProjectExport = async () => {
+    const project = projects.find(p => p.id === activeProjectId);
+    if (!project) return;
+    await saveJsonFile({ type: 'single-project', exportedAt: new Date().toISOString(), project }, `${sanitizeFileName(project.title)}_project.json`);
+  };
+
+  const handleProjectImportFile = async (file) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const importedProject = parsed?.project;
+      if (!importedProject || !Array.isArray(importedProject.items)) throw new Error('invalid');
+      const normalized = normalizeProjects([importedProject])[0];
+      setProjects(prev => prev.map(p => p.id === activeProjectId ? { ...p, ...normalized, id: p.id, title: p.title } : p));
+      setUndoHistory([]);
+      alert('プロジェクト内容をインポートデータで上書きしました。');
+    } catch (e) {
+      console.error(e);
+      alert('プロジェクトインポートに失敗しました。JSON形式を確認してください。');
+    }
+  };
+
+  const handleGlobalExport = async () => {
+    const selected = projects.filter(p => selectedExportProjectIds.includes(p.id));
+    if (selected.length === 0) {
+      alert('エクスポートするプロジェクトを選択してください。');
+      return;
+    }
+    await saveJsonFile({ type: 'project-bundle', exportedAt: new Date().toISOString(), projects: selected }, `report_projects_bundle_${new Date().toISOString().slice(0, 10)}.json`);
+    setIsGlobalExportOpen(false);
+  };
+
+  const mergeImportedProjects = (incomingProjects, mode) => {
+    const normalizedIncoming = normalizeProjects(incomingProjects);
+    if (mode === 'overwrite') {
+      setProjects(normalizedIncoming);
+      setActiveProjectId(normalizedIncoming[0]?.id || null);
+      return;
+    }
+    setProjects(prev => {
+      const existingIds = new Set(prev.map(p => p.id));
+      const deduped = normalizedIncoming.map(p => existingIds.has(p.id) ? { ...p, id: Date.now().toString() + Math.random().toString(36).slice(2, 7) } : p);
+      return [...prev, ...deduped];
+    });
+  };
+
+  const handleGlobalImportFile = async (file) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const importedProjects = Array.isArray(parsed?.projects) ? parsed.projects : (parsed?.project ? [parsed.project] : []);
+      if (importedProjects.length === 0) throw new Error('invalid');
+      mergeImportedProjects(importedProjects, globalImportMode);
+      setIsGlobalImportOpen(false);
+      alert(globalImportMode === 'overwrite' ? 'インポートしたプロジェクトで全体を上書きしました。' : 'プロジェクトを追加インポートしました。');
+    } catch (e) {
+      console.error(e);
+      alert('全体インポートに失敗しました。JSON形式を確認してください。');
+    }
+  };
+
+  const handleCopyLoopTable = async () => {
+    const project = projects.find(p => p.id === activeProjectId);
+    if (!project) return;
+    const rows = [['No', 'メモ', '画像枚数']];
+    project.items.forEach((item, idx) => rows.push([String(idx + 1), (item.memo || '').replace(/\r?\n/g, ' / '), String((item.images || []).length)]));
+    const tsv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join('\t')).join('\n');
+    try {
+      await navigator.clipboard.writeText(tsv);
+      alert('Microsoft Loop の表に貼り付け可能な形式をコピーしました。');
+    } catch (e) {
+      console.error(e);
+      alert('コピーに失敗しました。');
+    }
   };
 
   // --- Sort Functions (Unified for DnD) ---
@@ -854,6 +966,12 @@ export default function App() {
         <header className="mb-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div><h1 className="text-3xl font-bold text-gray-900">評価レポート</h1><p className="text-gray-500 mt-1">プロジェクトを選択するか、新しく作成してください</p></div>
           <div className="flex items-center gap-3">
+            <button onClick={() => setIsGlobalExportOpen(true)} disabled={projects.length === 0} className="flex items-center gap-2 bg-emerald-100 text-emerald-700 px-4 py-3 rounded-xl hover:bg-emerald-200 shadow-sm border border-emerald-200 transition disabled:opacity-50">
+              <Download size={20} /> <span className="font-semibold hidden sm:inline">全体エクスポート</span>
+            </button>
+            <button onClick={() => setIsGlobalImportOpen(true)} className="flex items-center gap-2 bg-indigo-100 text-indigo-700 px-4 py-3 rounded-xl hover:bg-indigo-200 shadow-sm border border-indigo-200 transition">
+              <Upload size={20} /> <span className="font-semibold hidden sm:inline">全体インポート</span>
+            </button>
             <button onClick={() => setIsSettingsOpen(prev => !prev)} className="flex items-center gap-2 bg-white text-gray-700 px-4 py-3 rounded-xl hover:bg-gray-100 shadow-sm border border-gray-200 transition">
               <Settings size={20} /> <span className="font-semibold hidden sm:inline">設定</span>
             </button>
@@ -914,6 +1032,49 @@ export default function App() {
             </div>
           </div>
         )}
+        {isGlobalExportOpen && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl">
+              <h2 className="text-xl font-bold mb-2 text-gray-800">全体エクスポート</h2>
+              <p className="text-sm text-gray-500 mb-4">エクスポートするプロジェクトを選択してください（JSON）。</p>
+              <div className="max-h-64 overflow-y-auto border border-gray-200 rounded-xl divide-y">
+                {projects.map(p => (
+                  <label key={p.id} className="flex items-center justify-between px-4 py-3 gap-3 hover:bg-gray-50">
+                    <span className="font-medium text-gray-700 line-clamp-1">{p.title}</span>
+                    <input type="checkbox" checked={selectedExportProjectIds.includes(p.id)} onChange={(e) => setSelectedExportProjectIds(prev => e.target.checked ? [...prev, p.id] : prev.filter(id => id !== p.id))} />
+                  </label>
+                ))}
+              </div>
+              <div className="flex justify-end gap-3 mt-5">
+                <button onClick={() => setIsGlobalExportOpen(false)} className="px-5 py-2.5 rounded-xl text-gray-600 hover:bg-gray-100 font-medium">キャンセル</button>
+                <button onClick={handleGlobalExport} className="px-5 py-2.5 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 font-medium">JSONを書き出す</button>
+              </div>
+            </div>
+          </div>
+        )}
+        {isGlobalImportOpen && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl">
+              <h2 className="text-xl font-bold mb-2 text-gray-800">全体インポート</h2>
+              <p className="text-sm text-gray-500 mb-4">インポート時の反映方法を選択してJSONを読み込んでください。</p>
+              <div className="space-y-2 mb-5">
+                <label className="flex items-center gap-3 border rounded-xl p-3">
+                  <input type="radio" name="importMode" checked={globalImportMode === 'append'} onChange={() => setGlobalImportMode('append')} />
+                  <div><div className="font-bold text-gray-800">追加</div><div className="text-xs text-gray-500">既存プロジェクトを残して追加します。</div></div>
+                </label>
+                <label className="flex items-center gap-3 border rounded-xl p-3">
+                  <input type="radio" name="importMode" checked={globalImportMode === 'overwrite'} onChange={() => setGlobalImportMode('overwrite')} />
+                  <div><div className="font-bold text-gray-800">上書き</div><div className="text-xs text-gray-500">既存プロジェクトを全て置き換えます。</div></div>
+                </label>
+              </div>
+              <input ref={globalImportInputRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => { handleGlobalImportFile(e.target.files?.[0]); e.target.value = ''; }} />
+              <div className="flex justify-end gap-3">
+                <button onClick={() => setIsGlobalImportOpen(false)} className="px-5 py-2.5 rounded-xl text-gray-600 hover:bg-gray-100 font-medium">キャンセル</button>
+                <button onClick={() => globalImportInputRef.current?.click()} className="px-5 py-2.5 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 font-medium">JSONを選択</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -935,12 +1096,22 @@ export default function App() {
             )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <button onClick={handleProjectExport} className="flex items-center gap-2 bg-emerald-100 text-emerald-700 px-4 py-2 rounded-lg font-bold hover:bg-emerald-200">
+              <Download size={20} /> <span className="hidden sm:inline">プロジェクトJSON</span>
+            </button>
+            <button onClick={() => projectImportInputRef.current?.click()} className="flex items-center gap-2 bg-indigo-100 text-indigo-700 px-4 py-2 rounded-lg font-bold hover:bg-indigo-200">
+              <Upload size={20} /> <span className="hidden sm:inline">プロジェクト読込(上書き)</span>
+            </button>
+            <button onClick={handleCopyLoopTable} className="flex items-center gap-2 bg-teal-100 text-teal-700 px-4 py-2 rounded-lg font-bold hover:bg-teal-200">
+              <Copy size={20} /> <span className="hidden sm:inline">Loop表コピー</span>
+            </button>
             <button onClick={() => setIsExportSettingsOpen(true)} className="flex items-center gap-2 bg-orange-100 text-orange-700 px-4 py-2 rounded-lg font-bold hover:bg-orange-200">
               <Presentation size={20} /> <span className="hidden sm:inline">PPTX出力</span>
             </button>
             <button onClick={() => window.print()} className="flex items-center gap-2 bg-gray-100 text-gray-700 px-4 py-2 rounded-lg font-medium hover:bg-gray-200">
               <Printer size={20} /> <span className="hidden sm:inline">印刷</span>
             </button>
+            <input ref={projectImportInputRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => { handleProjectImportFile(e.target.files?.[0]); e.target.value = ''; }} />
           </div>
         </header>
 
