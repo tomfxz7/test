@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.3.1';
+const APP_VERSION = 'v1.3.2';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -942,15 +942,23 @@ export default function App() {
       }
       const blob = await imageSrcToPngBlob(src);
       await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-      alert('画像をコピーしました。');
     } catch (e) {
       console.error(e);
       try {
         await navigator.clipboard.writeText(src);
-        alert('画像URLをコピーしました（画像本体コピーが使えない環境です）。');
       } catch {
         alert('画像コピーに失敗しました。');
       }
+    }
+  };
+
+  const copyMemoText = async (memoText) => {
+    if (!memoText) return;
+    try {
+      await navigator.clipboard.writeText(memoText);
+    } catch (e) {
+      console.error(e);
+      alert('メモのコピーに失敗しました。');
     }
   };
 
@@ -1158,6 +1166,16 @@ export default function App() {
                         <span className="font-bold text-gray-700">No. {index + 1}</span>
                       </div>
                       <div className="flex items-center gap-2 print:hidden pointer-events-auto">
+                        {item.memo && (
+                          <button
+                            type="button"
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={(e) => { e.stopPropagation(); copyMemoText(item.memo); }}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded-lg hover:bg-emerald-100 transition font-bold text-sm"
+                          >
+                            <Copy size={16} /> メモコピー
+                          </button>
+                        )}
                         <button 
                           type="button"
                           onPointerDown={(e) => e.stopPropagation()}
@@ -1512,14 +1530,12 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
       if (!src) return;
       const pngBlob = await imageSrcToPngBlob(src);
       await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })]);
-      alert('画像をコピーしました。');
     } catch (e) {
       console.error(e);
       try {
         const src = img?.baseImage?.src;
         if (!src) throw new Error('no src');
         await navigator.clipboard.writeText(src);
-        alert('画像URLをコピーしました（画像本体コピーが使えない環境です）。');
       } catch {
         alert('画像コピーに失敗しました。');
       }
