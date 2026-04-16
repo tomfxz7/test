@@ -5,7 +5,7 @@ import {
   Undo, Trash2, Save, ChevronLeft, Printer, 
   Droplet, FileText, Maximize, Minimize, MousePointer2, Eraser,
   Scaling, Sparkles, Minus, Lasso, ScanText, Loader2, Hand, PenLine, Settings,
-  Download, Upload, Presentation, Copy, ClipboardPaste, X, RefreshCw, Link, Unlink, LayoutTemplate, ChevronDown, ChevronUp, GripVertical, Edit
+  Download, Upload, Presentation, Copy, ClipboardPaste, X, RefreshCw, Link, Unlink, LayoutTemplate, ChevronDown, ChevronUp, GripVertical, Edit, Redo2
 } from 'lucide-react';
 
 // --- Constants & Types ---
@@ -16,6 +16,50 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
+const APP_VERSION = 'v1.3.1';
+// NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
+const APP_DB_NAME = 'eval_report_db';
+const APP_DB_VERSION = 1;
+const APP_DB_STORE = 'app_data';
+const PROJECTS_KEY = 'eval_report_projects';
+const normalizeProjects = (rawProjects) => {
+  if (!Array.isArray(rawProjects)) return [];
+  return rawProjects.map(p => ({
+    ...p,
+    id: p.id || Date.now().toString() + Math.random().toString(36).slice(2, 7),
+    createdAt: p.createdAt || new Date(),
+    items: (p.items || []).map(item => {
+      if (item.images) return item;
+      return {
+        ...item,
+        images: item.baseImage
+          ? [{ id: 'img_legacy_' + item.id, image: item.image, baseImage: item.baseImage, baseWidth: item.baseWidth, baseHeight: item.baseHeight, annotations: item.annotations || [] }]
+          : []
+      };
+    })
+  }));
+};
+const imageSrcToPngBlob = async (src) => {
+  const img = new Image();
+  img.decoding = 'async';
+  img.crossOrigin = 'anonymous';
+  img.src = src;
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = reject;
+  });
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth || img.width;
+  canvas.height = img.naturalHeight || img.height;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+  return await new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error('toBlob failed'));
+    }, 'image/png');
+  });
+};
 
 // オフスクリーンキャンバス
 let offCanvas = null;
@@ -320,15 +364,22 @@ const calculateTemplateLayout = (template, images) => {
 
 // API Call
 const callGeminiAPI = async (payload, customKey) => {
-  const apiKey = ""; 
-  const finalApiKey = customKey || apiKey;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${finalApiKey}`;
+  const apiKey = "";
+  const finalApiKey = (customKey || apiKey || '').trim();
+  if (!finalApiKey) throw new Error('Gemini APIキーが未設定です。設定画面からAPIキーを保存してください。');
+  const modelName = 'gemini-2.5-flash';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${finalApiKey}`;
   const retries = 5;
   for (let i = 0; i < retries; i++) {
     try {
       const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-      if (response.ok) return await response.json();
-      if (i === retries - 1) throw new Error(`API Error ${response.status}: ${await response.text()}`);
+      const text = await response.text();
+      const data = text ? JSON.parse(text) : {};
+      if (response.ok) return data;
+      if (i === retries - 1) {
+        const apiMessage = data?.error?.message || text || 'Unknown Gemini API error';
+        throw new Error(`API Error ${response.status}: ${apiMessage}`);
+      }
     } catch (e) { if (i === retries - 1) throw e; }
     await new Promise(res => setTimeout(res, Math.pow(2, i) * 1000));
   }
@@ -342,6 +393,46 @@ const loadPptxGenJS = async () => {
     script.onload = () => resolve(window.PptxGenJS);
     script.onerror = reject;
     document.head.appendChild(script);
+  });
+};
+
+const openAppDB = () => {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') {
+      reject(new Error('IndexedDB is not supported in this environment.'));
+      return;
+    }
+    const request = indexedDB.open(APP_DB_NAME, APP_DB_VERSION);
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains(APP_DB_STORE)) db.createObjectStore(APP_DB_STORE);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('Failed to open IndexedDB.'));
+  });
+};
+
+const idbGet = async (key) => {
+  const db = await openAppDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(APP_DB_STORE, 'readonly');
+    const store = tx.objectStore(APP_DB_STORE);
+    const request = store.get(key);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('IndexedDB read failed.'));
+    tx.oncomplete = () => db.close();
+    tx.onabort = tx.onerror = () => db.close();
+  });
+};
+
+const idbSet = async (key, value) => {
+  const db = await openAppDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(APP_DB_STORE, 'readwrite');
+    const store = tx.objectStore(APP_DB_STORE);
+    store.put(value, key);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onabort = tx.onerror = () => { db.close(); reject(tx.error || new Error('IndexedDB write failed.')); };
   });
 };
 
@@ -485,24 +576,8 @@ const LayoutRect = ({ rect, onChange, onDragStart, label, bgImg, isMemo, contain
 
 // --- Main App Component ---
 export default function App() {
-  const [projects, setProjects] = useState(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem('eval_report_projects');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          return parsed.map(p => ({
-            ...p,
-            items: p.items.map(item => {
-              if (item.images) return item;
-              return { ...item, images: item.baseImage ? [{ id: 'img_legacy_' + item.id, image: item.image, baseImage: item.baseImage, baseWidth: item.baseWidth, baseHeight: item.baseHeight, annotations: item.annotations || [] }] : [] };
-            })
-          }));
-        }
-      } catch (e) { console.error(e); }
-    }
-    return [];
-  });
+  const [projects, setProjects] = useState([]);
+  const [isProjectsLoaded, setIsProjectsLoaded] = useState(false);
 
   const [currentView, setCurrentView] = useState('home');
   const [activeProjectId, setActiveProjectId] = useState(null);
@@ -510,22 +585,78 @@ export default function App() {
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
   const [newProjectTitle, setNewProjectTitle] = useState('');
   const [apiKeyInput, setApiKeyInput] = useState('');
+  const [isSettingsOpen, setIsSettingsOpen] = useState(true);
   
   const [undoHistory, setUndoHistory] = useState([]); // Project Item undo history
   const [isExportSettingsOpen, setIsExportSettingsOpen] = useState(false);
   const [pptxSettings, setPptxSettings] = useState({ showPageNumber: true });
   const [isExportingPPTX, setIsExportingPPTX] = useState(false);
+  const [isGlobalExportOpen, setIsGlobalExportOpen] = useState(false);
+  const [isGlobalImportOpen, setIsGlobalImportOpen] = useState(false);
+  const [selectedExportProjectIds, setSelectedExportProjectIds] = useState([]);
+  const [globalImportMode, setGlobalImportMode] = useState('append');
+  const [listImageContextMenu, setListImageContextMenu] = useState(null);
+  const listLongPressTimerRef = useRef(null);
+  const projectImportInputRef = useRef(null);
+  const globalImportInputRef = useRef(null);
 
   // --- Drag & Drop state ---
   const [draggedIndex, setDraggedIndex] = useState(null);
-  const [dragOverIndex, setDragOverIndex] = useState(null);
+  const [dropIndex, setDropIndex] = useState(null);
+  const [dragStartPos, setDragStartPos] = useState(null);
+  const [dragCurrentPos, setDragCurrentPos] = useState(null);
+  const [dragStartScrollY, setDragStartScrollY] = useState(0);
+  const [dragCurrentScrollY, setDragCurrentScrollY] = useState(0);
+  const [hasDragMovement, setHasDragMovement] = useState(false);
+  const activeDragPointerIdRef = useRef(null);
+  const lastDragPointerYRef = useRef(null);
 
   useEffect(() => {
-    try { localStorage.setItem('eval_report_projects', JSON.stringify(projects)); } 
-    catch (e) { if (e.name === 'QuotaExceededError') alert('保存容量の上限に達しました。不要なプロジェクトや画像を削除してください。'); }
-  }, [projects]);
+    const loadProjects = async () => {
+      if (typeof window === 'undefined') { setIsProjectsLoaded(true); return; }
+      try {
+        const savedFromIDB = await idbGet(PROJECTS_KEY);
+        if (savedFromIDB) {
+          setProjects(normalizeProjects(savedFromIDB));
+          setIsProjectsLoaded(true);
+          return;
+        }
+
+        // LocalStorage からの初回移行
+        const legacy = localStorage.getItem(PROJECTS_KEY);
+        if (legacy) {
+          const parsedLegacy = JSON.parse(legacy);
+          const normalizedLegacy = normalizeProjects(parsedLegacy);
+          setProjects(normalizedLegacy);
+          await idbSet(PROJECTS_KEY, normalizedLegacy);
+          localStorage.removeItem(PROJECTS_KEY);
+        }
+      } catch (e) {
+        console.error(e);
+        alert('データの読み込みに失敗しました。ブラウザのストレージ設定をご確認ください。');
+      } finally {
+        setIsProjectsLoaded(true);
+      }
+    };
+
+    loadProjects();
+  }, []);
+
+  useEffect(() => {
+    if (!isProjectsLoaded) return;
+    const saveProjects = async () => {
+      try {
+        await idbSet(PROJECTS_KEY, projects);
+      } catch (e) {
+        console.error(e);
+        alert('保存容量の上限に達したか、保存に失敗しました。不要なプロジェクトや画像を削除してください。');
+      }
+    };
+    saveProjects();
+  }, [projects, isProjectsLoaded]);
 
   useEffect(() => { const key = localStorage.getItem('gemini_api_key'); if (key) setApiKeyInput(key); }, []);
+  useEffect(() => { if (isGlobalExportOpen) setSelectedExportProjectIds(projects.map(p => p.id)); }, [isGlobalExportOpen, projects]);
 
   // Clear undo history on project change
   useEffect(() => { setUndoHistory([]); }, [activeProjectId]);
@@ -575,42 +706,209 @@ export default function App() {
     } catch (error) { console.error("PPTX Export Error:", error); alert("PPTXの書き出しに失敗しました。"); } finally { setIsExportingPPTX(false); }
   };
 
+  const saveJsonFile = async (dataObj, fileName) => {
+    const json = JSON.stringify(dataObj, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const file = new File([blob], fileName, { type: 'application/json' });
+    const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+    const isIPad = /iPad/.test(ua) || (/Macintosh/.test(ua) && typeof navigator !== 'undefined' && navigator.maxTouchPoints > 1);
+    if (isIPad && navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: fileName, text: 'JSONを保存または共有します。' });
+        return;
+      } catch (e) {
+        if (e?.name !== 'AbortError') console.warn('iPad share failed. fallback to download.', e);
+      }
+    }
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const sanitizeFileName = (name) => (name || 'export').replace(/[\\/:*?"<>|]/g, '_');
+
+  const handleProjectExport = async () => {
+    const project = projects.find(p => p.id === activeProjectId);
+    if (!project) return;
+    await saveJsonFile({ type: 'single-project', exportedAt: new Date().toISOString(), project }, `${sanitizeFileName(project.title)}_project.json`);
+  };
+
+  const handleProjectImportFile = async (file) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const importedProject = parsed?.project;
+      if (!importedProject || !Array.isArray(importedProject.items)) throw new Error('invalid');
+      const normalized = normalizeProjects([importedProject])[0];
+      setProjects(prev => prev.map(p => p.id === activeProjectId ? { ...p, ...normalized, id: p.id, title: p.title } : p));
+      setUndoHistory([]);
+      alert('プロジェクト内容をインポートデータで上書きしました。');
+    } catch (e) {
+      console.error(e);
+      alert('プロジェクトインポートに失敗しました。JSON形式を確認してください。');
+    }
+  };
+
+  const handleGlobalExport = async () => {
+    const selected = projects.filter(p => selectedExportProjectIds.includes(p.id));
+    if (selected.length === 0) {
+      alert('エクスポートするプロジェクトを選択してください。');
+      return;
+    }
+    await saveJsonFile({ type: 'project-bundle', exportedAt: new Date().toISOString(), projects: selected }, `report_projects_bundle_${new Date().toISOString().slice(0, 10)}.json`);
+    setIsGlobalExportOpen(false);
+  };
+
+  const mergeImportedProjects = (incomingProjects, mode) => {
+    const normalizedIncoming = normalizeProjects(incomingProjects);
+    if (mode === 'overwrite') {
+      setProjects(normalizedIncoming);
+      setActiveProjectId(normalizedIncoming[0]?.id || null);
+      return;
+    }
+    setProjects(prev => {
+      const existingIds = new Set(prev.map(p => p.id));
+      const deduped = normalizedIncoming.map(p => existingIds.has(p.id) ? { ...p, id: Date.now().toString() + Math.random().toString(36).slice(2, 7) } : p);
+      return [...prev, ...deduped];
+    });
+  };
+
+  const handleGlobalImportFile = async (file) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const importedProjects = Array.isArray(parsed?.projects) ? parsed.projects : (parsed?.project ? [parsed.project] : []);
+      if (importedProjects.length === 0) throw new Error('invalid');
+      mergeImportedProjects(importedProjects, globalImportMode);
+      setIsGlobalImportOpen(false);
+      alert(globalImportMode === 'overwrite' ? 'インポートしたプロジェクトで全体を上書きしました。' : 'プロジェクトを追加インポートしました。');
+    } catch (e) {
+      console.error(e);
+      alert('全体インポートに失敗しました。JSON形式を確認してください。');
+    }
+  };
+
   // --- Sort Functions (Unified for DnD) ---
   const handleDragStart = (idx, e) => {
     if (e) {
       e.preventDefault();
       e.stopPropagation();
+      if (e.currentTarget?.setPointerCapture) e.currentTarget.setPointerCapture(e.pointerId);
     }
     setDraggedIndex(idx);
+    setDropIndex(idx);
+    setDragStartPos({ x: e.clientX, y: e.clientY });
+    setDragCurrentPos({ x: e.clientX, y: e.clientY });
+    setDragStartScrollY(window.scrollY);
+    setDragCurrentScrollY(window.scrollY);
+    setHasDragMovement(false);
+    activeDragPointerIdRef.current = e.pointerId;
+    lastDragPointerYRef.current = e.clientY;
   };
-  const handleDragEnter = (targetIdx) => {
-    if (draggedIndex === null || draggedIndex === targetIdx) return;
-    setDragOverIndex(targetIdx);
+  const calculateDropIndex = useCallback((clientY) => {
+    if (draggedIndex === null) return null;
+    const cards = Array.from(document.querySelectorAll('[data-item-index]'))
+      .map(el => ({ el, idx: Number(el.getAttribute('data-item-index')) }))
+      .filter(entry => !Number.isNaN(entry.idx) && entry.idx !== draggedIndex)
+      .sort((a, b) => a.idx - b.idx);
+    if (cards.length === 0) return 0;
+    let insertion = cards.length;
+    for (let i = 0; i < cards.length; i++) {
+      const rect = cards[i].el.getBoundingClientRect();
+      const mid = rect.top + rect.height / 2;
+      if (clientY < mid) {
+        insertion = i;
+        break;
+      }
+    }
+    return insertion;
+  }, [draggedIndex]);
+
+  const reorderAtDrop = useCallback((fromIdx, toIdxWithoutDragged) => {
     setProjects(prev => prev.map(p => {
       if (p.id !== activeProjectId) return p;
       const newItems = [...p.items];
-      const draggedItem = newItems[draggedIndex];
-      newItems.splice(draggedIndex, 1);
-      newItems.splice(targetIdx, 0, draggedItem);
+      const [draggedItem] = newItems.splice(fromIdx, 1);
+      newItems.splice(toIdxWithoutDragged, 0, draggedItem);
       return { ...p, items: newItems };
     }));
-    setDraggedIndex(targetIdx);
-  };
+  }, [activeProjectId]);
+
   const handleDragEnd = useCallback(() => {
+    if (draggedIndex !== null && dropIndex !== null && hasDragMovement && draggedIndex !== dropIndex) {
+      saveToUndo();
+      reorderAtDrop(draggedIndex, dropIndex);
+    }
     setDraggedIndex(null);
-    setDragOverIndex(null);
-  }, []);
+    setDropIndex(null);
+    setDragStartPos(null);
+    setDragCurrentPos(null);
+    setDragStartScrollY(0);
+    setDragCurrentScrollY(0);
+    setHasDragMovement(false);
+    activeDragPointerIdRef.current = null;
+    lastDragPointerYRef.current = null;
+  }, [draggedIndex, dropIndex, hasDragMovement, reorderAtDrop, saveToUndo]);
 
   useEffect(() => {
     if (draggedIndex === null) return;
-    const stopDrag = () => handleDragEnd();
+    document.body.style.userSelect = 'none';
+    document.body.style.touchAction = 'none';
+    const stopDrag = (e) => {
+      if (activeDragPointerIdRef.current !== null && e?.pointerId !== undefined && e.pointerId !== activeDragPointerIdRef.current) return;
+      handleDragEnd();
+    };
+    const trackDrag = (e) => {
+      if (activeDragPointerIdRef.current !== null && e.pointerId !== activeDragPointerIdRef.current) return;
+      setDragCurrentPos({ x: e.clientX, y: e.clientY });
+      setDragCurrentScrollY(window.scrollY);
+      lastDragPointerYRef.current = e.clientY;
+      if (dragStartPos) {
+        const moved = Math.hypot(e.clientX - dragStartPos.x, e.clientY - dragStartPos.y) > 6;
+        if (moved && !hasDragMovement) setHasDragMovement(true);
+      }
+      const nextDropIndex = calculateDropIndex(e.clientY);
+      if (nextDropIndex !== null) setDropIndex(nextDropIndex);
+    };
+    const autoScrollInterval = setInterval(() => {
+      if (lastDragPointerYRef.current === null) return;
+      const y = lastDragPointerYRef.current;
+      const edge = 90;
+      const maxSpeed = 9; // px/tick
+      let scrollDelta = 0;
+      if (y < edge) {
+        const ratio = (edge - y) / edge;
+        scrollDelta = -Math.max(1, Math.round(maxSpeed * ratio));
+      } else if (y > window.innerHeight - edge) {
+        const ratio = (y - (window.innerHeight - edge)) / edge;
+        scrollDelta = Math.max(1, Math.round(maxSpeed * ratio));
+      }
+      if (scrollDelta !== 0) {
+        window.scrollBy({ top: scrollDelta, behavior: 'auto' });
+        setDragCurrentScrollY(window.scrollY);
+        const nextDropIndex = calculateDropIndex(y);
+        if (nextDropIndex !== null) setDropIndex(nextDropIndex);
+      }
+    }, 16);
+    window.addEventListener('pointermove', trackDrag, { passive: true });
     window.addEventListener('pointerup', stopDrag);
     window.addEventListener('pointercancel', stopDrag);
     return () => {
+      clearInterval(autoScrollInterval);
+      document.body.style.userSelect = '';
+      document.body.style.touchAction = '';
+      window.removeEventListener('pointermove', trackDrag);
       window.removeEventListener('pointerup', stopDrag);
       window.removeEventListener('pointercancel', stopDrag);
     };
-  }, [draggedIndex, handleDragEnd]);
+  }, [draggedIndex, handleDragEnd, calculateDropIndex, dragStartPos, hasDragMovement]);
 
   // --- Delete Item Function (Reliable) ---
   const deleteItem = (itemId) => {
@@ -623,17 +921,100 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    const closeListImageMenu = (e) => {
+      if (e.target.closest('.list-image-context-menu')) return;
+      setListImageContextMenu(null);
+    };
+    window.addEventListener('pointerdown', closeListImageMenu);
+    return () => {
+      window.removeEventListener('pointerdown', closeListImageMenu);
+      if (listLongPressTimerRef.current) clearTimeout(listLongPressTimerRef.current);
+    };
+  }, []);
+
+  const copyListImage = async (src) => {
+    try {
+      if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+        alert('このブラウザでは画像コピーに対応していません。');
+        return;
+      }
+      const blob = await imageSrcToPngBlob(src);
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      alert('画像をコピーしました。');
+    } catch (e) {
+      console.error(e);
+      try {
+        await navigator.clipboard.writeText(src);
+        alert('画像URLをコピーしました（画像本体コピーが使えない環境です）。');
+      } catch {
+        alert('画像コピーに失敗しました。');
+      }
+    }
+  };
+
+  const saveListImage = (src) => {
+    const link = document.createElement('a');
+    link.href = src;
+    link.download = `report-list-image-${Date.now()}.jpg`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  if (!isProjectsLoaded) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center text-gray-500 font-bold">
+        データを読み込み中...
+      </div>
+    );
+  }
+
   if (currentView === 'home') {
     return (
       <div className="min-h-screen bg-gray-50 p-6 md:p-10 font-sans select-none">
         <header className="mb-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div><h1 className="text-3xl font-bold text-gray-900">評価レポート</h1><p className="text-gray-500 mt-1">プロジェクトを選択するか、新しく作成してください</p></div>
           <div className="flex items-center gap-3">
+            <button onClick={() => setIsGlobalExportOpen(true)} disabled={projects.length === 0} className="flex items-center gap-2 bg-emerald-100 text-emerald-700 px-4 py-3 rounded-xl hover:bg-emerald-200 shadow-sm border border-emerald-200 transition disabled:opacity-50">
+              <Download size={20} /> <span className="font-semibold hidden sm:inline">全体エクスポート</span>
+            </button>
+            <button onClick={() => setIsGlobalImportOpen(true)} className="flex items-center gap-2 bg-indigo-100 text-indigo-700 px-4 py-3 rounded-xl hover:bg-indigo-200 shadow-sm border border-indigo-200 transition">
+              <Upload size={20} /> <span className="font-semibold hidden sm:inline">全体インポート</span>
+            </button>
+            <button onClick={() => setIsSettingsOpen(prev => !prev)} className="flex items-center gap-2 bg-white text-gray-700 px-4 py-3 rounded-xl hover:bg-gray-100 shadow-sm border border-gray-200 transition">
+              <Settings size={20} /> <span className="font-semibold hidden sm:inline">設定</span>
+            </button>
             <button onClick={() => { setIsProjectModalOpen(true); setNewProjectTitle(''); }} className="flex items-center gap-2 bg-blue-600 text-white px-5 py-3 rounded-xl hover:bg-blue-700 shadow-md transition">
               <Plus size={24} /> <span className="font-semibold text-lg hidden sm:inline">新規プロジェクト</span>
             </button>
           </div>
         </header>
+        {isSettingsOpen && (
+          <section className="mb-8 bg-white border border-gray-200 rounded-2xl p-5 shadow-sm">
+            <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-2"><Settings size={18} /> Gemini設定</h2>
+            <p className="text-sm text-gray-500 mb-4">図形認識・OCR機能では Gemini API を使用します。APIキーを入力して保存してください。</p>
+            <div className="flex flex-col md:flex-row gap-3">
+              <input
+                type="password"
+                value={apiKeyInput}
+                onChange={(e) => setApiKeyInput(e.target.value)}
+                placeholder="Gemini APIキー"
+                className="flex-1 px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+              />
+              <button
+                onClick={() => {
+                  localStorage.setItem('gemini_api_key', apiKeyInput.trim());
+                  alert('Gemini APIキーを保存しました。');
+                }}
+                className="px-5 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold"
+              >
+                保存
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mt-3">アプリバージョン: <span className="font-semibold text-gray-700">{APP_VERSION}</span></p>
+          </section>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {projects.length === 0 ? (
             <div className="col-span-full flex flex-col items-center justify-center py-20 text-gray-400"><FolderOpen size={64} className="mb-4" /> <p className="text-xl">プロジェクトがありません</p></div>
@@ -661,6 +1042,49 @@ export default function App() {
             </div>
           </div>
         )}
+        {isGlobalExportOpen && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl">
+              <h2 className="text-xl font-bold mb-2 text-gray-800">全体エクスポート</h2>
+              <p className="text-sm text-gray-500 mb-4">エクスポートするプロジェクトを選択してください（JSON）。</p>
+              <div className="max-h-64 overflow-y-auto border border-gray-200 rounded-xl divide-y">
+                {projects.map(p => (
+                  <label key={p.id} className="flex items-center justify-between px-4 py-3 gap-3 hover:bg-gray-50">
+                    <span className="font-medium text-gray-700 line-clamp-1">{p.title}</span>
+                    <input type="checkbox" checked={selectedExportProjectIds.includes(p.id)} onChange={(e) => setSelectedExportProjectIds(prev => e.target.checked ? [...prev, p.id] : prev.filter(id => id !== p.id))} />
+                  </label>
+                ))}
+              </div>
+              <div className="flex justify-end gap-3 mt-5">
+                <button onClick={() => setIsGlobalExportOpen(false)} className="px-5 py-2.5 rounded-xl text-gray-600 hover:bg-gray-100 font-medium">キャンセル</button>
+                <button onClick={handleGlobalExport} className="px-5 py-2.5 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 font-medium">JSONを書き出す</button>
+              </div>
+            </div>
+          </div>
+        )}
+        {isGlobalImportOpen && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl">
+              <h2 className="text-xl font-bold mb-2 text-gray-800">全体インポート</h2>
+              <p className="text-sm text-gray-500 mb-4">インポート時の反映方法を選択してJSONを読み込んでください。</p>
+              <div className="space-y-2 mb-5">
+                <label className="flex items-center gap-3 border rounded-xl p-3">
+                  <input type="radio" name="importMode" checked={globalImportMode === 'append'} onChange={() => setGlobalImportMode('append')} />
+                  <div><div className="font-bold text-gray-800">追加</div><div className="text-xs text-gray-500">既存プロジェクトを残して追加します。</div></div>
+                </label>
+                <label className="flex items-center gap-3 border rounded-xl p-3">
+                  <input type="radio" name="importMode" checked={globalImportMode === 'overwrite'} onChange={() => setGlobalImportMode('overwrite')} />
+                  <div><div className="font-bold text-gray-800">上書き</div><div className="text-xs text-gray-500">既存プロジェクトを全て置き換えます。</div></div>
+                </label>
+              </div>
+              <input ref={globalImportInputRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => { handleGlobalImportFile(e.target.files?.[0]); e.target.value = ''; }} />
+              <div className="flex justify-end gap-3">
+                <button onClick={() => setIsGlobalImportOpen(false)} className="px-5 py-2.5 rounded-xl text-gray-600 hover:bg-gray-100 font-medium">キャンセル</button>
+                <button onClick={() => globalImportInputRef.current?.click()} className="px-5 py-2.5 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 font-medium">JSONを選択</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -682,12 +1106,19 @@ export default function App() {
             )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <button onClick={handleProjectExport} className="flex items-center gap-2 bg-emerald-100 text-emerald-700 px-4 py-2 rounded-lg font-bold hover:bg-emerald-200">
+              <Download size={20} /> <span className="hidden sm:inline">プロジェクトJSON</span>
+            </button>
+            <button onClick={() => projectImportInputRef.current?.click()} className="flex items-center gap-2 bg-indigo-100 text-indigo-700 px-4 py-2 rounded-lg font-bold hover:bg-indigo-200">
+              <Upload size={20} /> <span className="hidden sm:inline">プロジェクト読込(上書き)</span>
+            </button>
             <button onClick={() => setIsExportSettingsOpen(true)} className="flex items-center gap-2 bg-orange-100 text-orange-700 px-4 py-2 rounded-lg font-bold hover:bg-orange-200">
               <Presentation size={20} /> <span className="hidden sm:inline">PPTX出力</span>
             </button>
             <button onClick={() => window.print()} className="flex items-center gap-2 bg-gray-100 text-gray-700 px-4 py-2 rounded-lg font-medium hover:bg-gray-200">
               <Printer size={20} /> <span className="hidden sm:inline">印刷</span>
             </button>
+            <input ref={projectImportInputRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => { handleProjectImportFile(e.target.files?.[0]); e.target.value = ''; }} />
           </div>
         </header>
 
@@ -701,58 +1132,87 @@ export default function App() {
             {project.items.map((item, index) => {
               const images = item.images || [];
               const isDragging = draggedIndex === index;
+              const dragDx = isDragging && dragStartPos && dragCurrentPos ? dragCurrentPos.x - dragStartPos.x : 0;
+              const dragDy = isDragging && dragStartPos && dragCurrentPos ? (dragCurrentPos.y - dragStartPos.y) + (dragCurrentScrollY - dragStartScrollY) : 0;
               return (
-                <div 
-                  key={item.id} 
-                  onPointerEnter={() => {
-                    if (draggedIndex !== null) handleDragEnter(index);
-                  }}
-                  onPointerDown={(e) => {
-                    // グリップ（GripVertical）もしくはヘッダー部分を掴んだときだけドラッグ開始
-                    if (e.target.closest('.drag-handle')) {
-                       handleDragStart(index, e);
-                    }
-                  }}
-                  className={`bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden print:border-gray-300 print:shadow-none break-inside-avoid relative transition-all duration-300 ease-out group ${isDragging ? 'opacity-40 scale-[0.98] z-0 grayscale' : 'z-10'}`}
-                >
-                  <div className="bg-gray-50 px-4 py-2 border-b text-gray-500 font-medium flex justify-between items-center select-none drag-handle cursor-grab active:cursor-grabbing" style={{ touchAction: 'none' }}>
-                    <div className="flex items-center gap-3">
-                      <GripVertical size={20} className="text-gray-400" />
-                      <span className="font-bold text-gray-700">No. {index + 1}</span>
-                    </div>
-                    <div className="flex items-center gap-2 print:hidden pointer-events-auto">
-                      <button 
-                        type="button"
-                        onPointerDown={(e) => e.stopPropagation()}
-                        onClick={(e) => { e.stopPropagation(); setEditingItem(item); setCurrentView('item-editor'); }} 
-                        className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition font-bold text-sm"
-                      >
-                        <Edit size={16} /> 編集
-                      </button>
-                      <button 
-                        type="button"
-                        onPointerDown={(e) => e.stopPropagation()} // ドラッグ開始を阻止
-                        onPointerUp={(e) => e.stopPropagation()}
-                        onClick={(e) => { e.stopPropagation(); deleteItem(item.id); }} 
-                        className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition font-bold text-sm"
-                      >
-                        <Trash2 size={16} /> 削除
-                      </button>
-                    </div>
-                  </div>
-                  <div className="pointer-events-none">
-                    {images.length > 0 && (
-                      <div className={`w-full grid gap-1 bg-gray-100 border-b p-2 ${images.length === 1 ? 'grid-cols-1' : images.length === 2 ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-3'}`}>
-                        {images.map(img => (
-                          <div key={img.id} className="bg-white flex justify-center items-center p-1 rounded shadow-sm relative">
-                            <img src={img.image || img.baseImage} alt="Report Item" className="w-full h-auto max-h-[30vh] object-contain" />
-                          </div>
-                        ))}
+                <React.Fragment key={item.id}>
+                  {draggedIndex !== null && hasDragMovement && dropIndex === index && !(dropIndex === project.items.length - 1 && index === project.items.length - 1) && (
+                    <div className="h-1.5 bg-blue-500/70 rounded-full mx-2 shadow-sm" />
+                  )}
+                  <div
+                    data-item-index={index}
+                    onPointerDown={(e) => {
+                      if (e.target.closest('.drag-handle')) handleDragStart(index, e);
+                    }}
+                    className={`bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden print:border-gray-300 print:shadow-none break-inside-avoid relative group ${isDragging ? 'z-50 shadow-2xl ring-2 ring-blue-200 transition-none' : 'z-10 transition-all duration-200 ease-out'}`}
+                    style={{
+                      transform: isDragging ? `translate(${dragDx}px, ${dragDy}px) scale(1.02)` : 'translate(0, 0) scale(1)',
+                      opacity: isDragging ? 0.95 : 1,
+                      cursor: isDragging ? 'grabbing' : 'default'
+                    }}
+                  >
+                    <div className="bg-gray-50 px-4 py-2 border-b text-gray-500 font-medium flex justify-between items-center select-none drag-handle cursor-grab active:cursor-grabbing" style={{ touchAction: 'none' }}>
+                      <div className="flex items-center gap-3">
+                        <GripVertical size={20} className="text-gray-400" />
+                        <span className="font-bold text-gray-700">No. {index + 1}</span>
                       </div>
-                    )}
-                    {item.memo && <div className="p-6 text-gray-800 whitespace-pre-wrap text-base leading-relaxed line-clamp-3">{item.memo}</div>}
+                      <div className="flex items-center gap-2 print:hidden pointer-events-auto">
+                        <button 
+                          type="button"
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => { e.stopPropagation(); setEditingItem(item); setCurrentView('item-editor'); }} 
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition font-bold text-sm"
+                        >
+                          <Edit size={16} /> 編集
+                        </button>
+                        <button 
+                          type="button"
+                          onPointerDown={(e) => e.stopPropagation()} // ドラッグ開始を阻止
+                          onPointerUp={(e) => e.stopPropagation()}
+                          onClick={(e) => { e.stopPropagation(); deleteItem(item.id); }} 
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition font-bold text-sm"
+                        >
+                          <Trash2 size={16} /> 削除
+                        </button>
+                      </div>
+                    </div>
+                    <div>
+                      {images.length > 0 && (
+                        <div className={`w-full grid gap-1 bg-gray-100 border-b p-2 ${images.length === 1 ? 'grid-cols-1' : images.length === 2 ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-3'}`}>
+                          {images.map(img => (
+                            <div
+                              key={img.id}
+                              className="bg-white flex justify-center items-center p-1 rounded shadow-sm relative"
+                              onContextMenu={(e) => {
+                                e.preventDefault();
+                                const src = img.image || img.baseImage;
+                                if (!src) return;
+                                setListImageContextMenu({ src, x: e.clientX, y: e.clientY });
+                              }}
+                              onPointerDown={(e) => {
+                                if (e.pointerType !== 'touch') return;
+                                if (listLongPressTimerRef.current) clearTimeout(listLongPressTimerRef.current);
+                                const src = img.image || img.baseImage;
+                                if (!src) return;
+                                listLongPressTimerRef.current = setTimeout(() => {
+                                  setListImageContextMenu({ src, x: e.clientX, y: e.clientY });
+                                }, 550);
+                              }}
+                              onPointerUp={() => { if (listLongPressTimerRef.current) clearTimeout(listLongPressTimerRef.current); }}
+                              onPointerCancel={() => { if (listLongPressTimerRef.current) clearTimeout(listLongPressTimerRef.current); }}
+                            >
+                              <img src={img.image || img.baseImage} alt="Report Item" className="w-full h-auto max-h-[30vh] object-contain" />
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {item.memo && <div className="p-6 text-gray-800 whitespace-pre-wrap text-base leading-relaxed line-clamp-3">{item.memo}</div>}
+                    </div>
                   </div>
-                </div>
+                  {draggedIndex !== null && hasDragMovement && index === project.items.length - 1 && dropIndex === project.items.length - 1 && (
+                    <div className="h-1.5 bg-blue-500/70 rounded-full mx-2 shadow-sm" />
+                  )}
+                </React.Fragment>
               );
             })}
             {project.items.length === 0 && (
@@ -767,6 +1227,13 @@ export default function App() {
         <div className="fixed bottom-8 right-8 z-40 print:hidden">
           <button onClick={() => { setEditingItem(null); setCurrentView('item-editor'); }} className="flex items-center justify-center w-20 h-20 bg-blue-600 text-white rounded-full shadow-xl hover:bg-blue-700 hover:scale-105 transition-transform"><Plus size={40} /></button>
         </div>
+
+        {listImageContextMenu && (
+          <div className="fixed z-[90] list-image-context-menu bg-white border border-gray-200 rounded-xl shadow-2xl p-1.5 min-w-[170px]" style={{ left: Math.min(listImageContextMenu.x, (typeof window !== 'undefined' ? window.innerWidth : 1024) - 190), top: Math.min(listImageContextMenu.y, (typeof window !== 'undefined' ? window.innerHeight : 768) - 120) }}>
+            <button onClick={() => { copyListImage(listImageContextMenu.src); setListImageContextMenu(null); }} className="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-100 font-medium text-gray-700">画像をコピー</button>
+            <button onClick={() => { saveListImage(listImageContextMenu.src); setListImageContextMenu(null); }} className="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-100 font-medium text-gray-700">画像を保存</button>
+          </div>
+        )}
 
         {isExportSettingsOpen && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[80] p-4 font-sans">
@@ -820,16 +1287,32 @@ export default function App() {
 
 // --- Item Editor Component ---
 function ItemEditor({ onCancel, onSave, initialItem }) {
+  const resolveStoredImageSrc = useCallback((imgObj) => {
+    if (!imgObj) return '';
+    if (typeof imgObj.baseImage === 'string' && imgObj.baseImage.trim()) return imgObj.baseImage;
+    if (imgObj.baseImage && typeof imgObj.baseImage === 'object' && typeof imgObj.baseImage.src === 'string' && imgObj.baseImage.src.trim()) return imgObj.baseImage.src;
+    if (typeof imgObj.image === 'string' && imgObj.image.trim()) return imgObj.image;
+    if (imgObj.image && typeof imgObj.image === 'object' && typeof imgObj.image.src === 'string' && imgObj.image.src.trim()) return imgObj.image.src;
+    return '';
+  }, []);
+
   const [memo, setMemo] = useState(initialItem ? initialItem.memo : '');
   const [imagesData, setImagesData] = useState([]);
   const [activeImageId, setActiveImageId] = useState(null);
   const [layoutSettings, setLayoutSettings] = useState(initialItem?.layout || { template: 'default', memoRect: { x: 0.5, y: 1.2, w: 3.5, h: 4.0 }, customImageRects: [] });
   const [isLayoutModalOpen, setIsLayoutModalOpen] = useState(false);
+  const [isImageSourcePickerOpen, setIsImageSourcePickerOpen] = useState(false);
+  const [thumbContextMenu, setThumbContextMenu] = useState(null);
   const [showAdvancedLayout, setShowAdvancedLayout] = useState(false);
   const previewContainerRef = useRef(null);
+  const cameraInputRef = useRef(null);
+  const albumInputRef = useRef(null);
+  const longPressTimerRef = useRef(null);
+  const suppressThumbClickRef = useRef(false);
   const [baseImage, setBaseImage] = useState(null);
   const [annotations, setAnnotations] = useState([]);
   const [history, setHistory] = useState([]);
+  const [redoStack, setRedoStack] = useState([]);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const canvasRef = useRef(null); const wrapperRef = useRef(null);
   const historySnapshotRef = useRef(null);
@@ -862,6 +1345,8 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
   const activePointers = useRef(new Map()); const lastPinch = useRef(null);
   const annotationsRef = useRef(annotations); useEffect(() => { annotationsRef.current = annotations; }, [annotations]);
   const handwritingTimerRef = useRef(null); const handwritingStrokesRef = useRef([]); const [isAutoOcrLoading, setIsAutoOcrLoading] = useState(false);
+  const clipboardReadInFlightRef = useRef(false);
+  const lastPasteEventAtRef = useRef(0);
 
   useEffect(() => {
     if (initialItem && initialItem.images) {
@@ -869,16 +1354,35 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
         const loadedImages = await Promise.all(initialItem.images.map(async (img) => {
           return new Promise((resolve) => {
             const imageElement = new Image();
-            imageElement.onload = () => { resolve({ id: img.id, baseImage: { src: img.baseImage, element: imageElement, width: img.baseWidth, height: img.baseHeight }, annotations: img.annotations || [], history: [] }); };
-            imageElement.src = img.baseImage;
+            const baseSrc = resolveStoredImageSrc(img);
+            if (!baseSrc) {
+              resolve(null);
+              return;
+            }
+            imageElement.onload = () => {
+              resolve({
+                id: img.id,
+                baseImage: {
+                  src: baseSrc,
+                  element: imageElement,
+                  width: img.baseWidth || imageElement.naturalWidth,
+                  height: img.baseHeight || imageElement.naturalHeight
+                },
+                annotations: img.annotations || [],
+                history: [],
+                redoHistory: []
+              });
+            };
+            imageElement.src = baseSrc;
           });
         }));
-        setImagesData(loadedImages);
-        if (loadedImages.length > 0) { setBaseImage(loadedImages[0].baseImage); setAnnotations(loadedImages[0].annotations); setActiveImageId(loadedImages[0].id); }
+        const validImages = loadedImages.filter(Boolean);
+        setImagesData(validImages);
+        if (validImages.length > 0) { setBaseImage(validImages[0].baseImage); setAnnotations(validImages[0].annotations); setActiveImageId(validImages[0].id); setRedoStack([]); }
       };
       loadImages();
     }
-  }, [initialItem]);
+  }, [initialItem, resolveStoredImageSrc]);
 
   useEffect(() => { if (layoutSettings.template !== 'custom') { const newLayout = calculateTemplateLayout(layoutSettings.template, imagesData); setLayoutSettings(prev => ({ ...prev, memoRect: newLayout.memoRect, customImageRects: newLayout.customImageRects })); } }, [layoutSettings.template, imagesData.length]);
 
@@ -895,14 +1399,14 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
     const currentFinal = activeImageId && canvasRef.current ? captureCurrentCanvas() : null;
     setImagesData(prev => {
       let nextData = prev;
-      if (!isInitial && activeImageId) nextData = nextData.map(img => img.id === activeImageId ? { ...img, annotations: annotationsRef.current, history: history, finalImage: currentFinal } : img );
+      if (!isInitial && activeImageId) nextData = nextData.map(img => img.id === activeImageId ? { ...img, annotations: annotationsRef.current, history: history, redoHistory: redoStack, finalImage: currentFinal } : img );
       const nextImg = nextData.find(img => img.id === newId);
-      if (nextImg) { setTimeout(() => { setBaseImage(nextImg.baseImage); setAnnotations(nextImg.annotations || []); setHistory(nextImg.history || []); setActiveImageId(newId); setSelectedIds([]); setTransform({ scale: 1, x: 0, y: 0 }); }, 0); }
+      if (nextImg) { setTimeout(() => { setBaseImage(nextImg.baseImage); setAnnotations(nextImg.annotations || []); setHistory(nextImg.history || []); setRedoStack(nextImg.redoHistory || []); setActiveImageId(newId); setSelectedIds([]); setTransform({ scale: 1, x: 0, y: 0 }); }, 0); }
       return nextData;
     });
   };
 
-  const handleDeleteImage = (imgId) => { if (confirm('この画像を削除しますか？')) { setImagesData(prev => { const next = prev.filter(img => img.id !== imgId); if (activeImageId === imgId) { if (next.length > 0) setTimeout(() => switchImage(next[0].id, true), 0); else { setActiveImageId(null); setBaseImage(null); setAnnotations([]); setHistory([]); } } return next; }); } };
+  const handleDeleteImage = (imgId) => { if (confirm('この画像を削除しますか？')) { setImagesData(prev => { const next = prev.filter(img => img.id !== imgId); if (activeImageId === imgId) { if (next.length > 0) setTimeout(() => switchImage(next[0].id, true), 0); else { setActiveImageId(null); setBaseImage(null); setAnnotations([]); setHistory([]); setRedoStack([]); } } return next; }); } };
   const addImagesFromFiles = useCallback((files) => {
     let validFiles = files.filter(file => file.type.startsWith('image/')); if (validFiles.length === 0) return;
     validFiles.forEach(file => {
@@ -912,17 +1416,156 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
         img.onload = () => {
           let { width, height } = img; const MAX_SIZE = 1600;
           if (width > MAX_SIZE || height > MAX_SIZE) { if (width > height) { height = Math.round((height * MAX_SIZE) / width); width = MAX_SIZE; } else { width = Math.round((width * MAX_SIZE) / height); height = MAX_SIZE; } }
-          const newImgData = { id: 'img_' + Date.now() + Math.random(), baseImage: { src: event.target.result, element: img, width, height }, annotations: [], history: [] };
-          setImagesData(prev => { const next = [...prev, newImgData]; if (next.length === 1 && !activeImageId) { setTimeout(() => { setBaseImage(newImgData.baseImage); setAnnotations([]); setHistory([]); setActiveImageId(newImgData.id); setSelectedIds([]); setTransform({ scale: 1, x: 0, y: 0 }); }, 0); } return next; });
+          const newImgData = { id: 'img_' + Date.now() + Math.random(), baseImage: { src: event.target.result, element: img, width, height }, annotations: [], history: [], redoHistory: [] };
+          setImagesData(prev => { const next = [...prev, newImgData]; if (next.length === 1 && !activeImageId) { setTimeout(() => { setBaseImage(newImgData.baseImage); setAnnotations([]); setHistory([]); setRedoStack([]); setActiveImageId(newImgData.id); setSelectedIds([]); setTransform({ scale: 1, x: 0, y: 0 }); }, 0); } return next; });
         }; img.src = event.target.result;
       }; reader.readAsDataURL(file);
     });
   }, [activeImageId]);
   const handleImageUpload = (e) => { const files = Array.from(e.target.files); addImagesFromFiles(files); e.target.value = ''; };
-  useEffect(() => { const handleGlobalPaste = (e) => { if (isLayoutModalOpen || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.tagName === 'INPUT') return; const items = e.clipboardData?.items; if (!items) return; const imageFiles = []; for (let i = 0; i < items.length; i++) if (items[i].type.indexOf('image') !== -1) imageFiles.push(items[i].getAsFile()); if (imageFiles.length > 0) { e.preventDefault(); addImagesFromFiles(imageFiles); } }; window.addEventListener('paste', handleGlobalPaste); return () => window.removeEventListener('paste', handleGlobalPaste); }, [addImagesFromFiles, isLayoutModalOpen]);
+  const readImagesFromClipboardAPI = useCallback(async ({ waitForPermission = false } = {}) => {
+    if (clipboardReadInFlightRef.current) return false;
+    if (!navigator.clipboard?.read) return false;
+    clipboardReadInFlightRef.current = true;
+    try {
+      const maxAttempts = waitForPermission ? 8 : 2;
+      const waitMs = waitForPermission ? 350 : 120;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const clipboardItems = await navigator.clipboard.read();
+        const files = [];
+        for (const item of clipboardItems) {
+          const imageType = item.types.find(t => t.startsWith('image/'));
+          if (!imageType) continue;
+          const blob = await item.getType(imageType);
+          files.push(new File([blob], `clipboard-${Date.now()}.png`, { type: imageType }));
+        }
+        if (files.length > 0) {
+          addImagesFromFiles(files);
+          return true;
+        }
+        if (attempt < maxAttempts - 1) await new Promise(r => setTimeout(r, waitMs));
+      }
+    } catch (err) {
+      // iPad Safari では権限/仕様で失敗しうるため黙って通常フローへフォールバック
+    } finally {
+      clipboardReadInFlightRef.current = false;
+    }
+    return false;
+  }, [addImagesFromFiles]);
 
-  const pushHistory = useCallback((prevState) => { setHistory(prev => { const newHistory = [...prev, prevState]; if (newHistory.length > 50) newHistory.shift(); return newHistory; }); }, []);
-  const handleUndo = useCallback(() => { if (history.length > 0) { setAnnotations(history[history.length - 1]); setHistory(prev => prev.slice(0, -1)); setSelectedIds([]); } }, [history]);
+  useEffect(() => {
+    const handleGlobalPaste = async (e) => {
+      lastPasteEventAtRef.current = Date.now();
+      if (isLayoutModalOpen || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.tagName === 'INPUT') return;
+      const items = e.clipboardData?.items;
+      const imageFiles = [];
+      if (items) {
+        for (let i = 0; i < items.length; i++) {
+          if (items[i].type.indexOf('image') !== -1) imageFiles.push(items[i].getAsFile());
+        }
+      }
+      if (imageFiles.length > 0) {
+        e.preventDefault();
+        addImagesFromFiles(imageFiles);
+        return;
+      }
+      const readViaAPI = await readImagesFromClipboardAPI();
+      if (readViaAPI) e.preventDefault();
+    };
+    window.addEventListener('paste', handleGlobalPaste);
+    return () => window.removeEventListener('paste', handleGlobalPaste);
+  }, [addImagesFromFiles, isLayoutModalOpen, readImagesFromClipboardAPI]);
+
+  useEffect(() => {
+    const handlePasteShortcut = (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'v') return;
+      if (document.activeElement.tagName === 'TEXTAREA' || document.activeElement.tagName === 'INPUT') return;
+      // iPadでpasteイベントが来ないケースのみフォールバック読み取り
+      setTimeout(() => {
+        if (Date.now() - lastPasteEventAtRef.current > 160) readImagesFromClipboardAPI({ waitForPermission: true });
+      }, 180);
+    };
+    window.addEventListener('keydown', handlePasteShortcut);
+    return () => window.removeEventListener('keydown', handlePasteShortcut);
+  }, [readImagesFromClipboardAPI]);
+
+  useEffect(() => {
+    const closeMenu = (e) => {
+      if (e.target.closest('.thumb-context-menu')) return;
+      setThumbContextMenu(null);
+    };
+    window.addEventListener('pointerdown', closeMenu);
+    return () => {
+      window.removeEventListener('pointerdown', closeMenu);
+      if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+    };
+  }, []);
+
+  const copyThumbnailImage = async (img) => {
+    try {
+      if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+        alert('このブラウザでは画像コピーに対応していません。');
+        return;
+      }
+      const src = img?.baseImage?.src;
+      if (!src) return;
+      const pngBlob = await imageSrcToPngBlob(src);
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })]);
+      alert('画像をコピーしました。');
+    } catch (e) {
+      console.error(e);
+      try {
+        const src = img?.baseImage?.src;
+        if (!src) throw new Error('no src');
+        await navigator.clipboard.writeText(src);
+        alert('画像URLをコピーしました（画像本体コピーが使えない環境です）。');
+      } catch {
+        alert('画像コピーに失敗しました。');
+      }
+    }
+  };
+
+  const saveThumbnailImage = (img) => {
+    const src = img?.baseImage?.src;
+    if (!src) return;
+    const link = document.createElement('a');
+    link.href = src;
+    link.download = `report-image-${Date.now()}.jpg`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const pushHistory = useCallback((prevState) => {
+    setHistory(prev => {
+      const newHistory = [...prev, prevState];
+      if (newHistory.length > 50) newHistory.shift();
+      return newHistory;
+    });
+    setRedoStack([]);
+  }, []);
+  const handleUndo = useCallback(() => {
+    if (history.length > 0) {
+      const previous = history[history.length - 1];
+      setRedoStack(prev => [...prev, annotationsRef.current]);
+      setAnnotations(previous);
+      setHistory(prev => prev.slice(0, -1));
+      setSelectedIds([]);
+    }
+  }, [history]);
+  const handleRedo = useCallback(() => {
+    if (redoStack.length > 0) {
+      const next = redoStack[redoStack.length - 1];
+      setHistory(prev => {
+        const newHistory = [...prev, annotationsRef.current];
+        if (newHistory.length > 50) newHistory.shift();
+        return newHistory;
+      });
+      setRedoStack(prev => prev.slice(0, -1));
+      setAnnotations(next);
+      setSelectedIds([]);
+    }
+  }, [redoStack]);
   const updateSelectedObj = useCallback((updates) => { setAnnotations(prev => prev.map(a => selectedIds.includes(a.id) ? { ...a, ...updates } : a)); }, [selectedIds]);
   const handleToolChange = useCallback((newTool, keepSelection = false) => { setCurrentTool(newTool); currentToolRef.current = newTool; if (!keepSelection) setSelectedIds([]); setActivePopover(null); const settings = toolSettingsRef.current[newTool]; if (settings) { if (settings.lineWidth !== undefined) setLineWidth(settings.lineWidth); if (settings.fontSize !== undefined) setFontSize(settings.fontSize); if (settings.strokeColor !== undefined) setStrokeColor(settings.strokeColor); if (settings.fillColor !== undefined) setFillColor(settings.fillColor); if (settings.isFillTransparent !== undefined) setIsFillTransparent(settings.isFillTransparent); if (settings.textGlow !== undefined) setTextGlow(settings.textGlow); } }, []);
   const updateSettings = useCallback((updatesObj) => {
@@ -940,7 +1583,32 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
 
   const handleGroup = () => { const newGroupId = 'grp_' + Date.now() + Math.random().toString(36).substring(2, 9); pushHistory(annotationsRef.current); setAnnotations(prev => prev.map(a => selectedIds.includes(a.id) ? { ...a, groupId: newGroupId } : a)); };
   const handleUngroup = () => { pushHistory(annotationsRef.current); setAnnotations(prev => prev.map(a => selectedIds.includes(a.id) ? { ...a, groupId: undefined } : a)); };
-  useEffect(() => { const handleKeyDown = (e) => { if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return; if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIds.length > 0) handleDeleteSelected(); else if ((e.ctrlKey || e.metaKey) && e.key === 'c' && selectedIds.length > 0) handleCopySelected(); else if ((e.ctrlKey || e.metaKey) && e.key === 'v' && clipboard.length > 0) handlePaste(); }; window.addEventListener('keydown', handleKeyDown); return () => window.removeEventListener('keydown', handleKeyDown); }, [selectedIds, handleDeleteSelected, handleCopySelected, handlePaste, clipboard]);
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      const key = e.key.toLowerCase();
+      const hasMeta = e.ctrlKey || e.metaKey;
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIds.length > 0) {
+        e.preventDefault();
+        handleDeleteSelected();
+      } else if (hasMeta && key === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) handleRedo();
+        else handleUndo();
+      } else if (hasMeta && key === 'y') {
+        e.preventDefault();
+        handleRedo();
+      } else if (hasMeta && key === 'c' && selectedIds.length > 0) {
+        e.preventDefault();
+        handleCopySelected();
+      } else if (hasMeta && key === 'v' && clipboard.length > 0) {
+        e.preventDefault();
+        handlePaste();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedIds, handleDeleteSelected, handleCopySelected, handlePaste, clipboard, handleUndo, handleRedo]);
 
   const triggerAutoOCR = async (strokeIds) => {
     if (!strokeIds || strokeIds.length === 0) return; setIsAutoOcrLoading(true);
@@ -952,7 +1620,7 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
       targetAnns.forEach(ann => { tmpCtx.save(); const abox = getBBox(ann); if (abox) { tmpCtx.translate(abox.x + abox.w/2 + (ann.tx || 0), abox.y + abox.h/2 + (ann.ty || 0)); tmpCtx.rotate(ann.rotation || 0); tmpCtx.scale(ann.scaleX || ann.scale || 1, ann.scaleY || ann.scale || 1); tmpCtx.translate(-(abox.x + abox.w/2), -(abox.y + abox.h/2)); } tmpCtx.strokeStyle = '#000000'; tmpCtx.lineWidth = Math.max(2, ann.width || 4); tmpCtx.lineCap = 'round'; tmpCtx.lineJoin = 'round'; tmpCtx.beginPath(); tmpCtx.moveTo(ann.points[0].x, ann.points[0].y); for (let i = 1; i < ann.points.length; i++) tmpCtx.lineTo(ann.points[i].x, ann.points[i].y); tmpCtx.stroke(); tmpCtx.restore(); });
       const base64Data = tmpCanvas.toDataURL('image/jpeg', 0.8); const payload = { contents: [{ role: "user", parts: [ { text: "Extract the handwritten text from the image. Keep explicit line breaks, otherwise output as a single line. Output ONLY the raw text without markdown." }, { inlineData: { mimeType: "image/jpeg", data: base64Data.split(',')[1] } } ] }] }; const data = await callGeminiAPI(payload, localStorage.getItem('gemini_api_key')); const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
       if (text) { const lines = text.split('\n'); const lineCount = lines.length || 1; let maxCharCount = 1; lines.forEach(l => { if (l.length > maxCharCount) maxCharCount = l.length; }); let calcFontSize = Math.min(bbox.h / lineCount / 1.2, (bbox.w / maxCharCount) * 1.2); calcFontSize = Math.max(12, Math.min(300, calcFontSize)); pushHistory(annotationsRef.current); setAnnotations(prev => { const filteredAnns = prev.filter(a => !strokeIds.includes(a.id)); return [...filteredAnns, { id: Date.now().toString(), type: 'text', x: bbox.x + bbox.w/2, y: bbox.y + bbox.h/2, text: text, color: targetAnns[0].color || '#000000', fontSize: calcFontSize, scaleX: 1, scaleY: 1, rotation: 0, tx: 0, ty: 0, hasGlow: targetAnns[0].hasGlow !== undefined ? targetAnns[0].hasGlow : true }]; }); }
-    } catch (e) { console.error("Auto OCR Error:", e); } finally { setIsAutoOcrLoading(false); }
+    } catch (e) { console.error("Auto OCR Error:", e); setErrorMessage(`自動文字認識に失敗しました: ${e.message || '通信エラー'}`); } finally { setIsAutoOcrLoading(false); }
   };
 
   const runOCR = async () => {
@@ -961,14 +1629,14 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
       const bbox = getMultiBBox(annotations, selectedIds); if (!bbox) return;
       const margin = 20; const rawW = bbox.w + margin * 2; const rawH = bbox.h + margin * 2; const MAX_DIM = 1024; let scale = 1; if (rawW > MAX_DIM || rawH > MAX_DIM) scale = Math.min(MAX_DIM / rawW, MAX_DIM / rawH);
       const tmpCanvas = document.createElement('canvas'); tmpCanvas.width = rawW * scale; tmpCanvas.height = rawH * scale; const tmpCtx = tmpCanvas.getContext('2d'); tmpCtx.scale(scale, scale); tmpCtx.fillStyle = '#ffffff'; tmpCtx.fillRect(0, 0, rawW, rawH); tmpCtx.translate(-bbox.x + margin, -bbox.y + margin);
-      selectedIds.forEach(id => { const ann = annotations.find(a => a.id === id); if (!ann || ann.type !== 'pen') return; tmpCtx.save(); const abox = getBBox(ann); if (abox) { tmpCtx.translate(abox.x + abox.w/2 + (ann.tx || 0), abox.y + abox.h/2 + (ann.ty || 0)); tmpCtx.rotate(ann.rotation || 0); tmpCtx.scale(ann.scaleX || ann.scale || 1, ann.scaleY || ann.scale || 1); tmpCtx.translate(-(abox.x + abox.w/2), -(abox.y + abox.h/2)); } tmpCtx.strokeStyle = '#000000'; tmpCtx.lineWidth = Math.max(2, ann.width || 4); tmpCtx.lineCap = 'round'; tmpCtx.lineJoin = 'round'; tmpCtx.beginPath(); tmpCtx.moveTo(ann.points[0].x, ann.points[0].y); for (let i = 1; i < ann.points.length; i++) tmpCtx.lineTo(ann.points[i].x, ann.points[i].y); tmpCtx.stroke(); tmpCtx.restore(); });
+      selectedIds.forEach(id => { const ann = annotations.find(a => a.id === id); if (!ann || !['pen', 'handwriting_text'].includes(ann.type)) return; tmpCtx.save(); const abox = getBBox(ann); if (abox) { tmpCtx.translate(abox.x + abox.w/2 + (ann.tx || 0), abox.y + abox.h/2 + (ann.ty || 0)); tmpCtx.rotate(ann.rotation || 0); tmpCtx.scale(ann.scaleX || ann.scale || 1, ann.scaleY || ann.scale || 1); tmpCtx.translate(-(abox.x + abox.w/2), -(abox.y + abox.h/2)); } tmpCtx.strokeStyle = '#000000'; tmpCtx.lineWidth = Math.max(2, ann.width || 4); tmpCtx.lineCap = 'round'; tmpCtx.lineJoin = 'round'; tmpCtx.beginPath(); tmpCtx.moveTo(ann.points[0].x, ann.points[0].y); for (let i = 1; i < ann.points.length; i++) tmpCtx.lineTo(ann.points[i].x, ann.points[i].y); tmpCtx.stroke(); tmpCtx.restore(); });
       const base64Data = tmpCanvas.toDataURL('image/jpeg', 0.8); const payload = { contents: [{ role: "user", parts: [ { text: "Extract the handwritten text from the image. Keep explicit line breaks, otherwise output as a single line. Output ONLY the raw text without markdown." }, { inlineData: { mimeType: "image/jpeg", data: base64Data.split(',')[1] } } ] }] }; const data = await callGeminiAPI(payload, localStorage.getItem('gemini_api_key')); const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-      if (text) { const lines = text.split('\n'); const lineCount = lines.length || 1; let maxCharCount = 1; lines.forEach(l => { if (l.length > maxCharCount) maxCharCount = l.length; }); let calcFontSize = Math.min(bbox.h / lineCount / 1.2, (bbox.w / maxCharCount) * 1.2); calcFontSize = Math.max(12, Math.min(300, calcFontSize)); pushHistory(annotationsRef.current); setAnnotations(prev => { const idsToRemove = selectedIds.filter(id => { const ann = prev.find(a => a.id === id); return ann && ann.type === 'pen'; }); const filteredAnns = prev.filter(a => !idsToRemove.includes(a.id)); return [...filteredAnns, { id: Date.now().toString(), type: 'text', x: bbox.x + bbox.w/2, y: bbox.y + bbox.h/2, text: text, color: strokeColor, fontSize: calcFontSize, scaleX: 1, scaleY: 1, rotation: 0, tx: 0, ty: 0, hasGlow: textGlow }]; }); } else setErrorMessage('文字が検出されませんでした。');
+      if (text) { const lines = text.split('\n'); const lineCount = lines.length || 1; let maxCharCount = 1; lines.forEach(l => { if (l.length > maxCharCount) maxCharCount = l.length; }); let calcFontSize = Math.min(bbox.h / lineCount / 1.2, (bbox.w / maxCharCount) * 1.2); calcFontSize = Math.max(12, Math.min(300, calcFontSize)); pushHistory(annotationsRef.current); setAnnotations(prev => { const idsToRemove = selectedIds.filter(id => { const ann = prev.find(a => a.id === id); return ann && ['pen', 'handwriting_text'].includes(ann.type); }); const filteredAnns = prev.filter(a => !idsToRemove.includes(a.id)); return [...filteredAnns, { id: Date.now().toString(), type: 'text', x: bbox.x + bbox.w/2, y: bbox.y + bbox.h/2, text: text, color: strokeColor, fontSize: calcFontSize, scaleX: 1, scaleY: 1, rotation: 0, tx: 0, ty: 0, hasGlow: textGlow }]; }); } else setErrorMessage('文字が検出されませんでした。');
     } catch (e) { console.error(e); setErrorMessage("OCR読み取りに失敗しました。インターネット接続を確認してください。"); } finally { setIsOcrLoading(false); setOcrProgress(''); setSelectedIds([]); }
   };
 
   const handleAutoCleanUp = async () => {
-    let targetPenAnns = annotations.filter(a => a.type === 'pen'); if (selectedIds.length > 0) targetPenAnns = targetPenAnns.filter(a => selectedIds.includes(a.id)); if (targetPenAnns.length === 0) { setErrorMessage('整頓する手書きの線がありません。（一部だけ整頓したい場合は、選択してから実行してください）'); return; }
+    let targetPenAnns = annotations.filter(a => ['pen', 'handwriting_text'].includes(a.type)); if (selectedIds.length > 0) targetPenAnns = targetPenAnns.filter(a => selectedIds.includes(a.id)); if (targetPenAnns.length === 0) { setErrorMessage('整頓する手書きの線がありません。（一部だけ整頓したい場合は、選択してから実行してください）'); return; }
     setIsCleanUpLoading(true); setOcrProgress('AIで図形を分析・整形中...'); setErrorMessage(''); const targetIds = targetPenAnns.map(a => a.id); setSelectedIds([]);
     try {
       const bbox = getMultiBBox(annotations, targetIds); if (!bbox || bbox.w === 0 || bbox.h === 0) { setErrorMessage("線の範囲が小さすぎるか、無効です。"); setIsCleanUpLoading(false); return; }
@@ -990,7 +1658,23 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
   const handleSave = () => {
     let finalImagesData = [...imagesData];
     if (activeImageId && baseImage) { const currentFinal = captureCurrentCanvas(); finalImagesData = finalImagesData.map(img => img.id === activeImageId ? { ...img, annotations: annotationsRef.current, finalImage: currentFinal } : img ); }
-    onSave({ id: initialItem ? initialItem.id : Date.now().toString(), images: finalImagesData.map(img => ({ id: img.id, image: img.finalImage || img.baseImage.src, baseImage: img.baseImage.src, baseWidth: img.baseWidth, baseHeight: img.baseHeight, annotations: img.annotations })), memo, layout: layoutSettings });
+    onSave({
+      id: initialItem ? initialItem.id : Date.now().toString(),
+      images: finalImagesData.map(img => {
+        const safeBaseSrc = typeof img.baseImage?.src === 'string' ? img.baseImage.src : resolveStoredImageSrc(img);
+        const safeFinalSrc = typeof img.finalImage === 'string' && img.finalImage ? img.finalImage : safeBaseSrc;
+        return ({
+        id: img.id,
+        image: safeFinalSrc,
+        baseImage: safeBaseSrc,
+        baseWidth: img.baseImage?.width || 1200,
+        baseHeight: img.baseImage?.height || 800,
+        annotations: img.annotations
+      });
+      }),
+      memo,
+      layout: layoutSettings
+    });
   };
 
   useEffect(() => {
@@ -1069,7 +1753,12 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
   const handleWheel = (e) => { if (!wrapperRef.current) return; const wrapperRect = wrapperRef.current.getBoundingClientRect(); const scaleRatio = e.deltaY < 0 ? 1.1 : 0.9; setTransform(prev => { let newScale = Math.min(Math.max(0.1, prev.scale * scaleRatio), 10); const actualRatio = newScale / prev.scale; const pinchOffsetX = e.clientX - (wrapperRect.left + wrapperRect.width / 2); const pinchOffsetY = e.clientY - (wrapperRect.top + wrapperRect.height / 2); return { scale: newScale, x: prev.x + (pinchOffsetX - pinchOffsetX * actualRatio), y: prev.y + (pinchOffsetY - pinchOffsetY * actualRatio) }; }); };
   const handleTextSubmit = () => { if (textInput) { pushHistory(annotationsRef.current); if (textInput.value.trim() !== '') { if (textInput.id) setAnnotations(prev => prev.map(a => a.id === textInput.id ? { ...a, text: textInput.value.trim(), color: strokeColor, fontSize: fontSize, hasGlow: textGlow } : a)); else setAnnotations(prev => [...prev, { id: Date.now().toString(), type: 'text', x: textInput.canvasX, y: textInput.canvasY, text: textInput.value.trim(), color: strokeColor, fontSize: fontSize, scaleX: 1, scaleY: 1, rotation: 0, tx: 0, ty: 0, hasGlow: textGlow }]); } else if (textInput.id) setAnnotations(prev => prev.filter(a => a.id !== textInput.id)); } setTextInput(null); };
   const ToolButton = ({ tool, icon: Icon, label, onClick }) => { const isActive = currentTool === tool; return ( <button onClick={onClick || (() => handleToolChange(tool))} className={`p-2 rounded-lg flex flex-col items-center gap-1 transition-colors min-w-[44px] ${isActive ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-100 text-gray-600'}`}> <Icon size={22} strokeWidth={isActive ? 2.5 : 2} /> <span className="text-[9px] font-bold">{label}</span> </button> ); };
-  const isSelectionMode = currentTool === ToolType.SELECT || currentTool === ToolType.LASSO; const shouldShowSelectionMenu = selectedIds.length > 0 && isSelectionMode; const boundingBoxForMenu = shouldShowSelectionMenu ? getMultiBBox(annotations, selectedIds) : null; const hasPenSelected = selectedIds.some(id => annotations.find(a => a.id === id)?.type === 'pen'); const isSingleTextSelected = selectedIds.length === 1 && annotations.find(a => a.id === selectedIds[0])?.type === 'text'; const isGroupable = selectedIds.length > 1; const isUngroupable = selectedIds.length > 0 && selectedIds.every(id => { const ann = annotations.find(a => a.id === id); return ann?.groupId && annotations.filter(a => a.groupId === ann.groupId).every(a => selectedIds.includes(a.id)); });
+  const isSelectionMode = currentTool === ToolType.SELECT || currentTool === ToolType.LASSO; const shouldShowSelectionMenu = selectedIds.length > 0 && isSelectionMode; const boundingBoxForMenu = shouldShowSelectionMenu ? getMultiBBox(annotations, selectedIds) : null; const hasInkSelected = selectedIds.some(id => ['pen', 'handwriting_text'].includes(annotations.find(a => a.id === id)?.type)); const isSingleTextSelected = selectedIds.length === 1 && annotations.find(a => a.id === selectedIds[0])?.type === 'text'; const isGroupable = selectedIds.length > 1; const isUngroupable = selectedIds.length > 0 && selectedIds.every(id => { const ann = annotations.find(a => a.id === id); return ann?.groupId && annotations.filter(a => a.groupId === ann.groupId).every(a => selectedIds.includes(a.id)); });
+  const shapeTools = [{ tool: ToolType.LINE, icon: Minus, label: '直線' }, { tool: ToolType.ARROW, icon: ArrowUpRight, label: '矢印' }, { tool: ToolType.RECT, icon: Square, label: '四角' }, { tool: ToolType.CIRCLE, icon: Circle, label: '丸' }];
+  const currentShapeMeta = shapeTools.find(s => s.tool === currentTool) || shapeTools[0];
+  const CurrentShapeIcon = currentShapeMeta.icon;
+  const viewportW = typeof window !== 'undefined' ? window.innerWidth : 1024;
+  const viewportH = typeof window !== 'undefined' ? window.innerHeight : 768;
 
   return (
     <div className={`min-h-screen bg-gray-100 flex flex-col font-sans fixed inset-0 z-50 overflow-hidden select-none`}>
@@ -1078,21 +1767,41 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
       {!isFullscreen && ( <header className="bg-white border-b px-4 py-3 flex justify-between items-center shrink-0 shadow-sm relative z-20"> <button onClick={onCancel} className="text-gray-500 p-2 hover:bg-gray-100 rounded-lg font-medium transition">キャンセル</button> <div className="font-bold text-gray-800 text-lg flex items-center gap-2"> {initialItem && <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-sm">再編集</span>} 画像の編集 </div> <button onClick={() => { setSelectedIds([]); setTimeout(handleSave, 50); }} disabled={imagesData.length === 0 && !memo} className="bg-blue-600 text-white px-5 py-2 rounded-lg font-bold hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 transition shadow-md"> <Save size={18} /> 保存 </button> </header> )}
       <div className={`flex-1 flex ${isFullscreen ? 'flex-col fixed inset-0 z-50 bg-gray-200' : 'flex-col lg:flex-row'} overflow-hidden`}>
         <div className="flex-1 flex flex-col bg-gray-200 overflow-hidden relative">
-          <button onClick={() => setIsFullscreen(!isFullscreen)} className="absolute top-4 right-4 z-[60] p-3 bg-white/90 backdrop-blur rounded-full shadow-lg text-gray-700 hover:bg-white transition-transform hover:scale-110" title={isFullscreen ? "全画面解除" : "全画面表示"}> {isFullscreen ? <Minimize size={24} /> : <Maximize size={24} />} </button>
           {imagesData.length === 0 ? ( <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-6"> <div className="text-center mb-4"><h2 className="text-2xl font-bold text-gray-700 mb-2">写真を追加しますか？</h2><p className="text-gray-500">Ctrl+V (Cmd+V) で直接貼り付けることも可能です</p></div> <div className="flex flex-col sm:flex-row gap-4 w-full max-w-lg"> <label className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm cursor-pointer hover:shadow-md hover:bg-blue-50 transition text-blue-600"><Camera size={48} className="mb-4" /> <span className="font-bold text-lg">カメラで撮影</span><input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={handleImageUpload} /></label> <label className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm cursor-pointer hover:shadow-md hover:bg-blue-50 transition text-blue-600"><ImageIcon size={48} className="mb-4" /> <span className="font-bold text-lg">アルバムから</span><input type="file" multiple accept="image/*" className="hidden" onChange={handleImageUpload} /></label> </div> </div> ) : ( <>
-              <div className="bg-white border-b px-2 py-1.5 flex flex-wrap items-center gap-x-2 gap-y-2 shrink-0 shadow-sm z-10 relative pr-16">
+              <div className="bg-white border-b px-2 py-1.5 flex flex-wrap items-center gap-x-2 gap-y-2 shrink-0 shadow-sm z-10 relative">
                 <div className="flex items-center bg-gray-50 p-1 rounded-xl">
-                  <ToolButton tool={ToolType.SELECT} icon={MousePointer2} label="選択" /> <ToolButton tool={ToolType.LASSO} icon={Lasso} label="投げ輪" /> <div className="w-px h-6 bg-gray-300 mx-1"></div> <ToolButton tool={ToolType.PEN} icon={PenTool} label="ペン" /> <ToolButton tool={ToolType.HANDWRITING_TEXT} icon={PenLine} label="手書き" /> <ToolButton tool={ToolType.TEXT} icon={Type} label="文字" /> <ToolButton tool={ToolType.LINE} icon={Minus} label="直線" /> <ToolButton tool={ToolType.ARROW} icon={ArrowUpRight} label="矢印" /> <ToolButton tool={ToolType.RECT} icon={Square} label="四角" /> <ToolButton tool={ToolType.CIRCLE} icon={Circle} label="丸" /> <div className="flex flex-col relative mx-1"> <ToolButton tool={currentTool === ToolType.ERASER_PIXEL ? ToolType.ERASER_PIXEL : ToolType.ERASER_OBJ} icon={Eraser} label="消す" onClick={() => handleToolChange(currentTool === ToolType.ERASER_OBJ ? ToolType.ERASER_PIXEL : ToolType.ERASER_OBJ)} /> {(currentTool === ToolType.ERASER_PIXEL || currentTool === ToolType.ERASER_OBJ) && ( <div className="absolute top-full mt-1 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[9px] px-1.5 py-0.5 rounded whitespace-nowrap z-50">{currentTool === ToolType.ERASER_PIXEL ? '部分' : '全体'}</div> )} </div>
+                  <ToolButton tool={ToolType.SELECT} icon={MousePointer2} label="選択" /> <ToolButton tool={ToolType.LASSO} icon={Lasso} label="投げ輪" /> <div className="w-px h-6 bg-gray-300 mx-1"></div> <ToolButton tool={ToolType.PEN} icon={PenTool} label="ペン" /> <ToolButton tool={ToolType.HANDWRITING_TEXT} icon={PenLine} label="手書き" /> <ToolButton tool={ToolType.TEXT} icon={Type} label="文字" />
+                  <div className="hidden sm:flex items-center">
+                    <ToolButton tool={ToolType.LINE} icon={Minus} label="直線" /> <ToolButton tool={ToolType.ARROW} icon={ArrowUpRight} label="矢印" /> <ToolButton tool={ToolType.RECT} icon={Square} label="四角" /> <ToolButton tool={ToolType.CIRCLE} icon={Circle} label="丸" />
+                  </div>
+                  <div className="relative sm:hidden mx-1">
+                    <button onClick={() => setActivePopover(activePopover === 'shape' ? null : 'shape')} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${activePopover === 'shape' ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-100 text-gray-600'}`}>
+                      <CurrentShapeIcon size={22} strokeWidth={currentTool === currentShapeMeta.tool ? 2.5 : 2} />
+                      <span className="text-[9px] font-bold mt-1">図形</span>
+                    </button>
+                    {activePopover === 'shape' && (
+                      <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 bg-white p-2 rounded-xl shadow-xl border border-gray-200 z-50 grid grid-cols-2 gap-1 w-36">
+                        {shapeTools.map(({ tool, icon: Icon, label }) => (
+                          <button key={tool} onClick={() => { handleToolChange(tool); setActivePopover(null); }} className={`p-2 rounded-lg flex flex-col items-center ${currentTool === tool ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-100 text-gray-600'}`}>
+                            <Icon size={18} />
+                            <span className="text-[10px] font-bold mt-1">{label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex flex-col relative mx-1"> <ToolButton tool={currentTool === ToolType.ERASER_PIXEL ? ToolType.ERASER_PIXEL : ToolType.ERASER_OBJ} icon={Eraser} label="消す" onClick={() => handleToolChange(currentTool === ToolType.ERASER_OBJ ? ToolType.ERASER_PIXEL : ToolType.ERASER_OBJ)} /> {(currentTool === ToolType.ERASER_PIXEL || currentTool === ToolType.ERASER_OBJ) && ( <div className="absolute top-full mt-1 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[9px] px-1.5 py-0.5 rounded whitespace-nowrap z-50">{currentTool === ToolType.ERASER_PIXEL ? '部分' : '全体'}</div> )} </div>
                 </div>
                 <div className="flex-1 min-w-[8px]"></div>
                 <div className="flex items-center gap-1 bg-gray-50 p-1 rounded-xl">
                   <button onClick={handleAutoCleanUp} disabled={isCleanUpLoading || isOcrLoading} className="p-2 rounded-lg flex flex-col items-center min-w-[48px] bg-gradient-to-br from-purple-100 to-blue-100 text-purple-700 hover:scale-105 active:scale-95 transition shadow-sm border border-purple-200 disabled:opacity-50"> {isCleanUpLoading ? <Loader2 size={20} className="animate-spin" /> : <Sparkles size={20} strokeWidth={2.5} />}<span className="text-[9px] font-bold mt-1">AI整頓</span> </button> <div className="w-px h-6 bg-gray-300 mx-1"></div> <div className="relative"> <button onClick={() => setActivePopover(activePopover === 'width' ? null : 'width')} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${activePopover === 'width' ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-200 text-gray-700'}`}> <Scaling size={20} /> <span className="text-[9px] font-bold mt-1">{(currentTool === ToolType.TEXT || currentTool === ToolType.HANDWRITING_TEXT) ? 'ｻｲｽﾞ/太さ' : '太さ'}</span> </button> {activePopover === 'width' && ( <div className="absolute top-full right-0 mt-2 bg-white p-4 rounded-xl shadow-xl border border-gray-200 z-50 w-48 flex flex-col items-center"> {currentTool === ToolType.HANDWRITING_TEXT ? ( <><span className="text-xs font-bold text-gray-500 mb-2">線の太さ: {lineWidth}px</span><input type="range" min="1" max="40" value={lineWidth} onChange={(e) => updateSettings({ lineWidth: parseInt(e.target.value) })} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer mb-4" /><span className="text-xs font-bold text-gray-500 mb-2">変換後の文字サイズ: {fontSize}px</span><input type="range" min="16" max="120" value={fontSize} onChange={(e) => updateSettings({ fontSize: parseInt(e.target.value) })} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" /></> ) : currentTool === ToolType.TEXT ? ( <><span className="text-xs font-bold text-gray-500 mb-2">文字サイズ: {fontSize}px</span><input type="range" min="16" max="120" value={fontSize} onChange={(e) => updateSettings({ fontSize: parseInt(e.target.value) })} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" /></> ) : ( <><span className="text-xs font-bold text-gray-500 mb-2">線の太さ: {lineWidth}px</span><input type="range" min="1" max="40" value={lineWidth} onChange={(e) => updateSettings({ lineWidth: parseInt(e.target.value) })} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" /></> )} </div> )} </div> <div className="relative"> <button onClick={() => setActivePopover(activePopover === 'stroke' ? null : 'stroke')} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${activePopover === 'stroke' ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-200 text-gray-700'}`}> <div className="w-5 h-5 rounded-full border-2 border-gray-300 shadow-sm" style={{ backgroundColor: strokeColor }}></div> <span className="text-[10px] font-bold mt-1">線の色</span> </button> {activePopover === 'stroke' && ( <div className="absolute top-full right-0 mt-2 bg-white p-3 rounded-xl shadow-xl border border-gray-200 z-50 w-48 grid grid-cols-4 gap-2">{COLORS.map(c => ( <button key={`stroke-${c}`} onClick={() => { updateSettings({ strokeColor: c }); setActivePopover(null); }} className={`w-8 h-8 rounded-full border-2 mx-auto ${strokeColor === c ? 'border-blue-500 scale-110 shadow-md' : 'border-gray-200'}`} style={{ backgroundColor: c }} /> ))}</div> )} </div> <div className="relative"> <button onClick={() => setActivePopover(activePopover === 'fill' ? null : 'fill')} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${activePopover === 'fill' ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-200 text-gray-700'}`}> <div className="w-5 h-5 rounded-full border-2 border-gray-300 shadow-sm flex items-center justify-center bg-gray-50" style={{ backgroundColor: isFillTransparent ? 'transparent' : fillColor }}>{isFillTransparent && <Droplet size={12} className="text-gray-400" />}</div><span className="text-[10px] font-bold mt-1">塗り</span> </button> {activePopover === 'fill' && ( <div className="absolute top-full right-0 mt-2 bg-white p-3 rounded-xl shadow-xl border border-gray-200 z-50 w-48 grid grid-cols-4 gap-2"> <button onClick={() => { updateSettings({ isFillTransparent: true }); setActivePopover(null); }} className={`w-8 h-8 rounded-full border-2 mx-auto flex items-center justify-center bg-gray-50 ${isFillTransparent ? 'border-blue-500 scale-110 shadow-md text-blue-500' : 'border-gray-200 text-gray-400'}`}><Droplet size={14} /></button> {COLORS.map(c => ( <button key={`fill-${c}`} onClick={() => { updateSettings({ fillColor: c, isFillTransparent: false }); setActivePopover(null); }} className={`w-8 h-8 rounded-full border-2 mx-auto ${fillColor === c && !isFillTransparent ? 'border-blue-500 scale-110 shadow-md' : 'border-gray-200'}`} style={{ backgroundColor: c }} /> ))} </div> )} </div> <button onClick={() => updateSettings({ textGlow: !textGlow })} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${textGlow ? 'bg-amber-100 text-amber-600' : 'hover:bg-gray-200 text-gray-700'}`}> <Sparkles size={20} strokeWidth={textGlow ? 2.5 : 2} /> <span className="text-[10px] font-bold mt-1">光彩</span> </button> <button onClick={() => setFingerDrawMode(!fingerDrawMode)} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${fingerDrawMode ? 'bg-blue-100 text-blue-600 shadow-inner' : 'hover:bg-gray-200 text-gray-700'}`}> <Hand size={20} /> <span className="text-[9px] font-bold mt-1">指で描く</span> </button>
                 </div>
                 <div className="flex-1 min-w-[8px]"></div>
-                <div className="flex items-center gap-1"> <button onClick={handlePaste} disabled={clipboard.length === 0} className="p-2 text-blue-600 hover:bg-blue-100 rounded-lg disabled:opacity-30 flex flex-col items-center min-w-[48px]" title="貼り付け (Ctrl+V)"><ClipboardPaste size={20} /><span className="text-[10px] font-bold mt-1">貼付</span></button> <div className="w-px h-6 bg-gray-300 mx-1"></div> <button onClick={() => setTransform({ scale: 1, x: 0, y: 0 })} className="p-2 text-gray-600 hover:bg-gray-200 rounded-lg flex flex-col items-center min-w-[48px]"><RefreshCw size={20} /><span className="text-[10px] font-bold mt-1">表示ﾘｾｯﾄ</span></button> <button onClick={handleUndo} disabled={history.length === 0} className="p-2 text-gray-600 hover:bg-gray-200 rounded-lg disabled:opacity-30 flex flex-col items-center min-w-[48px]"><Undo size={20} /><span className="text-[10px] font-bold mt-1">戻す</span></button> <button onClick={() => setIsClearConfirmOpen(true)} disabled={annotations.length === 0} className="p-2 text-red-500 hover:bg-red-50 rounded-lg disabled:opacity-30 flex flex-col items-center min-w-[48px]"><Trash2 size={20} /><span className="text-[10px] font-bold mt-1">クリア</span></button> </div>
+                <div className="flex items-center gap-1"> <button onClick={handlePaste} disabled={clipboard.length === 0} className="p-2 text-blue-600 hover:bg-blue-100 rounded-lg disabled:opacity-30 flex flex-col items-center min-w-[48px]" title="貼り付け (Ctrl+V)"><ClipboardPaste size={20} /><span className="text-[10px] font-bold mt-1">貼付</span></button> <div className="w-px h-6 bg-gray-300 mx-1"></div> <button onClick={() => setTransform({ scale: 1, x: 0, y: 0 })} className="p-2 text-gray-600 hover:bg-gray-200 rounded-lg flex flex-col items-center min-w-[48px]"><RefreshCw size={20} /><span className="text-[10px] font-bold mt-1">表示ﾘｾｯﾄ</span></button> <button onClick={handleUndo} disabled={history.length === 0} className="p-2 text-gray-600 hover:bg-gray-200 rounded-lg disabled:opacity-30 flex flex-col items-center min-w-[48px]" title="元に戻す (Ctrl/Cmd+Z)"><Undo size={20} /><span className="text-[10px] font-bold mt-1">戻す</span></button> <button onClick={handleRedo} disabled={redoStack.length === 0} className="p-2 text-gray-600 hover:bg-gray-200 rounded-lg disabled:opacity-30 flex flex-col items-center min-w-[48px]" title="やり直し (Ctrl/Cmd+Y)"><Redo2 size={20} /><span className="text-[10px] font-bold mt-1">進む</span></button> <button onClick={() => setIsClearConfirmOpen(true)} disabled={annotations.length === 0} className="p-2 text-red-500 hover:bg-red-50 rounded-lg disabled:opacity-30 flex flex-col items-center min-w-[48px]"><Trash2 size={20} /><span className="text-[10px] font-bold mt-1">クリア</span></button> </div>
               </div>
               {activeImageId && (
                 <div ref={wrapperRef} className="flex-1 overflow-hidden relative flex items-center justify-center p-4 touch-none canvas-container" onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp} onPointerLeave={handlePointerUp} onWheel={handleWheel}>
+                  <button onClick={() => setIsFullscreen(!isFullscreen)} className="absolute top-2 right-2 sm:top-3 sm:right-3 z-40 p-2.5 bg-white/90 backdrop-blur rounded-full shadow-lg text-gray-700 hover:bg-white transition-transform hover:scale-110" title={isFullscreen ? "全画面解除" : "全画面表示"}> {isFullscreen ? <Minimize size={22} /> : <Maximize size={22} />} </button>
                   <div className="relative flex items-center justify-center shadow-lg bg-white actual-canvas-wrapper shrink-0" style={{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`, transformOrigin: 'center', width: baseImage ? baseImage.width : 1200, height: baseImage ? baseImage.height : 800 }}>
                     {baseImage && <img src={baseImage.src} className="absolute inset-0 w-full h-full object-contain pointer-events-none" alt="Base" />}
                     <canvas ref={canvasRef} className={`absolute inset-0 w-full h-full ${currentTool === ToolType.SELECT || currentTool === ToolType.LASSO ? 'cursor-default' : 'cursor-crosshair'}`} />
@@ -1107,22 +1816,26 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
                     {shouldShowSelectionMenu && boundingBoxForMenu && canvasRef.current && (
                       <div className="absolute z-50 selection-menu flex items-center gap-1 p-1.5 bg-white rounded-xl shadow-2xl border border-gray-200 pointer-events-auto" style={{ left: `${((boundingBoxForMenu.x + boundingBoxForMenu.w/2) / canvasRef.current.width) * 100}%`, top: `${((boundingBoxForMenu.y + boundingBoxForMenu.h + 20) / canvasRef.current.height) * 100}%`, transform: `translateX(-50%) scale(${1 / transform.scale})`, transformOrigin: 'top center' }} onPointerDown={(e) => e.stopPropagation()}>
                         {isSingleTextSelected && (() => { const ann = annotations.find(a => a.id === selectedIds[0]); return (<button onClick={(e) => { e.stopPropagation(); setTextInput({ id: ann.id, canvasX: ann.x + (ann.tx || 0), canvasY: ann.y + (ann.ty || 0), value: ann.text, scale: ann.scaleX || ann.scale || 1, rotation: ann.rotation || 0 }); setFontSize(ann.fontSize || 48); setStrokeColor(ann.color || '#000000'); setTextGlow(ann.hasGlow !== undefined ? ann.hasGlow : true); }} className="flex items-center gap-1.5 px-3 py-2 bg-blue-50 text-blue-600 font-bold rounded-lg hover:bg-blue-100 transition whitespace-nowrap"><PenTool size={18} /> 編集</button>); })()}
-                        {hasPenSelected && ( <> <button onClick={(e) => { e.stopPropagation(); handleAutoCleanUp(); }} disabled={isCleanUpLoading || isOcrLoading} className={`flex items-center gap-1.5 px-3 py-2 ${isCleanUpLoading ? 'bg-gray-100 text-gray-400' : 'bg-purple-50 text-purple-700 hover:bg-purple-100'} font-bold rounded-lg transition whitespace-nowrap`}>{isCleanUpLoading ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}<span className="hidden sm:inline">{isCleanUpLoading ? (ocrProgress || '処理中...') : 'AI整頓'}</span></button> <button onClick={(e) => { e.stopPropagation(); runOCR(); }} disabled={isCleanUpLoading || isOcrLoading} className={`flex items-center gap-1.5 px-3 py-2 ${isOcrLoading ? 'bg-gray-100 text-gray-400' : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'} font-bold rounded-lg transition whitespace-nowrap`}>{isOcrLoading ? <Loader2 size={18} className="animate-spin" /> : <ScanText size={18} />}<span className="hidden sm:inline">{isOcrLoading ? (ocrProgress || '処理中...') : 'テキスト化'}</span></button> </> )}
+                        {hasInkSelected && ( <> <button onClick={(e) => { e.stopPropagation(); handleAutoCleanUp(); }} disabled={isCleanUpLoading || isOcrLoading} className={`flex items-center gap-1.5 px-3 py-2 ${isCleanUpLoading ? 'bg-gray-100 text-gray-400' : 'bg-purple-50 text-purple-700 hover:bg-purple-100'} font-bold rounded-lg transition whitespace-nowrap`}>{isCleanUpLoading ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}<span className="hidden sm:inline">{isCleanUpLoading ? (ocrProgress || '処理中...') : 'AI整頓'}</span></button> <button onClick={(e) => { e.stopPropagation(); runOCR(); }} disabled={isCleanUpLoading || isOcrLoading} className={`flex items-center gap-1.5 px-3 py-2 ${isOcrLoading ? 'bg-gray-100 text-gray-400' : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'} font-bold rounded-lg transition whitespace-nowrap`}>{isOcrLoading ? <Loader2 size={18} className="animate-spin" /> : <ScanText size={18} />}<span className="hidden sm:inline">{isOcrLoading ? (ocrProgress || '処理中...') : '自動文字認識'}</span></button> </> )}
                         {isGroupable && <button onClick={(e) => { e.stopPropagation(); handleGroup(); }} className="flex items-center gap-1.5 px-3 py-2 bg-emerald-50 text-emerald-700 font-bold rounded-lg hover:bg-emerald-100 transition whitespace-nowrap" title="グループ化"><Link size={18} /> <span className="hidden sm:inline">グループ</span></button>}
                         {isUngroupable && <button onClick={(e) => { e.stopPropagation(); handleUngroup(); }} className="flex items-center gap-1.5 px-3 py-2 bg-gray-50 text-gray-700 font-bold rounded-lg hover:bg-gray-200 transition whitespace-nowrap" title="グループ解除"><Unlink size={18} /> <span className="hidden sm:inline">解除</span></button>}
-                        {(isSingleTextSelected || hasPenSelected || isGroupable || isUngroupable) && <div className="w-px h-6 bg-gray-200 mx-1"></div>} <button onClick={(e) => { e.stopPropagation(); handleCopySelected(); }} className="flex items-center justify-center w-10 h-10 text-gray-600 hover:bg-gray-100 rounded-lg transition" title="コピー (Ctrl+C)"><Copy size={20} /></button> <button onClick={(e) => { e.stopPropagation(); handleDeleteSelected(); }} className="flex items-center justify-center w-10 h-10 text-red-500 hover:bg-red-50 rounded-lg transition" title="削除 (Delete)"><Trash2 size={20} /></button>
+                        {(isSingleTextSelected || hasInkSelected || isGroupable || isUngroupable) && <div className="w-px h-6 bg-gray-200 mx-1"></div>} <button onClick={(e) => { e.stopPropagation(); handleCopySelected(); }} className="flex items-center justify-center w-10 h-10 text-gray-600 hover:bg-gray-100 rounded-lg transition" title="コピー (Ctrl+C)"><Copy size={20} /></button> <button onClick={(e) => { e.stopPropagation(); handleDeleteSelected(); }} className="flex items-center justify-center w-10 h-10 text-red-500 hover:bg-red-50 rounded-lg transition" title="削除 (Delete)"><Trash2 size={20} /></button>
                       </div>
                     )}
                   </div>
                 </div>
               )}
-              {imagesData.length > 0 && ( <div className="bg-white border-t px-4 py-2 flex items-center gap-3 overflow-x-auto shrink-0 z-10 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]"> {imagesData.map((img) => ( <div key={img.id} onClick={() => switchImage(img.id)} className={`relative w-16 h-16 shrink-0 rounded-lg overflow-hidden border-2 cursor-pointer transition-all ${activeImageId === img.id ? 'border-blue-500 shadow-md ring-2 ring-blue-200' : 'border-gray-200 opacity-70 hover:opacity-100'}`}> <img src={img.baseImage.src} className="w-full h-full object-cover bg-gray-100" /> <button onClick={(e) => { e.stopPropagation(); handleDeleteImage(img.id); }} className="absolute top-0.5 right-0.5 p-1 bg-black/60 text-white rounded-full hover:bg-red-500 transition"><X size={12} /></button> </div> ))} <label className="w-16 h-16 shrink-0 rounded-lg border-2 border-dashed border-gray-300 flex flex-col items-center justify-center text-gray-500 cursor-pointer hover:bg-blue-50 hover:text-blue-600 hover:border-blue-300 transition" title="クリックまたはペーストで追加"> <Plus size={20} /><span className="text-[9px] mt-0.5 font-bold">追加</span><input type="file" multiple accept="image/*" className="hidden" onChange={handleImageUpload} /> </label> </div> )}
+              {imagesData.length > 0 && ( <div className="bg-white border-t px-4 py-2 flex items-center gap-3 overflow-x-auto shrink-0 z-10 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]"> {imagesData.map((img) => ( <div key={img.id} onClick={() => { if (suppressThumbClickRef.current) { suppressThumbClickRef.current = false; return; } switchImage(img.id); }} onContextMenu={(e) => { e.preventDefault(); setThumbContextMenu({ img, x: e.clientX, y: e.clientY }); }} onPointerDown={(e) => { if (e.pointerType === 'touch') { if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current); longPressTimerRef.current = setTimeout(() => { suppressThumbClickRef.current = true; setThumbContextMenu({ img, x: e.clientX, y: e.clientY }); }, 550); } }} onPointerUp={() => { if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current); }} onPointerCancel={() => { if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current); }} className={`relative w-16 h-16 shrink-0 rounded-lg overflow-hidden border-2 cursor-pointer transition-all ${activeImageId === img.id ? 'border-blue-500 shadow-md ring-2 ring-blue-200' : 'border-gray-200 opacity-70 hover:opacity-100'}`}> <img src={img.baseImage.src} className="w-full h-full object-cover bg-gray-100" /> <button onClick={(e) => { e.stopPropagation(); handleDeleteImage(img.id); }} className="absolute top-0.5 right-0.5 p-1 bg-black/60 text-white rounded-full hover:bg-red-500 transition"><X size={12} /></button> </div> ))} <button onClick={() => setIsImageSourcePickerOpen(true)} className="w-16 h-16 shrink-0 rounded-lg border-2 border-dashed border-gray-300 flex flex-col items-center justify-center text-gray-500 cursor-pointer hover:bg-blue-50 hover:text-blue-600 hover:border-blue-300 transition" title="追加方法を選択"> <Plus size={20} /><span className="text-[9px] mt-0.5 font-bold">追加</span></button> </div> )}
             </>
           )}
         </div>
         {!isFullscreen && ( <div className="w-full lg:w-80 bg-white border-t lg:border-t-0 lg:border-l border-gray-200 flex flex-col shrink-0 relative z-20"> <div className="p-4 bg-gray-50 border-b font-bold text-gray-700 flex justify-between items-center"> <div className="flex items-center gap-2"><FileText size={20} /> メモ (任意)</div> <button onClick={() => setIsLayoutModalOpen(true)} className="flex items-center gap-1 text-xs bg-white border border-gray-300 px-2 py-1.5 rounded-lg hover:bg-gray-100 text-gray-600 transition shadow-sm font-medium"><LayoutTemplate size={14} /> PPTレイアウト</button> </div> <textarea value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="評価のコメントやメモを入力..." className="flex-1 p-5 text-lg text-gray-800 resize-none focus:outline-none focus:ring-inset focus:ring-2 focus:ring-blue-500 select-text"></textarea> </div> )}
       </div>
+      {thumbContextMenu && ( <div className="fixed z-[66] thumb-context-menu bg-white border border-gray-200 rounded-xl shadow-2xl p-1.5 min-w-[170px]" style={{ left: Math.min(thumbContextMenu.x, viewportW - 190), top: Math.min(thumbContextMenu.y, viewportH - 120) }}> <button onClick={() => { copyThumbnailImage(thumbContextMenu.img); setThumbContextMenu(null); }} className="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-100 font-medium text-gray-700">画像をコピー</button> <button onClick={() => { saveThumbnailImage(thumbContextMenu.img); setThumbContextMenu(null); }} className="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-100 font-medium text-gray-700">画像を保存</button> </div> )}
       {isClearConfirmOpen && ( <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4"> <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl"> <h2 className="text-xl font-bold mb-2 text-gray-800">書き込みの消去</h2><p className="text-gray-600 mb-6">すべての書き込みを消去しますか？</p> <div className="flex justify-end gap-3"><button onClick={() => setIsClearConfirmOpen(false)} className="px-5 py-2.5 rounded-xl text-gray-600 hover:bg-gray-100 font-medium">キャンセル</button><button onClick={() => { pushHistory(annotations); setAnnotations([]); setIsClearConfirmOpen(false); }} className="px-5 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 font-medium">消去する</button></div> </div> </div> )}
+      {isImageSourcePickerOpen && ( <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[65] p-4"> <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl"> <h2 className="text-2xl font-bold text-gray-800 mb-2">画像の追加方法</h2><p className="text-gray-500 mb-5">カメラで撮影するか、アルバムから選択してください。</p><div className="flex flex-col sm:flex-row gap-4"> <button onClick={() => { setIsImageSourcePickerOpen(false); setTimeout(() => cameraInputRef.current?.click(), 0); }} className="flex-1 flex flex-col items-center justify-center bg-blue-50 p-6 rounded-2xl hover:bg-blue-100 text-blue-700 transition"><Camera size={44} className="mb-3" /><span className="font-bold text-lg">カメラで撮影</span></button> <button onClick={() => { setIsImageSourcePickerOpen(false); setTimeout(() => albumInputRef.current?.click(), 0); }} className="flex-1 flex flex-col items-center justify-center bg-indigo-50 p-6 rounded-2xl hover:bg-indigo-100 text-indigo-700 transition"><ImageIcon size={44} className="mb-3" /><span className="font-bold text-lg">アルバムから選択</span></button> </div><div className="mt-5 flex justify-end"><button onClick={() => setIsImageSourcePickerOpen(false)} className="px-5 py-2.5 rounded-xl text-gray-600 hover:bg-gray-100 font-medium">キャンセル</button></div></div></div> )}
+      <input ref={cameraInputRef} type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={handleImageUpload} />
+      <input ref={albumInputRef} type="file" multiple accept="image/*" className="hidden" onChange={handleImageUpload} />
       {isLayoutModalOpen && ( <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[70] p-4 font-sans select-none backdrop-blur-sm"> <div className="bg-white rounded-2xl p-6 w-full max-w-3xl shadow-2xl max-h-[95vh] overflow-y-auto flex flex-col"> <div className="flex justify-between items-center mb-4"> <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2"><LayoutTemplate size={24} className="text-blue-600" /> スライド出力レイアウト設定</h2> <button onClick={() => setIsLayoutModalOpen(false)} className="p-2 text-gray-400 hover:bg-gray-100 rounded-full transition"><X size={24} /></button> </div> <div className="mb-6 flex gap-2 overflow-x-auto pb-2 shrink-0"> {[ { id: 'default', label: 'デフォルト (左メモ / 右画像)' }, { id: 'top_bottom', label: '上下分割 (上メモ / 下画像)' }, { id: 'images_only', label: '画像のみ (メモ非表示)' }, { id: 'custom', label: '完全カスタム (プレビューを操作)' } ].map(tpl => ( <button key={tpl.id} onClick={() => setLayoutSettings(prev => ({ ...prev, template: tpl.id }))} className={`px-4 py-2.5 border-2 rounded-xl text-sm font-bold whitespace-nowrap transition ${layoutSettings.template === tpl.id ? 'border-blue-500 bg-blue-50 text-blue-700 shadow-sm' : 'border-gray-200 text-gray-600 hover:bg-gray-50 hover:border-gray-300'}`}>{tpl.label}</button> ))} </div> <div className="mb-4"> <div className="flex justify-between items-end mb-2"><h3 className="font-bold text-gray-700 text-sm">プレビュー (ドラッグ＆リサイズ可能)</h3><span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">16:9 スライド</span></div> <div ref={previewContainerRef} className="relative w-full aspect-video bg-white border-2 border-gray-300 shadow-inner overflow-hidden rounded-lg" style={{ backgroundImage: 'radial-gradient(#e5e7eb 1px, transparent 1px)', backgroundSize: '40px 40px', backgroundPosition: '0 0' }}> <div className="absolute top-1/2 left-0 w-full h-px bg-blue-500/20 pointer-events-none"></div><div className="absolute left-1/2 top-0 w-px h-full bg-blue-500/20 pointer-events-none"></div> {layoutSettings.memoRect && ( <LayoutRect rect={layoutSettings.memoRect} onChange={(r) => setLayoutSettings(p => ({...p, memoRect: r}))} onDragStart={() => setLayoutSettings(p => ({...p, template: 'custom'}))} label="📝 メモ配置エリア" isMemo={true} containerRef={previewContainerRef} /> )} {layoutSettings.customImageRects.map((rect, i) => ( <LayoutRect key={i} rect={rect} onChange={(r) => { const newArr = [...layoutSettings.customImageRects]; newArr[i] = r; setLayoutSettings(p => ({...p, customImageRects: newArr})); }} onDragStart={() => setLayoutSettings(p => ({...p, template: 'custom'}))} label={`🖼️ ${i+1}枚目の画像`} bgImg={imagesData[i]?.baseImage?.src} isMemo={false} containerRef={previewContainerRef} /> ))} </div> </div> <div className="border border-gray-200 rounded-xl overflow-hidden shrink-0"> <button onClick={() => setShowAdvancedLayout(!showAdvancedLayout)} className="w-full px-4 py-3 bg-gray-50 hover:bg-gray-100 flex justify-between items-center text-sm font-bold text-gray-700 transition">詳細な数値を手入力して微調整する {showAdvancedLayout ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button> {showAdvancedLayout && ( <div className="p-4 bg-white space-y-4"> <p className="text-xs text-gray-500 mb-2">※単位は「インチ」です（標準16:9スライド幅10.0、高さ5.625）。左上が原点(0,0)です。</p> {layoutSettings.memoRect && ( <div className="space-y-1"><h4 className="font-bold text-gray-700 text-xs flex items-center gap-1.5"><FileText size={14}/> メモ枠</h4> <div className="flex flex-wrap gap-2 items-center text-xs bg-gray-50 p-2 rounded border"> <label className="flex items-center gap-1 font-bold text-gray-600">X: <input type="number" step="0.1" value={layoutSettings.memoRect.x} onChange={e => setLayoutSettings(p => ({...p, template: 'custom', memoRect: {...p.memoRect, x: parseFloat(e.target.value)||0}}))} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">Y: <input type="number" step="0.1" value={layoutSettings.memoRect.y} onChange={e => setLayoutSettings(p => ({...p, template: 'custom', memoRect: {...p.memoRect, y: parseFloat(e.target.value)||0}}))} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">W: <input type="number" step="0.1" value={layoutSettings.memoRect.w} onChange={e => setLayoutSettings(p => ({...p, template: 'custom', memoRect: {...p.memoRect, w: parseFloat(e.target.value)||0}}))} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">H: <input type="number" step="0.1" value={layoutSettings.memoRect.h} onChange={e => setLayoutSettings(p => ({...p, template: 'custom', memoRect: {...p.memoRect, h: parseFloat(e.target.value)||0}}))} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> </div> </div> )} <div className="space-y-1"><h4 className="font-bold text-gray-700 text-xs flex items-center justify-between"><span className="flex items-center gap-1.5"><ImageIcon size={14}/> 各画像枠</span><button onClick={() => setLayoutSettings(p => ({...p, template: 'custom', customImageRects: [...p.customImageRects, {x:0.5, y:1.0, w:4.0, h:3.0}]}))} className="text-blue-600 hover:text-blue-800 text-xs font-bold flex items-center gap-1"><Plus size={12}/> 枠を追加</button></h4> <div className="space-y-2 max-h-32 overflow-y-auto pr-1"> {layoutSettings.customImageRects.map((rect, idx) => ( <div key={idx} className="flex flex-wrap gap-2 items-center text-xs bg-gray-50 p-2 border rounded"> <span className="font-bold text-blue-600 w-12 text-center">{idx + 1}枚目</span> <label className="flex items-center gap-1 font-bold text-gray-600">X: <input type="number" step="0.1" value={rect.x} onChange={e => { const newArr = [...layoutSettings.customImageRects]; newArr[idx].x = parseFloat(e.target.value)||0; setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">Y: <input type="number" step="0.1" value={rect.y} onChange={e => { const newArr = [...layoutSettings.customImageRects]; newArr[idx].y = parseFloat(e.target.value)||0; setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">W: <input type="number" step="0.1" value={rect.w} onChange={e => { const newArr = [...layoutSettings.customImageRects]; newArr[idx].w = parseFloat(e.target.value)||0; setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">H: <input type="number" step="0.1" value={rect.h} onChange={e => { const newArr = [...layoutSettings.customImageRects]; newArr[idx].h = parseFloat(e.target.value)||0; setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <button onClick={() => { const newArr = layoutSettings.customImageRects.filter((_, i) => i !== idx); setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="ml-auto text-red-500 hover:bg-red-100 p-1 rounded transition"><Trash2 size={14} /></button> </div> ))} </div> </div> </div> )} </div> <div className="mt-6 flex justify-end shrink-0"> <button onClick={() => setIsLayoutModalOpen(false)} className="px-8 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold transition shadow-lg flex items-center gap-2">設定を保存して戻る</button> </div> </div> </div> )}
     </div>
   );
