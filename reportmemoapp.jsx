@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.3.0';
+const APP_VERSION = 'v1.3.1';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -38,6 +38,27 @@ const normalizeProjects = (rawProjects) => {
       };
     })
   }));
+};
+const imageSrcToPngBlob = async (src) => {
+  const img = new Image();
+  img.decoding = 'async';
+  img.crossOrigin = 'anonymous';
+  img.src = src;
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = reject;
+  });
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth || img.width;
+  canvas.height = img.naturalHeight || img.height;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+  return await new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error('toBlob failed'));
+    }, 'image/png');
+  });
 };
 
 // オフスクリーンキャンバス
@@ -774,21 +795,6 @@ export default function App() {
     }
   };
 
-  const handleCopyLoopTable = async () => {
-    const project = projects.find(p => p.id === activeProjectId);
-    if (!project) return;
-    const rows = [['No', 'メモ', '画像枚数']];
-    project.items.forEach((item, idx) => rows.push([String(idx + 1), (item.memo || '').replace(/\r?\n/g, ' / '), String((item.images || []).length)]));
-    const tsv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join('\t')).join('\n');
-    try {
-      await navigator.clipboard.writeText(tsv);
-      alert('Microsoft Loop の表に貼り付け可能な形式をコピーしました。');
-    } catch (e) {
-      console.error(e);
-      alert('コピーに失敗しました。');
-    }
-  };
-
   // --- Sort Functions (Unified for DnD) ---
   const handleDragStart = (idx, e) => {
     if (e) {
@@ -934,12 +940,17 @@ export default function App() {
         alert('このブラウザでは画像コピーに対応していません。');
         return;
       }
-      const blob = await (await fetch(src)).blob();
-      await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+      const blob = await imageSrcToPngBlob(src);
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
       alert('画像をコピーしました。');
     } catch (e) {
       console.error(e);
-      alert('画像コピーに失敗しました。');
+      try {
+        await navigator.clipboard.writeText(src);
+        alert('画像URLをコピーしました（画像本体コピーが使えない環境です）。');
+      } catch {
+        alert('画像コピーに失敗しました。');
+      }
     }
   };
 
@@ -1101,9 +1112,6 @@ export default function App() {
             </button>
             <button onClick={() => projectImportInputRef.current?.click()} className="flex items-center gap-2 bg-indigo-100 text-indigo-700 px-4 py-2 rounded-lg font-bold hover:bg-indigo-200">
               <Upload size={20} /> <span className="hidden sm:inline">プロジェクト読込(上書き)</span>
-            </button>
-            <button onClick={handleCopyLoopTable} className="flex items-center gap-2 bg-teal-100 text-teal-700 px-4 py-2 rounded-lg font-bold hover:bg-teal-200">
-              <Copy size={20} /> <span className="hidden sm:inline">Loop表コピー</span>
             </button>
             <button onClick={() => setIsExportSettingsOpen(true)} className="flex items-center gap-2 bg-orange-100 text-orange-700 px-4 py-2 rounded-lg font-bold hover:bg-orange-200">
               <Presentation size={20} /> <span className="hidden sm:inline">PPTX出力</span>
@@ -1502,12 +1510,19 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
       }
       const src = img?.baseImage?.src;
       if (!src) return;
-      const blob = await (await fetch(src)).blob();
-      await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+      const pngBlob = await imageSrcToPngBlob(src);
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })]);
       alert('画像をコピーしました。');
     } catch (e) {
       console.error(e);
-      alert('画像コピーに失敗しました。');
+      try {
+        const src = img?.baseImage?.src;
+        if (!src) throw new Error('no src');
+        await navigator.clipboard.writeText(src);
+        alert('画像URLをコピーしました（画像本体コピーが使えない環境です）。');
+      } catch {
+        alert('画像コピーに失敗しました。');
+      }
     }
   };
 
