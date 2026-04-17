@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.3.4';
+const APP_VERSION = 'v1.3.5';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -456,11 +456,19 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
       const rx = box.x + (ann.tx || 0); const ry = box.y + (ann.ty || 0);
       const rot = (ann.rotation || 0) * (180 / Math.PI);
       const pColor = (ann.color || '#000000').replace('#', '');
-      slide.addText(ann.text, {
+      const textOpts = {
         x: drawX + rx * pRatio, y: drawY + ry * pRatio, w: Math.max(1, box.w * pRatio), h: Math.max(0.5, box.h * pRatio),
         fontSize: Math.max(1, (ann.fontSize || 48) * pRatio * 0.75), color: pColor, bold: true, rotate: rot, valign: 'middle', align: 'center',
         fontFace: 'Meiryo'
-      });
+      };
+      if (ann.hasGlow) {
+        slide.addText(ann.text, {
+          ...textOpts,
+          color: 'FFFFFF',
+          fontSize: Math.max(1, textOpts.fontSize + 2),
+        });
+      }
+      slide.addText(ann.text, textOpts);
     } else {
       const stroke = ann.color || '#000000'; const pColor = stroke.replace('#', '');
       const sw = ann.width || 4; const pptSw = sw * 0.75;
@@ -481,6 +489,7 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
          const nW = rawBox.w * Math.abs(sx) * pRatio; const nH = rawBox.h * Math.abs(sy) * pRatio;
          const shapeOpts = { x: pptCx - nW / 2, y: pptCy - nH / 2, w: Math.max(0.1, nW), h: Math.max(0.1, nH), line: { color: pColor, width: Math.max(0.1, pptSw * pRatio) }, rotate: rot };
          if (fill) shapeOpts.fill = { color: fill };
+         if (ann.hasGlow) slide.addShape(shapeType, { x: pptCx - nW / 2, y: pptCy - nH / 2, w: Math.max(0.1, nW), h: Math.max(0.1, nH), line: { color: 'FFFFFF', width: Math.max(0.1, (pptSw + 6) * pRatio) }, rotate: rot });
          slide.addShape(shapeType, shapeOpts);
       } else if (['line', 'arrow', 'double_arrow'].includes(ann.type)) {
          const startX = ann.startX + (ann.tx || 0);
@@ -515,24 +524,32 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
              lineConfig.line.endArrowType = 'triangle';
          }
          
+         if (ann.hasGlow) {
+           const glowLine = { ...lineConfig, line: { ...lineConfig.line, color: 'FFFFFF', width: Math.max(0.1, (pptSw + 6) * pRatio) } };
+           slide.addShape(pptx.ShapeType.line, glowLine);
+         }
          slide.addShape(pptx.ShapeType.line, lineConfig);
       } else {
          let svgContent = ''; const svgFill = (ann.fillColor && ann.fillColor !== 'transparent') ? ann.fillColor : 'none';
+         const glowStrokeWidth = sw + 8;
          if (['pen', 'polyline', 'polygon', 'handwriting_text', 'eraser_pixel'].includes(ann.type) && ann.points?.length > 0) {
              let d = `M ${ann.points[0].x} ${ann.points[0].y}`;
              for (let i = 1; i < ann.points.length; i++) d += ` L ${ann.points[i].x} ${ann.points[i].y}`;
              if (ann.type === 'polygon') d += ' Z';
-             svgContent = `<path d="${d}" fill="${svgFill}" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" />`;
+             if (ann.hasGlow) svgContent += `<path d="${d}" fill="none" stroke="#ffffff" stroke-width="${glowStrokeWidth}" stroke-linecap="round" stroke-linejoin="round" />`;
+             svgContent += `<path d="${d}" fill="${svgFill}" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" />`;
          } else if (ann.type === 'star') {
             const c_x = (ann.startX + ann.endX)/2, c_y = (ann.startY + ann.endY)/2, rx = Math.abs(ann.endX-ann.startX)/2, ry = Math.abs(ann.endY-ann.startY)/2;
             const outR = Math.min(rx, ry), inR = outR * 0.4; let r_ang = -Math.PI/2, step = Math.PI/5, pts = [];
             for(let i=0; i<5; i++){ pts.push(`${c_x + Math.cos(r_ang)*outR},${c_y + Math.sin(r_ang)*outR}`); r_ang+=step; pts.push(`${c_x + Math.cos(r_ang)*inR},${c_y + Math.sin(r_ang)*inR}`); r_ang+=step; }
-            svgContent = `<polygon points="${pts.join(' ')}" fill="${svgFill}" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round" />`;
+            if (ann.hasGlow) svgContent += `<polygon points="${pts.join(' ')}" fill="none" stroke="#ffffff" stroke-width="${glowStrokeWidth}" stroke-linejoin="round" />`;
+            svgContent += `<polygon points="${pts.join(' ')}" fill="${svgFill}" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round" />`;
          } else if (['arrow', 'double_arrow'].includes(ann.type)) {
             const hl = Math.max(15, sw * 3), ang = Math.atan2(ann.endY - ann.startY, ann.endX - ann.startX);
             let d = `M ${ann.startX} ${ann.startY} L ${ann.endX} ${ann.endY} M ${ann.endX} ${ann.endY} L ${ann.endX - hl*Math.cos(ang-Math.PI/6)} ${ann.endY - hl*Math.sin(ang-Math.PI/6)} M ${ann.endX} ${ann.endY} L ${ann.endX - hl*Math.cos(ang+Math.PI/6)} ${ann.endY - hl*Math.sin(ang+Math.PI/6)}`;
             if (ann.type === 'double_arrow') d += ` M ${ann.startX} ${ann.startY} L ${ann.startX + hl*Math.cos(ang-Math.PI/6)} ${ann.startY + hl*Math.sin(ang-Math.PI/6)} M ${ann.startX} ${ann.startY} L ${ann.startX + hl*Math.cos(ang+Math.PI/6)} ${ann.startY + hl*Math.sin(ang+Math.PI/6)}`;
-            svgContent = `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" />`;
+            if (ann.hasGlow) svgContent += `<path d="${d}" fill="none" stroke="#ffffff" stroke-width="${glowStrokeWidth}" stroke-linecap="round" stroke-linejoin="round" />`;
+            svgContent += `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" />`;
          } else if (['curve', 'curve_arrow', 'double_curve_arrow'].includes(ann.type)) {
             let d = `M ${ann.startX} ${ann.startY}`; if(ann.midX !== undefined) d += ` Q ${ann.midX} ${ann.midY} ${ann.endX} ${ann.endY}`; else d += ` L ${ann.endX} ${ann.endY}`;
             const hl = Math.max(15, sw * 3), angE = ann.midX !== undefined ? Math.atan2(ann.endY - ann.midY, ann.endX - ann.midX) : Math.atan2(ann.endY - ann.startY, ann.endX - ann.startX);
@@ -541,7 +558,8 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
               const angS = ann.midX !== undefined ? Math.atan2(ann.startY - ann.midY, ann.startX - ann.midX) : Math.atan2(ann.startY - ann.endY, ann.startX - ann.endX);
               d += ` M ${ann.startX} ${ann.startY} L ${ann.startX - hl*Math.cos(angS-Math.PI/6)} ${ann.startY - hl*Math.sin(angS-Math.PI/6)} M ${ann.startX} ${ann.startY} L ${ann.startX - hl*Math.cos(angS+Math.PI/6)} ${ann.startY - hl*Math.sin(angS+Math.PI/6)}`;
             }
-            svgContent = `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" />`;
+            if (ann.hasGlow) svgContent += `<path d="${d}" fill="none" stroke="#ffffff" stroke-width="${glowStrokeWidth}" stroke-linecap="round" stroke-linejoin="round" />`;
+            svgContent += `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" />`;
          }
          if (svgContent) {
            const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vbX} ${vbY} ${vbW} ${vbH}" width="${vbW}" height="${vbH}">${svgContent}</svg>`;
@@ -1800,7 +1818,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       if (effectiveShouldNavigate) { if (selectedIds.length === 1) { const selAnn = annotations.find(a => a.id === selectedIds[0]); const handle = checkHandleHit(pos.x, pos.y, selAnn); if (handle) { dragModeRef.current = handle; dragStartPointerRef.current = pos; dragStartAnnsRef.current = [JSON.parse(JSON.stringify(selAnn))]; if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = false; return; } }
         if (selectedIds.length > 0) { const mBox = getMultiBBox(annotations, selectedIds); if (mBox && pos.x >= mBox.x && pos.x <= mBox.x + mBox.w && pos.y >= mBox.y && pos.y <= mBox.y + mBox.h) { dragModeRef.current = 'move_multi'; dragStartPointerRef.current = pos; dragStartAnnsRef.current = annotations.filter(a => selectedIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; return; } }
         const hit = checkHit(pos.x, pos.y, annotations); if (hit) { let targetIds = [hit.id]; if (hit.groupId) targetIds = annotations.filter(a => a.groupId === hit.groupId).map(a => a.id); setSelectedIds(targetIds); if (hit.color) setStrokeColor(hit.color); if (hit.fillColor !== undefined) { setIsFillTransparent(hit.fillColor === 'transparent'); if (hit.fillColor !== 'transparent') setFillColor(hit.fillColor); } if (hit.width) setLineWidth(hit.width); if (hit.fontSize) setFontSize(hit.fontSize); if (hit.hasGlow !== undefined) setTextGlow(hit.hasGlow); dragModeRef.current = 'move'; dragStartPointerRef.current = pos; dragStartAnnsRef.current = annotations.filter(a => targetIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; return; }
-        if (currentToolRef.current === ToolType.SELECT) setSelectedIds([]); isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return;
+        if (currentToolRef.current === ToolType.SELECT) setSelectedIds([]); isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; return;
       }
       if (currentToolRef.current === ToolType.LASSO) { setSelectedIds([]); setLassoPoints([pos]); isDrawingRef.current = true; return; } if (currentToolRef.current === ToolType.ERASER_OBJ) { isDrawingRef.current = true; const hit = checkHit(pos.x, pos.y, annotations); if (hit) { pushHistory(annotations); setAnnotations(prev => prev.filter(a => a.id !== hit.id && (!hit.groupId || a.groupId !== hit.groupId))); } return; } if (currentToolRef.current === ToolType.TEXT) { setSelectedIds([]); setTextInput({ canvasX: pos.x, canvasY: pos.y, value: '' }); return; } if (currentToolRef.current === ToolType.HANDWRITING_TEXT) { if (handwritingTimerRef.current) clearTimeout(handwritingTimerRef.current); }
       setSelectedIds([]); isDrawingRef.current = true; const baseAnn = { id: Date.now().toString(), type: currentToolRef.current, color: strokeColor, fillColor: isFillTransparent ? 'transparent' : fillColor, width: lineWidth, fontSize: fontSize, scaleX: 1, scaleY: 1, rotation: 0, tx: 0, ty: 0, hasGlow: textGlow }; if (currentToolRef.current === ToolType.PEN || currentToolRef.current === ToolType.ERASER_PIXEL || currentToolRef.current === ToolType.HANDWRITING_TEXT) setCurrentAnnotation({ ...baseAnn, points: [{ x: pos.x, y: pos.y }] }); else setCurrentAnnotation({ ...baseAnn, startX: pos.x, startY: pos.y, endX: pos.x, endY: pos.y });
@@ -1880,8 +1898,8 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                     {baseImage && <img src={baseImage.src} className="absolute inset-0 w-full h-full object-contain pointer-events-none" alt="Base" />}
                     <canvas ref={canvasRef} className={`absolute inset-0 w-full h-full ${currentTool === ToolType.SELECT || currentTool === ToolType.LASSO ? 'cursor-default' : 'cursor-crosshair'}`} />
                     {textInput && (
-                      <div className="absolute z-50 transform -translate-x-1/2 -translate-y-1/2 text-overlay flex flex-col justify-center items-center pointer-events-auto" style={{ left: `${(textInput.canvasX / canvasRef.current.width) * 100}%`, top: `${(textInput.canvasY / canvasRef.current.height) * 100}%`, transform: `translate(-50%, -50%) rotate(${textInput.rotation || 0}rad) scale(${(textInput.scale || 1) / Math.max(transform.scale, 0.1)})` }}>
-                        <div className="mb-2 bg-white/95 backdrop-blur-sm px-3 py-2 rounded-xl shadow-2xl flex items-center gap-2 border border-gray-200" onPointerDown={e => e.stopPropagation()}>
+                      <div className="absolute z-50 transform -translate-x-1/2 -translate-y-1/2 text-overlay pointer-events-auto" style={{ left: `${(textInput.canvasX / canvasRef.current.width) * 100}%`, top: `${(textInput.canvasY / canvasRef.current.height) * 100}%`, transform: `translate(-50%, -50%) rotate(${textInput.rotation || 0}rad) scale(${(textInput.scale || 1) / Math.max(transform.scale, 0.1)})` }}>
+                        <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 bg-white/95 backdrop-blur-sm px-3 py-2 rounded-xl shadow-2xl flex items-center gap-2 border border-gray-200 whitespace-nowrap" onPointerDown={e => e.stopPropagation()}>
                           <div className="flex gap-1"> {COLORS.slice(0, 4).map(c => <button key={`ti-${c}`} onClick={() => setStrokeColor(c)} className={`w-6 h-6 rounded-full border shadow-sm ${strokeColor === c ? 'border-blue-500 scale-110' : 'border-gray-200'}`} style={{ backgroundColor: c }} />)} </div> <div className="w-px h-5 bg-gray-300 mx-1" /> <div className="flex items-center gap-2"> <span className="text-xs font-bold text-gray-600">ｻｲｽﾞ</span> <input type="range" min="16" max="120" value={fontSize} onChange={e => setFontSize(parseInt(e.target.value))} className="w-20 accent-blue-500" /> </div> <div className="w-px h-5 bg-gray-300 mx-1" /> <button onClick={() => setTextGlow(!textGlow)} className={`p-1.5 rounded-lg flex items-center gap-1 ${textGlow ? 'bg-amber-100 text-amber-600' : 'text-gray-400 hover:bg-gray-100'}`} title="光彩"> <Sparkles size={16} strokeWidth={textGlow ? 2.5 : 2} /> <span className="text-[10px] font-bold">光彩</span> </button> <div className="w-px h-5 bg-gray-300 mx-1" /> <button onClick={handleTextSubmit} className="bg-blue-600 text-white px-4 py-1.5 rounded-lg font-bold text-sm hover:bg-blue-700 shadow-md">確定</button>
                         </div>
                         <textarea autoFocus value={textInput.value} onChange={(e) => setTextInput({...textInput, value: e.target.value})} onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleTextSubmit(); } }} onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()} className="p-2 font-bold border-4 border-blue-500 rounded-lg shadow-2xl focus:outline-none bg-transparent text-center resize-none overflow-hidden select-text touch-auto" style={{ color: strokeColor, textShadow: textGlow ? '0 0 10px white, 0 0 10px white, 0 0 10px white' : 'none', minWidth: '200px', width: `${Math.max(200, textInput.value.split('\n').reduce((a,b)=>a.length>b.length?a:b, '').length * fontSize * 1.2 + 40)}px`, fontSize: `${fontSize}px`, lineHeight: 1.2, height: `${Math.max(1, textInput.value.split('\n').length) * fontSize * 1.2 + 32}px` }} placeholder="文字を入力 (Shift+Enterで改行)" />
