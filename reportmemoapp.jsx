@@ -503,6 +503,7 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
          const nW = rawBox.w * Math.abs(sx) * ratioX; const nH = rawBox.h * Math.abs(sy) * ratioY;
          const shapeOpts = { x: pptCx - nW / 2, y: pptCy - nH / 2, w: Math.max(0.1, nW), h: Math.max(0.1, nH), line: { color: pColor, width: pptSw }, rotate: rot, ...glowOpts(ann.hasGlow) };
          if (fill) shapeOpts.fill = { color: fill };
+         if (ann.hasGlow) slide.addShape(shapeType, { x: pptCx - nW / 2, y: pptCy - nH / 2, w: Math.max(0.1, nW), h: Math.max(0.1, nH), line: { color: 'FFFFFF', width: Math.max(0.1, (pptSw + 6) * pRatio) }, rotate: rot });
          slide.addShape(shapeType, shapeOpts);
       } else if (['line', 'arrow', 'double_arrow'].includes(ann.type)) {
          const startX = ann.startX + (ann.tx || 0);
@@ -524,7 +525,7 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
          
          let lineConfig = {
            x: minX, y: minY, w: w, h: h,
-           line: { color: pColor, width: pptSw }
+           line: { color: pColor, width: Math.max(0.1, pptSw * pRatio) }
          };
          
          if (pptSx > pptEx) lineConfig.flipH = true;
@@ -541,6 +542,7 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
          slide.addShape(pptx.ShapeType.line, lineConfig);
       } else {
          let svgContent = ''; const svgFill = (ann.fillColor && ann.fillColor !== 'transparent') ? ann.fillColor : 'none';
+         const glowStrokeWidth = sw + 8;
          if (['pen', 'polyline', 'polygon', 'handwriting_text', 'eraser_pixel'].includes(ann.type) && ann.points?.length > 0) {
              let d = `M ${ann.points[0].x} ${ann.points[0].y}`;
              for (let i = 1; i < ann.points.length; i++) d += ` L ${ann.points[i].x} ${ann.points[i].y}`;
@@ -845,6 +847,7 @@ export default function App() {
       e.stopPropagation();
       if (e.currentTarget?.setPointerCapture) e.currentTarget.setPointerCapture(e.pointerId);
     }
+    saveToUndo();
     setDraggedIndex(idx);
     setDropIndex(idx);
     setDragStartPos({ x: e.clientX, y: e.clientY });
