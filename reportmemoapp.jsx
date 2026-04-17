@@ -450,6 +450,7 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
   const ratioX = drawW / Math.max(1, baseW || 1);
   const ratioY = drawH / Math.max(1, baseH || 1);
   const pRatio = Math.min(ratioX, ratioY);
+  const glowOpts = (enabled) => enabled ? { glow: { size: Math.max(1, 6 * pRatio), color: 'FFFFFF', opacity: 0.85 } } : {};
   annotations.forEach(ann => {
     if (ann.type === 'text') {
       const box = getBBox(ann); if (!box) return;
@@ -459,15 +460,9 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
       const textOpts = {
         x: drawX + rx * pRatio, y: drawY + ry * pRatio, w: Math.max(1, box.w * pRatio), h: Math.max(0.5, box.h * pRatio),
         fontSize: Math.max(1, (ann.fontSize || 48) * pRatio * 0.75), color: pColor, bold: true, rotate: rot, valign: 'middle', align: 'center',
-        fontFace: 'Meiryo'
+        fontFace: 'Meiryo',
+        ...glowOpts(ann.hasGlow)
       };
-      if (ann.hasGlow) {
-        slide.addText(ann.text, {
-          ...textOpts,
-          color: 'FFFFFF',
-          fontSize: Math.max(1, textOpts.fontSize + 2),
-        });
-      }
       slide.addText(ann.text, textOpts);
     } else {
       const stroke = ann.color || '#000000'; const pColor = stroke.replace('#', '');
@@ -487,7 +482,7 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
       if (['rect', 'circle', 'triangle'].includes(ann.type)) {
          let shapeType = ann.type === 'rect' ? pptx.ShapeType.rect : (ann.type === 'circle' ? pptx.ShapeType.ellipse : pptx.ShapeType.triangle);
          const nW = rawBox.w * Math.abs(sx) * pRatio; const nH = rawBox.h * Math.abs(sy) * pRatio;
-         const shapeOpts = { x: pptCx - nW / 2, y: pptCy - nH / 2, w: Math.max(0.1, nW), h: Math.max(0.1, nH), line: { color: pColor, width: Math.max(0.1, pptSw * pRatio) }, rotate: rot };
+         const shapeOpts = { x: pptCx - nW / 2, y: pptCy - nH / 2, w: Math.max(0.1, nW), h: Math.max(0.1, nH), line: { color: pColor, width: Math.max(0.1, pptSw * pRatio) }, rotate: rot, ...glowOpts(ann.hasGlow) };
          if (fill) shapeOpts.fill = { color: fill };
          if (ann.hasGlow) slide.addShape(shapeType, { x: pptCx - nW / 2, y: pptCy - nH / 2, w: Math.max(0.1, nW), h: Math.max(0.1, nH), line: { color: 'FFFFFF', width: Math.max(0.1, (pptSw + 6) * pRatio) }, rotate: rot });
          slide.addShape(shapeType, shapeOpts);
@@ -524,10 +519,7 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
              lineConfig.line.endArrowType = 'triangle';
          }
          
-         if (ann.hasGlow) {
-           const glowLine = { ...lineConfig, line: { ...lineConfig.line, color: 'FFFFFF', width: Math.max(0.1, (pptSw + 6) * pRatio) } };
-           slide.addShape(pptx.ShapeType.line, glowLine);
-         }
+         lineConfig = { ...lineConfig, ...glowOpts(ann.hasGlow) };
          slide.addShape(pptx.ShapeType.line, lineConfig);
       } else {
          let svgContent = ''; const svgFill = (ann.fillColor && ann.fillColor !== 'transparent') ? ann.fillColor : 'none';
@@ -536,19 +528,16 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
              let d = `M ${ann.points[0].x} ${ann.points[0].y}`;
              for (let i = 1; i < ann.points.length; i++) d += ` L ${ann.points[i].x} ${ann.points[i].y}`;
              if (ann.type === 'polygon') d += ' Z';
-             if (ann.hasGlow) svgContent += `<path d="${d}" fill="none" stroke="#ffffff" stroke-width="${glowStrokeWidth}" stroke-linecap="round" stroke-linejoin="round" />`;
              svgContent += `<path d="${d}" fill="${svgFill}" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" />`;
          } else if (ann.type === 'star') {
             const c_x = (ann.startX + ann.endX)/2, c_y = (ann.startY + ann.endY)/2, rx = Math.abs(ann.endX-ann.startX)/2, ry = Math.abs(ann.endY-ann.startY)/2;
             const outR = Math.min(rx, ry), inR = outR * 0.4; let r_ang = -Math.PI/2, step = Math.PI/5, pts = [];
             for(let i=0; i<5; i++){ pts.push(`${c_x + Math.cos(r_ang)*outR},${c_y + Math.sin(r_ang)*outR}`); r_ang+=step; pts.push(`${c_x + Math.cos(r_ang)*inR},${c_y + Math.sin(r_ang)*inR}`); r_ang+=step; }
-            if (ann.hasGlow) svgContent += `<polygon points="${pts.join(' ')}" fill="none" stroke="#ffffff" stroke-width="${glowStrokeWidth}" stroke-linejoin="round" />`;
             svgContent += `<polygon points="${pts.join(' ')}" fill="${svgFill}" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round" />`;
          } else if (['arrow', 'double_arrow'].includes(ann.type)) {
             const hl = Math.max(15, sw * 3), ang = Math.atan2(ann.endY - ann.startY, ann.endX - ann.startX);
             let d = `M ${ann.startX} ${ann.startY} L ${ann.endX} ${ann.endY} M ${ann.endX} ${ann.endY} L ${ann.endX - hl*Math.cos(ang-Math.PI/6)} ${ann.endY - hl*Math.sin(ang-Math.PI/6)} M ${ann.endX} ${ann.endY} L ${ann.endX - hl*Math.cos(ang+Math.PI/6)} ${ann.endY - hl*Math.sin(ang+Math.PI/6)}`;
             if (ann.type === 'double_arrow') d += ` M ${ann.startX} ${ann.startY} L ${ann.startX + hl*Math.cos(ang-Math.PI/6)} ${ann.startY + hl*Math.sin(ang-Math.PI/6)} M ${ann.startX} ${ann.startY} L ${ann.startX + hl*Math.cos(ang+Math.PI/6)} ${ann.startY + hl*Math.sin(ang+Math.PI/6)}`;
-            if (ann.hasGlow) svgContent += `<path d="${d}" fill="none" stroke="#ffffff" stroke-width="${glowStrokeWidth}" stroke-linecap="round" stroke-linejoin="round" />`;
             svgContent += `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" />`;
          } else if (['curve', 'curve_arrow', 'double_curve_arrow'].includes(ann.type)) {
             let d = `M ${ann.startX} ${ann.startY}`; if(ann.midX !== undefined) d += ` Q ${ann.midX} ${ann.midY} ${ann.endX} ${ann.endY}`; else d += ` L ${ann.endX} ${ann.endY}`;
@@ -558,12 +547,11 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
               const angS = ann.midX !== undefined ? Math.atan2(ann.startY - ann.midY, ann.startX - ann.midX) : Math.atan2(ann.startY - ann.endY, ann.startX - ann.endX);
               d += ` M ${ann.startX} ${ann.startY} L ${ann.startX - hl*Math.cos(angS-Math.PI/6)} ${ann.startY - hl*Math.sin(angS-Math.PI/6)} M ${ann.startX} ${ann.startY} L ${ann.startX - hl*Math.cos(angS+Math.PI/6)} ${ann.startY - hl*Math.sin(angS+Math.PI/6)}`;
             }
-            if (ann.hasGlow) svgContent += `<path d="${d}" fill="none" stroke="#ffffff" stroke-width="${glowStrokeWidth}" stroke-linecap="round" stroke-linejoin="round" />`;
             svgContent += `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" />`;
          }
          if (svgContent) {
            const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vbX} ${vbY} ${vbW} ${vbH}" width="${vbW}" height="${vbH}">${svgContent}</svg>`;
-           slide.addImage({ data: `data:image/svg+xml;base64,${btoa(Array.from(new TextEncoder().encode(svgStr)).map(b => String.fromCharCode(b)).join(''))}`, x: pptX, y: pptY, w: Math.max(0.1, pptW), h: Math.max(0.1, pptH), rotate: rot });
+           slide.addImage({ data: `data:image/svg+xml;base64,${btoa(Array.from(new TextEncoder().encode(svgStr)).map(b => String.fromCharCode(b)).join(''))}`, x: pptX, y: pptY, w: Math.max(0.1, pptW), h: Math.max(0.1, pptH), rotate: rot, ...glowOpts(ann.hasGlow) });
          }
       }
     }
