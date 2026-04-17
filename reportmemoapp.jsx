@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.3.2';
+const APP_VERSION = 'v1.3.3';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -39,6 +39,16 @@ const normalizeProjects = (rawProjects) => {
     })
   }));
 };
+const DEFAULT_EDITOR_PREFS = {
+  shape: { lineWidth: 4, textGlow: false },
+  text: { fontSize: 48, textGlow: false },
+  freehand: { lineWidth: 4, textGlow: false }
+};
+const mergeEditorPrefs = (prefs) => ({
+  shape: { ...DEFAULT_EDITOR_PREFS.shape, ...(prefs?.shape || {}) },
+  text: { ...DEFAULT_EDITOR_PREFS.text, ...(prefs?.text || {}) },
+  freehand: { ...DEFAULT_EDITOR_PREFS.freehand, ...(prefs?.freehand || {}) }
+});
 const imageSrcToPngBlob = async (src) => {
   const img = new Image();
   img.decoding = 'async';
@@ -436,8 +446,10 @@ const idbSet = async (key, value) => {
   });
 };
 
-const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, baseW) => {
-  const pRatio = drawW / baseW;
+const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, drawH, baseW, baseH) => {
+  const ratioX = drawW / Math.max(1, baseW || 1);
+  const ratioY = drawH / Math.max(1, baseH || 1);
+  const pRatio = Math.min(ratioX, ratioY);
   annotations.forEach(ann => {
     if (ann.type === 'text') {
       const box = getBBox(ann); if (!box) return;
@@ -446,7 +458,7 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, b
       const pColor = (ann.color || '#000000').replace('#', '');
       slide.addText(ann.text, {
         x: drawX + rx * pRatio, y: drawY + ry * pRatio, w: Math.max(1, box.w * pRatio), h: Math.max(0.5, box.h * pRatio),
-        fontSize: (ann.fontSize || 48) * pRatio * 72, color: pColor, bold: true, rotate: rot, valign: 'middle', align: 'center',
+        fontSize: Math.max(1, (ann.fontSize || 48) * pRatio * 0.75), color: pColor, bold: true, rotate: rot, valign: 'middle', align: 'center',
         fontFace: 'Meiryo'
       });
     } else {
@@ -467,7 +479,7 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, b
       if (['rect', 'circle', 'triangle'].includes(ann.type)) {
          let shapeType = ann.type === 'rect' ? pptx.ShapeType.rect : (ann.type === 'circle' ? pptx.ShapeType.ellipse : pptx.ShapeType.triangle);
          const nW = rawBox.w * Math.abs(sx) * pRatio; const nH = rawBox.h * Math.abs(sy) * pRatio;
-         const shapeOpts = { x: pptCx - nW / 2, y: pptCy - nH / 2, w: Math.max(0.1, nW), h: Math.max(0.1, nH), line: { color: pColor, width: pptSw }, rotate: rot };
+         const shapeOpts = { x: pptCx - nW / 2, y: pptCy - nH / 2, w: Math.max(0.1, nW), h: Math.max(0.1, nH), line: { color: pColor, width: Math.max(0.1, pptSw * pRatio) }, rotate: rot };
          if (fill) shapeOpts.fill = { color: fill };
          slide.addShape(shapeType, shapeOpts);
       } else if (['line', 'arrow', 'double_arrow'].includes(ann.type)) {
@@ -490,7 +502,7 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, b
          
          let lineConfig = {
            x: minX, y: minY, w: w, h: h,
-           line: { color: pColor, width: pptSw }
+           line: { color: pColor, width: Math.max(0.1, pptSw * pRatio) }
          };
          
          if (pptSx > pptEx) lineConfig.flipH = true;
@@ -697,8 +709,9 @@ export default function App() {
             const rect = imageRects[i];
             if (!rect || !imgData.baseImage) return;
             const baseW = imgData.baseWidth || 1200;
+            const baseH = imgData.baseHeight || 800;
             slide.addImage({ data: imgData.baseImage, x: rect.x, y: rect.y, w: rect.w, h: rect.h });
-            if (imgData.annotations && Array.isArray(imgData.annotations)) { drawAnnotationsOnSlide(slide, pptx, imgData.annotations, rect.x, rect.y, rect.w, baseW); }
+            if (imgData.annotations && Array.isArray(imgData.annotations)) { drawAnnotationsOnSlide(slide, pptx, imgData.annotations, rect.x, rect.y, rect.w, rect.h, baseW, baseH); }
         });
       });
       await pptx.writeFile({ fileName: `${project.title}_export.pptx` });
@@ -970,6 +983,7 @@ export default function App() {
     link.click();
     document.body.removeChild(link);
   };
+  const activeProject = projects.find(p => p.id === activeProjectId);
 
   if (!isProjectsLoaded) {
     return (
@@ -1099,7 +1113,7 @@ export default function App() {
   }
 
   if (currentView === 'project') {
-    const project = projects.find(p => p.id === activeProjectId);
+    const project = activeProject;
     if (!project) return null;
 
     return (
@@ -1284,16 +1298,17 @@ export default function App() {
       <ItemEditor 
         key={editingItem ? editingItem.id : 'new'}
         initialItem={editingItem}
+        editorPrefs={mergeEditorPrefs(activeProject?.editorPrefs)}
         onCancel={() => setCurrentView('project')}
-        onSave={(newItem) => { 
+        onSave={(newItem, updatedEditorPrefs) => {
           saveToUndo();
           setProjects(prev => prev.map(p => {
             if (p.id !== activeProjectId) return p;
             const existingIdx = p.items.findIndex(i => i.id === newItem.id);
             if (existingIdx >= 0) {
-              const newItems = [...p.items]; newItems[existingIdx] = newItem; return { ...p, items: newItems };
+              const newItems = [...p.items]; newItems[existingIdx] = newItem; return { ...p, items: newItems, editorPrefs: mergeEditorPrefs(updatedEditorPrefs) };
             } else {
-              return { ...p, items: [...p.items, newItem] };
+              return { ...p, items: [...p.items, newItem], editorPrefs: mergeEditorPrefs(updatedEditorPrefs) };
             }
           })); 
           setCurrentView('project'); 
@@ -1305,7 +1320,8 @@ export default function App() {
 }
 
 // --- Item Editor Component ---
-function ItemEditor({ onCancel, onSave, initialItem }) {
+function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
+  const mergedPrefs = mergeEditorPrefs(editorPrefs);
   const resolveStoredImageSrc = useCallback((imgObj) => {
     if (!imgObj) return '';
     if (typeof imgObj.baseImage === 'string' && imgObj.baseImage.trim()) return imgObj.baseImage;
@@ -1345,15 +1361,22 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
   const panStartClientRef = useRef(null);
   const [currentAnnotation, setCurrentAnnotation] = useState(null);
   const [currentTool, setCurrentTool] = useState(ToolType.PEN); const currentToolRef = useRef(currentTool);
-  const [lineWidth, setLineWidth] = useState(4); const [fontSize, setFontSize] = useState(48);
+  const [lineWidth, setLineWidth] = useState(mergedPrefs.freehand.lineWidth); const [fontSize, setFontSize] = useState(mergedPrefs.text.fontSize);
   const [strokeColor, setStrokeColor] = useState(COLORS[0]); const [fillColor, setFillColor] = useState(COLORS[1]);
-  const [isFillTransparent, setIsFillTransparent] = useState(true); const [textGlow, setTextGlow] = useState(false);
+  const [isFillTransparent, setIsFillTransparent] = useState(true); const [textGlow, setTextGlow] = useState(mergedPrefs.freehand.textGlow);
   const toolSettingsRef = useRef({
-    [ToolType.PEN]: { lineWidth: 4, strokeColor: COLORS[0], textGlow: false }, [ToolType.HANDWRITING_TEXT]: { lineWidth: 4, fontSize: 48, strokeColor: COLORS[0], textGlow: false },
-    [ToolType.TEXT]: { fontSize: 48, strokeColor: COLORS[0], textGlow: false }, [ToolType.LINE]: { lineWidth: 4, strokeColor: COLORS[0], textGlow: false },
-    [ToolType.ARROW]: { lineWidth: 4, strokeColor: COLORS[0], textGlow: false }, [ToolType.RECT]: { lineWidth: 4, strokeColor: COLORS[0], fillColor: COLORS[1], isFillTransparent: true, textGlow: false },
-    [ToolType.CIRCLE]: { lineWidth: 4, strokeColor: COLORS[0], fillColor: COLORS[1], isFillTransparent: true, textGlow: false }, [ToolType.ERASER_PIXEL]: { lineWidth: 20 },
+    [ToolType.PEN]: { lineWidth: mergedPrefs.freehand.lineWidth, strokeColor: COLORS[0], textGlow: mergedPrefs.freehand.textGlow }, [ToolType.HANDWRITING_TEXT]: { lineWidth: mergedPrefs.freehand.lineWidth, fontSize: mergedPrefs.text.fontSize, strokeColor: COLORS[0], textGlow: mergedPrefs.freehand.textGlow },
+    [ToolType.TEXT]: { fontSize: mergedPrefs.text.fontSize, strokeColor: COLORS[0], textGlow: mergedPrefs.text.textGlow }, [ToolType.LINE]: { lineWidth: mergedPrefs.shape.lineWidth, strokeColor: COLORS[0], textGlow: mergedPrefs.shape.textGlow },
+    [ToolType.ARROW]: { lineWidth: mergedPrefs.shape.lineWidth, strokeColor: COLORS[0], textGlow: mergedPrefs.shape.textGlow }, [ToolType.RECT]: { lineWidth: mergedPrefs.shape.lineWidth, strokeColor: COLORS[0], fillColor: COLORS[1], isFillTransparent: true, textGlow: mergedPrefs.shape.textGlow },
+    [ToolType.CIRCLE]: { lineWidth: mergedPrefs.shape.lineWidth, strokeColor: COLORS[0], fillColor: COLORS[1], isFillTransparent: true, textGlow: mergedPrefs.shape.textGlow }, [ToolType.ERASER_PIXEL]: { lineWidth: 20 },
   });
+  const projectPrefsRef = useRef(mergedPrefs);
+  const getPrefsGroup = useCallback((tool) => {
+    if ([ToolType.LINE, ToolType.ARROW, ToolType.RECT, ToolType.CIRCLE].includes(tool)) return 'shape';
+    if (tool === ToolType.TEXT) return 'text';
+    if ([ToolType.PEN, ToolType.HANDWRITING_TEXT].includes(tool)) return 'freehand';
+    return null;
+  }, []);
   const [activePopover, setActivePopover] = useState(null); const [textInput, setTextInput] = useState(null); 
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false); const [fingerDrawMode, setFingerDrawMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]); const [lassoPoints, setLassoPoints] = useState([]); 
@@ -1587,8 +1610,30 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
   const handleToolChange = useCallback((newTool, keepSelection = false) => { setCurrentTool(newTool); currentToolRef.current = newTool; if (!keepSelection) setSelectedIds([]); setActivePopover(null); const settings = toolSettingsRef.current[newTool]; if (settings) { if (settings.lineWidth !== undefined) setLineWidth(settings.lineWidth); if (settings.fontSize !== undefined) setFontSize(settings.fontSize); if (settings.strokeColor !== undefined) setStrokeColor(settings.strokeColor); if (settings.fillColor !== undefined) setFillColor(settings.fillColor); if (settings.isFillTransparent !== undefined) setIsFillTransparent(settings.isFillTransparent); if (settings.textGlow !== undefined) setTextGlow(settings.textGlow); } }, []);
   const updateSettings = useCallback((updatesObj) => {
     if (updatesObj.lineWidth !== undefined) setLineWidth(updatesObj.lineWidth); if (updatesObj.fontSize !== undefined) setFontSize(updatesObj.fontSize); if (updatesObj.strokeColor !== undefined) setStrokeColor(updatesObj.strokeColor); if (updatesObj.fillColor !== undefined) setFillColor(updatesObj.fillColor); if (updatesObj.isFillTransparent !== undefined) setIsFillTransparent(updatesObj.isFillTransparent); if (updatesObj.textGlow !== undefined) setTextGlow(updatesObj.textGlow); if (currentTool !== ToolType.SELECT && currentTool !== ToolType.LASSO && toolSettingsRef.current[currentTool]) Object.assign(toolSettingsRef.current[currentTool], updatesObj);
+    const group = getPrefsGroup(currentTool);
+    if (group) {
+      projectPrefsRef.current[group] = { ...projectPrefsRef.current[group], ...(updatesObj.lineWidth !== undefined ? { lineWidth: updatesObj.lineWidth } : {}), ...(updatesObj.textGlow !== undefined ? { textGlow: updatesObj.textGlow } : {}), ...(updatesObj.fontSize !== undefined ? { fontSize: updatesObj.fontSize } : {}) };
+      if (group === 'shape') {
+        [ToolType.LINE, ToolType.ARROW, ToolType.RECT, ToolType.CIRCLE].forEach(t => {
+          if (!toolSettingsRef.current[t]) return;
+          if (updatesObj.lineWidth !== undefined) toolSettingsRef.current[t].lineWidth = updatesObj.lineWidth;
+          if (updatesObj.textGlow !== undefined) toolSettingsRef.current[t].textGlow = updatesObj.textGlow;
+        });
+      } else if (group === 'text') {
+        if (toolSettingsRef.current[ToolType.TEXT]) {
+          if (updatesObj.fontSize !== undefined) toolSettingsRef.current[ToolType.TEXT].fontSize = updatesObj.fontSize;
+          if (updatesObj.textGlow !== undefined) toolSettingsRef.current[ToolType.TEXT].textGlow = updatesObj.textGlow;
+        }
+      } else if (group === 'freehand') {
+        [ToolType.PEN, ToolType.HANDWRITING_TEXT].forEach(t => {
+          if (!toolSettingsRef.current[t]) return;
+          if (updatesObj.lineWidth !== undefined) toolSettingsRef.current[t].lineWidth = updatesObj.lineWidth;
+          if (updatesObj.textGlow !== undefined) toolSettingsRef.current[t].textGlow = updatesObj.textGlow;
+        });
+      }
+    }
     if (selectedIds.length > 0) { pushHistory(annotationsRef.current); const annUpdates = {}; if (updatesObj.lineWidth !== undefined) annUpdates.width = updatesObj.lineWidth; if (updatesObj.fontSize !== undefined) annUpdates.fontSize = updatesObj.fontSize; if (updatesObj.strokeColor !== undefined) annUpdates.color = updatesObj.strokeColor; const newIsTransp = updatesObj.isFillTransparent !== undefined ? updatesObj.isFillTransparent : isFillTransparent; const newFColor = updatesObj.fillColor !== undefined ? updatesObj.fillColor : fillColor; if (updatesObj.fillColor !== undefined || updatesObj.isFillTransparent !== undefined) annUpdates.fillColor = newIsTransp ? 'transparent' : newFColor; if (updatesObj.textGlow !== undefined) annUpdates.hasGlow = updatesObj.textGlow; updateSelectedObj(annUpdates); }
-  }, [currentTool, selectedIds, isFillTransparent, fillColor, updateSelectedObj, pushHistory]);
+  }, [currentTool, selectedIds, isFillTransparent, fillColor, updateSelectedObj, pushHistory, getPrefsGroup]);
 
   const handleDeleteSelected = useCallback(() => { if (selectedIds.length === 0) return; pushHistory(annotationsRef.current); setAnnotations(prev => prev.filter(a => !selectedIds.includes(a.id))); setSelectedIds([]); }, [selectedIds, pushHistory]);
   const handleCopySelected = useCallback(() => { if (selectedIds.length === 0) return; const copied = annotationsRef.current.filter(a => selectedIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); setClipboard(copied); }, [selectedIds]);
@@ -1691,7 +1736,7 @@ function ItemEditor({ onCancel, onSave, initialItem }) {
       }),
       memo,
       layout: layoutSettings
-    });
+    }, projectPrefsRef.current);
   };
 
   useEffect(() => {
