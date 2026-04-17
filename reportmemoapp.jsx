@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.4.4';
+const APP_VERSION = 'v1.4.5';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -477,8 +477,9 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
       const rot = (ann.rotation || 0) * (180 / Math.PI);
       const pColor = (ann.color || '#000000').replace('#', '');
       const textOpts = {
-        x: drawX + rx * ratioX, y: drawY + ry * ratioY, w: Math.max(0.05, box.w * ratioX), h: Math.max(0.05, box.h * ratioY),
+        x: drawX + rx * ratioX, y: drawY + ry * ratioY, w: Math.max(0.05, box.w * ratioX * 1.08), h: Math.max(0.05, box.h * ratioY * 1.05),
         fontSize: Math.max(1, (ann.fontSize || 48) * pxToPt), color: pColor, bold: true, rotate: rot, valign: 'middle', align: 'center',
+        margin: 0, breakLine: false, fit: 'resize',
         fontFace: 'Meiryo',
         ...glowOpts(ann.hasGlow)
       };
