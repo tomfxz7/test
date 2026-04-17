@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.4.3';
+const APP_VERSION = 'v1.4.4';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -69,6 +69,24 @@ const imageSrcToPngBlob = async (src) => {
       else reject(new Error('toBlob failed'));
     }, 'image/png');
   });
+};
+const normalizeImageForPptx = async (src) => {
+  const img = new Image();
+  img.decoding = 'async';
+  img.crossOrigin = 'anonymous';
+  img.src = src;
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = reject;
+  });
+  const width = img.naturalWidth || img.width || 1;
+  const height = img.naturalHeight || img.height || 1;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, width, height);
+  return { data: canvas.toDataURL('image/png'), width, height };
 };
 
 // オフスクリーンキャンバス
@@ -703,7 +721,7 @@ export default function App() {
       const pptx = new PptxGenJS();
       pptx.layout = 'LAYOUT_16x9';
       pptx.defineSlideMaster({ title: "REPORT_SLIDE", background: { color: "FFFFFF" } });
-      project.items.forEach((item, index) => {
+      for (const [index, item] of project.items.entries()) {
         const slide = pptx.addSlide({ masterName: "REPORT_SLIDE" });
         slide.addText(project.title, { x: 0.5, y: 0.2, w: 9.0, h: 0.6, fontSize: 21, fontFace: 'Meiryo', bold: true, color: '000000', valign: 'middle', align: 'left' });
         if (pptxSettings.showPageNumber) { slide.addText(`No. ${index + 1}`, { x: 8.5, y: 0.2, w: 1.0, h: 0.3, fontSize: 12, fontFace: 'Meiryo', bold: true, color: '666666', align: 'right' }); }
@@ -713,20 +731,21 @@ export default function App() {
         else { const calc = calculateTemplateLayout(layout.template, item.images || []); memoRect = calc.memoRect; imageRects = calc.customImageRects; }
         if (item.memo && memoRect) { slide.addText(item.memo, { x: memoRect.x, y: memoRect.y, w: memoRect.w, h: memoRect.h, fontSize: 16, fontFace: 'Meiryo', color: '333333', align: 'left', valign: 'top' }); }
         const images = item.images || [];
-        images.forEach((imgData, i) => {
+        for (const [i, imgData] of images.entries()) {
             const rect = imageRects[i];
-            if (!rect || !imgData.baseImage) return;
-            const baseW = imgData.baseWidth || 1200;
-            const baseH = imgData.baseHeight || 800;
+            if (!rect || !imgData.baseImage) continue;
+            const normalizedImage = await normalizeImageForPptx(imgData.baseImage);
+            const baseW = imgData.baseWidth || normalizedImage.width || 1200;
+            const baseH = imgData.baseHeight || normalizedImage.height || 800;
             const fitRatio = Math.min(rect.w / Math.max(1, baseW), rect.h / Math.max(1, baseH));
             const drawW = baseW * fitRatio;
             const drawH = baseH * fitRatio;
             const drawX = rect.x + (rect.w - drawW) / 2;
             const drawY = rect.y + (rect.h - drawH) / 2;
-            slide.addImage({ data: imgData.baseImage, x: drawX, y: drawY, w: drawW, h: drawH });
+            slide.addImage({ data: normalizedImage.data, x: drawX, y: drawY, w: drawW, h: drawH });
             if (imgData.annotations && Array.isArray(imgData.annotations)) { drawAnnotationsOnSlide(slide, pptx, imgData.annotations, drawX, drawY, drawW, drawH, baseW, baseH); }
-        });
-      });
+        }
+      }
       await pptx.writeFile({ fileName: `${project.title}_export.pptx` });
       setIsExportSettingsOpen(false);
     } catch (error) { console.error("PPTX Export Error:", error); alert("PPTXの書き出しに失敗しました。"); } finally { setIsExportingPPTX(false); }
