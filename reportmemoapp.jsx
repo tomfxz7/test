@@ -484,6 +484,7 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
          const nW = rawBox.w * Math.abs(sx) * pRatio; const nH = rawBox.h * Math.abs(sy) * pRatio;
          const shapeOpts = { x: pptCx - nW / 2, y: pptCy - nH / 2, w: Math.max(0.1, nW), h: Math.max(0.1, nH), line: { color: pColor, width: Math.max(0.1, pptSw * pRatio) }, rotate: rot, ...glowOpts(ann.hasGlow) };
          if (fill) shapeOpts.fill = { color: fill };
+         if (ann.hasGlow) slide.addShape(shapeType, { x: pptCx - nW / 2, y: pptCy - nH / 2, w: Math.max(0.1, nW), h: Math.max(0.1, nH), line: { color: 'FFFFFF', width: Math.max(0.1, (pptSw + 6) * pRatio) }, rotate: rot });
          slide.addShape(shapeType, shapeOpts);
       } else if (['line', 'arrow', 'double_arrow'].includes(ann.type)) {
          const startX = ann.startX + (ann.tx || 0);
@@ -522,6 +523,7 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
          slide.addShape(pptx.ShapeType.line, lineConfig);
       } else {
          let svgContent = ''; const svgFill = (ann.fillColor && ann.fillColor !== 'transparent') ? ann.fillColor : 'none';
+         const glowStrokeWidth = sw + 8;
          if (['pen', 'polyline', 'polygon', 'handwriting_text', 'eraser_pixel'].includes(ann.type) && ann.points?.length > 0) {
              let d = `M ${ann.points[0].x} ${ann.points[0].y}`;
              for (let i = 1; i < ann.points.length; i++) d += ` L ${ann.points[i].x} ${ann.points[i].y}`;
@@ -819,6 +821,7 @@ export default function App() {
       e.stopPropagation();
       if (e.currentTarget?.setPointerCapture) e.currentTarget.setPointerCapture(e.pointerId);
     }
+    saveToUndo();
     setDraggedIndex(idx);
     setDropIndex(idx);
     setDragStartPos({ x: e.clientX, y: e.clientY });
@@ -1797,7 +1800,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   }, []);
 
   const handlePointerDown = (e) => {
-    if (e.target.closest('.text-overlay') || e.target.closest('.selection-menu')) return; if (e.target.tagName === 'CANVAS' || e.target.closest('.canvas-container')) e.preventDefault(); const isTouch = e.pointerType === 'touch'; setActivePopover(null); if (textInput) handleTextSubmit(); historySnapshotRef.current = annotations; activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (e.target.closest('.text-overlay') || e.target.closest('.selection-menu')) return; if (e.target.tagName === 'CANVAS' || e.target.closest('.canvas-container')) e.preventDefault(); setActivePopover(null); if (textInput) handleTextSubmit(); historySnapshotRef.current = annotations; activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (activePointers.current.size >= 2) { isDrawingRef.current = false; setCurrentAnnotation(null); dragModeRef.current = null; const pts = Array.from(activePointers.current.values()); const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y); const center = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }; lastPinch.current = { dist, center, initialTransform: { ...transformRef.current } }; return; }
     if (activePointers.current.size === 1) { const isPanHandle = !!e.target.closest('.page-pan-handle'); if (isPanHandle) { isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return; } if (e.target.tagName !== 'CANVAS') return; const pos = getCanvasPos(e.clientX, e.clientY); const isUniversalNavigation = e.button === 1 || (e.button === 0 && e.altKey); const effectiveShouldNavigate = isUniversalNavigation;
       if (effectiveShouldNavigate) { if (selectedIds.length === 1) { const selAnn = annotations.find(a => a.id === selectedIds[0]); const handle = checkHandleHit(pos.x, pos.y, selAnn); if (handle) { dragModeRef.current = handle; dragStartPointerRef.current = pos; dragStartAnnsRef.current = [JSON.parse(JSON.stringify(selAnn))]; if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = false; return; } }
