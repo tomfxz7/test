@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.3.8';
+const APP_VERSION = 'v1.4.0';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -628,6 +628,7 @@ export default function App() {
   const [hasDragMovement, setHasDragMovement] = useState(false);
   const activeDragPointerIdRef = useRef(null);
   const lastDragPointerYRef = useRef(null);
+  const projectListViewportRef = useRef(null);
 
   useEffect(() => {
     const loadProjects = async () => {
@@ -900,14 +901,17 @@ export default function App() {
     const autoScrollInterval = setInterval(() => {
       if (lastDragPointerYRef.current === null) return;
       const y = lastDragPointerYRef.current;
-      const edge = 90;
+      const viewportRect = projectListViewportRef.current?.getBoundingClientRect();
+      const topLimit = viewportRect ? viewportRect.top : 0;
+      const bottomLimit = viewportRect ? viewportRect.bottom : window.innerHeight;
+      const edge = Math.min(140, Math.max(56, (bottomLimit - topLimit) * 0.18));
       const maxSpeed = 9; // px/tick
       let scrollDelta = 0;
-      if (y < edge) {
-        const ratio = (edge - y) / edge;
+      if (y < topLimit + edge) {
+        const ratio = (topLimit + edge - y) / edge;
         scrollDelta = -Math.max(1, Math.round(maxSpeed * ratio));
-      } else if (y > window.innerHeight - edge) {
-        const ratio = (y - (window.innerHeight - edge)) / edge;
+      } else if (y > bottomLimit - edge) {
+        const ratio = (y - (bottomLimit - edge)) / edge;
         scrollDelta = Math.max(1, Math.round(maxSpeed * ratio));
       }
       if (scrollDelta !== 0) {
@@ -1151,7 +1155,7 @@ export default function App() {
           </div>
         </header>
 
-        <main className="p-6 md:p-10 max-w-4xl mx-auto">
+        <main ref={projectListViewportRef} className="p-6 md:p-10 max-w-4xl mx-auto">
           <div className="hidden print:block mb-8 border-b-2 border-black pb-4">
             <h1 className="text-4xl font-bold text-black">{project.title}</h1>
             <p className="text-gray-500 mt-2">作成日: {new Date(project.createdAt).toLocaleDateString()}</p>
@@ -1403,6 +1407,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const isPotentialTapRef = useRef(false); const dragStartClientPosRef = useRef(null);
   const activePointers = useRef(new Map()); const lastPinch = useRef(null);
   const annotationsRef = useRef(annotations); useEffect(() => { annotationsRef.current = annotations; }, [annotations]);
+  const textInputRef = useRef(textInput); useEffect(() => { textInputRef.current = textInput; }, [textInput]);
   const handwritingTimerRef = useRef(null); const handwritingStrokesRef = useRef([]); const [isAutoOcrLoading, setIsAutoOcrLoading] = useState(false);
   const clipboardReadInFlightRef = useRef(false);
   const lastPasteEventAtRef = useRef(0);
@@ -1624,7 +1629,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     }
   }, [redoStack]);
   const updateSelectedObj = useCallback((updates) => { setAnnotations(prev => prev.map(a => selectedIds.includes(a.id) ? { ...a, ...updates } : a)); }, [selectedIds]);
-  const handleToolChange = useCallback((newTool, keepSelection = false) => { setCurrentTool(newTool); currentToolRef.current = newTool; if (!keepSelection) setSelectedIds([]); setActivePopover(null); const settings = toolSettingsRef.current[newTool]; if (settings) { if (settings.lineWidth !== undefined) setLineWidth(settings.lineWidth); if (settings.fontSize !== undefined) setFontSize(settings.fontSize); if (settings.strokeColor !== undefined) setStrokeColor(settings.strokeColor); if (settings.fillColor !== undefined) setFillColor(settings.fillColor); if (settings.isFillTransparent !== undefined) setIsFillTransparent(settings.isFillTransparent); if (settings.textGlow !== undefined) setTextGlow(settings.textGlow); } }, []);
+  const handleToolChange = useCallback((newTool, keepSelection = false) => { if (newTool !== ToolType.TEXT && textInputRef.current) setTextInput(null); setCurrentTool(newTool); currentToolRef.current = newTool; if (!keepSelection) setSelectedIds([]); setActivePopover(null); const settings = toolSettingsRef.current[newTool]; if (settings) { if (settings.lineWidth !== undefined) setLineWidth(settings.lineWidth); if (settings.fontSize !== undefined) setFontSize(settings.fontSize); if (settings.strokeColor !== undefined) setStrokeColor(settings.strokeColor); if (settings.fillColor !== undefined) setFillColor(settings.fillColor); if (settings.isFillTransparent !== undefined) setIsFillTransparent(settings.isFillTransparent); if (settings.textGlow !== undefined) setTextGlow(settings.textGlow); } }, []);
   const updateSettings = useCallback((updatesObj) => {
     if (updatesObj.lineWidth !== undefined) setLineWidth(updatesObj.lineWidth); if (updatesObj.fontSize !== undefined) setFontSize(updatesObj.fontSize); if (updatesObj.strokeColor !== undefined) setStrokeColor(updatesObj.strokeColor); if (updatesObj.fillColor !== undefined) setFillColor(updatesObj.fillColor); if (updatesObj.isFillTransparent !== undefined) setIsFillTransparent(updatesObj.isFillTransparent); if (updatesObj.textGlow !== undefined) setTextGlow(updatesObj.textGlow); if (currentTool !== ToolType.SELECT && currentTool !== ToolType.LASSO && toolSettingsRef.current[currentTool]) Object.assign(toolSettingsRef.current[currentTool], updatesObj);
     const group = getPrefsGroup(currentTool);
@@ -1800,7 +1805,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   }, []);
 
   const handlePointerDown = (e) => {
-    if (e.target.closest('.text-overlay') || e.target.closest('.selection-menu')) return; if (e.target.tagName === 'CANVAS' || e.target.closest('.canvas-container')) e.preventDefault(); const isTouch = e.pointerType === 'touch'; const isCanvasArea = e.target.tagName === 'CANVAS' || !!e.target.closest('.canvas-container'); setActivePopover(null); if (textInput && !(isTouch && isCanvasArea)) handleTextSubmit(); historySnapshotRef.current = annotations; activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (e.target.closest('.text-overlay') || e.target.closest('.selection-menu')) return; if (e.target.tagName === 'CANVAS' || e.target.closest('.canvas-container')) e.preventDefault(); const isTouch = e.pointerType === 'touch'; const isCanvasArea = e.target.tagName === 'CANVAS' || !!e.target.closest('.canvas-container'); const keepTextInputForTouchPan = isTouch && isCanvasArea && currentToolRef.current === ToolType.TEXT && !fingerDrawMode; setActivePopover(null); if (textInput && !keepTextInputForTouchPan) handleTextSubmit(); historySnapshotRef.current = annotations; activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (activePointers.current.size >= 2) { isDrawingRef.current = false; setCurrentAnnotation(null); dragModeRef.current = null; const pts = Array.from(activePointers.current.values()); const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y); const center = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }; lastPinch.current = { dist, center, initialTransform: { ...transformRef.current } }; return; }
     if (activePointers.current.size === 1) { const isPanHandle = !!e.target.closest('.page-pan-handle'); if (isPanHandle) { isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return; } if (e.target.tagName !== 'CANVAS') return; const pos = getCanvasPos(e.clientX, e.clientY); const isUniversalNavigation = e.button === 1 || (e.button === 0 && e.altKey); const isTouchPan = isTouch && !fingerDrawMode && (currentToolRef.current !== ToolType.TEXT || !!textInput); if (isTouchPan) { isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return; } const effectiveShouldNavigate = isUniversalNavigation;
       if (effectiveShouldNavigate) { if (selectedIds.length === 1) { const selAnn = annotations.find(a => a.id === selectedIds[0]); const handle = checkHandleHit(pos.x, pos.y, selAnn); if (handle) { dragModeRef.current = handle; dragStartPointerRef.current = pos; dragStartAnnsRef.current = [JSON.parse(JSON.stringify(selAnn))]; if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = false; return; } }
@@ -1891,7 +1896,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                         <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 bg-white/95 backdrop-blur-sm px-3 py-2 rounded-xl shadow-2xl flex items-center gap-2 border border-gray-200 whitespace-nowrap" onPointerDown={e => e.stopPropagation()}>
                           <div className="flex gap-1"> {COLORS.slice(0, 4).map(c => <button key={`ti-${c}`} onClick={() => setStrokeColor(c)} className={`w-6 h-6 rounded-full border shadow-sm ${strokeColor === c ? 'border-blue-500 scale-110' : 'border-gray-200'}`} style={{ backgroundColor: c }} />)} </div> <div className="w-px h-5 bg-gray-300 mx-1" /> <div className="flex items-center gap-2"> <span className="text-xs font-bold text-gray-600">ｻｲｽﾞ</span> <input type="range" min="16" max="120" value={fontSize} onChange={e => setFontSize(parseInt(e.target.value))} className="w-20 accent-blue-500" /> </div> <div className="w-px h-5 bg-gray-300 mx-1" /> <button onClick={() => setTextGlow(!textGlow)} className={`p-1.5 rounded-lg flex items-center gap-1 ${textGlow ? 'bg-amber-100 text-amber-600' : 'text-gray-400 hover:bg-gray-100'}`} title="光彩"> <Sparkles size={16} strokeWidth={textGlow ? 2.5 : 2} /> <span className="text-[10px] font-bold">光彩</span> </button> <div className="w-px h-5 bg-gray-300 mx-1" /> <button onClick={handleTextSubmit} className="bg-blue-600 text-white px-4 py-1.5 rounded-lg font-bold text-sm hover:bg-blue-700 shadow-md">確定</button>
                         </div>
-                        <textarea autoFocus value={textInput.value} onChange={(e) => setTextInput({...textInput, value: e.target.value})} onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleTextSubmit(); } }} onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()} className="p-2 font-bold border-4 border-blue-500 rounded-lg shadow-2xl focus:outline-none bg-transparent text-center resize-none overflow-hidden select-text touch-auto" style={{ color: strokeColor, textShadow: textGlow ? '0 0 10px white, 0 0 10px white, 0 0 10px white' : 'none', minWidth: '200px', width: `${Math.max(200, textInput.value.split('\n').reduce((a,b)=>a.length>b.length?a:b, '').length * fontSize * 1.2 + 40)}px`, fontSize: `${fontSize}px`, lineHeight: 1.2, height: `${Math.max(1, textInput.value.split('\n').length) * fontSize * 1.2 + 32}px`, transform: `scale(${(textInput.scale || 1) / Math.max(transform.scale, 0.1)})`, transformOrigin: 'center center' }} placeholder="文字を入力 (Shift+Enterで改行)" />
+                        <textarea autoFocus value={textInput.value} onChange={(e) => setTextInput({...textInput, value: e.target.value})} onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleTextSubmit(); } }} onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()} className="p-2 font-bold border-4 border-blue-500 rounded-lg shadow-2xl focus:outline-none bg-transparent text-center resize-none overflow-hidden select-text touch-auto" style={{ color: strokeColor, textShadow: textGlow ? '0 0 10px white, 0 0 10px white, 0 0 10px white' : 'none', minWidth: '200px', width: `${Math.max(200, textInput.value.split('\n').reduce((a,b)=>a.length>b.length?a:b, '').length * fontSize * 1.2 + 40)}px`, fontSize: `${fontSize}px`, lineHeight: 1.2, height: `${Math.max(1, textInput.value.split('\n').length) * fontSize * 1.2 + 32}px`, transform: `scale(${1 / Math.max(transform.scale, 0.1)})`, transformOrigin: 'center center' }} placeholder="文字を入力 (Shift+Enterで改行)" />
                       </div>
                     )}
                     {shouldShowSelectionMenu && boundingBoxForMenu && canvasRef.current && (
