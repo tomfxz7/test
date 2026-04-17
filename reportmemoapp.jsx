@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.4.1';
+const APP_VERSION = 'v1.4.3';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -450,7 +450,8 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
   const ratioX = drawW / Math.max(1, baseW || 1);
   const ratioY = drawH / Math.max(1, baseH || 1);
   const pRatio = Math.min(ratioX, ratioY);
-  const glowOpts = (enabled) => enabled ? { glow: { size: Math.max(1, 6 * pRatio), color: 'FFFFFF', opacity: 0.85 } } : {};
+  const pxToPt = 72 * pRatio;
+  const glowOpts = (enabled) => enabled ? { glow: { size: Math.max(0.5, 6 * pRatio), color: 'FFFFFF', opacity: 0.85 } } : {};
   annotations.forEach(ann => {
     if (ann.type === 'text') {
       const box = getBBox(ann); if (!box) return;
@@ -458,15 +459,15 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
       const rot = (ann.rotation || 0) * (180 / Math.PI);
       const pColor = (ann.color || '#000000').replace('#', '');
       const textOpts = {
-        x: drawX + rx * pRatio, y: drawY + ry * pRatio, w: Math.max(1, box.w * pRatio), h: Math.max(0.5, box.h * pRatio),
-        fontSize: Math.max(1, (ann.fontSize || 48) * pRatio * 0.75), color: pColor, bold: true, rotate: rot, valign: 'middle', align: 'center',
+        x: drawX + rx * ratioX, y: drawY + ry * ratioY, w: Math.max(0.05, box.w * ratioX), h: Math.max(0.05, box.h * ratioY),
+        fontSize: Math.max(1, (ann.fontSize || 48) * pxToPt), color: pColor, bold: true, rotate: rot, valign: 'middle', align: 'center',
         fontFace: 'Meiryo',
         ...glowOpts(ann.hasGlow)
       };
       slide.addText(ann.text, textOpts);
     } else {
       const stroke = ann.color || '#000000'; const pColor = stroke.replace('#', '');
-      const sw = ann.width || 4; const pptSw = sw * 0.75;
+      const sw = ann.width || 4; const pptSw = Math.max(0.25, sw * pxToPt);
       const fill = (ann.fillColor && ann.fillColor !== 'transparent') ? ann.fillColor.replace('#', '') : undefined;
       const rawBox = getBBox(ann); if (!rawBox) return;
 
@@ -474,15 +475,15 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
       const cx = vbX + vbW / 2; const cy = vbY + vbH / 2;
       const transformedCx = cx + (ann.tx || 0); const transformedCy = cy + (ann.ty || 0);
       const sx = ann.scaleX || ann.scale || 1; const sy = ann.scaleY || ann.scale || 1;
-      const pptW = vbW * Math.abs(sx) * pRatio; const pptH = vbH * Math.abs(sy) * pRatio;
-      const pptCx = drawX + transformedCx * pRatio; const pptCy = drawY + transformedCy * pRatio;
+      const pptW = vbW * Math.abs(sx) * ratioX; const pptH = vbH * Math.abs(sy) * ratioY;
+      const pptCx = drawX + transformedCx * ratioX; const pptCy = drawY + transformedCy * ratioY;
       const pptX = pptCx - pptW / 2; const pptY = pptCy - pptH / 2;
       const rot = (ann.rotation || 0) * (180 / Math.PI);
 
       if (['rect', 'circle', 'triangle'].includes(ann.type)) {
          let shapeType = ann.type === 'rect' ? pptx.ShapeType.rect : (ann.type === 'circle' ? pptx.ShapeType.ellipse : pptx.ShapeType.triangle);
-         const nW = rawBox.w * Math.abs(sx) * pRatio; const nH = rawBox.h * Math.abs(sy) * pRatio;
-         const shapeOpts = { x: pptCx - nW / 2, y: pptCy - nH / 2, w: Math.max(0.1, nW), h: Math.max(0.1, nH), line: { color: pColor, width: Math.max(0.1, pptSw * pRatio) }, rotate: rot, ...glowOpts(ann.hasGlow) };
+         const nW = rawBox.w * Math.abs(sx) * ratioX; const nH = rawBox.h * Math.abs(sy) * ratioY;
+         const shapeOpts = { x: pptCx - nW / 2, y: pptCy - nH / 2, w: Math.max(0.1, nW), h: Math.max(0.1, nH), line: { color: pColor, width: pptSw }, rotate: rot, ...glowOpts(ann.hasGlow) };
          if (fill) shapeOpts.fill = { color: fill };
          if (ann.hasGlow) slide.addShape(shapeType, { x: pptCx - nW / 2, y: pptCy - nH / 2, w: Math.max(0.1, nW), h: Math.max(0.1, nH), line: { color: 'FFFFFF', width: Math.max(0.1, (pptSw + 6) * pRatio) }, rotate: rot });
          slide.addShape(shapeType, shapeOpts);
@@ -492,10 +493,10 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
          const endX = ann.endX + (ann.tx || 0);
          const endY = ann.endY + (ann.ty || 0);
          
-         const pptSx = drawX + startX * pRatio;
-         const pptSy = drawY + startY * pRatio;
-         const pptEx = drawX + endX * pRatio;
-         const pptEy = drawY + endY * pRatio;
+         const pptSx = drawX + startX * ratioX;
+         const pptSy = drawY + startY * ratioY;
+         const pptEx = drawX + endX * ratioX;
+         const pptEy = drawY + endY * ratioY;
          
          let minX = Math.min(pptSx, pptEx);
          let minY = Math.min(pptSy, pptEy);
@@ -717,8 +718,13 @@ export default function App() {
             if (!rect || !imgData.baseImage) return;
             const baseW = imgData.baseWidth || 1200;
             const baseH = imgData.baseHeight || 800;
-            slide.addImage({ data: imgData.baseImage, x: rect.x, y: rect.y, w: rect.w, h: rect.h });
-            if (imgData.annotations && Array.isArray(imgData.annotations)) { drawAnnotationsOnSlide(slide, pptx, imgData.annotations, rect.x, rect.y, rect.w, rect.h, baseW, baseH); }
+            const fitRatio = Math.min(rect.w / Math.max(1, baseW), rect.h / Math.max(1, baseH));
+            const drawW = baseW * fitRatio;
+            const drawH = baseH * fitRatio;
+            const drawX = rect.x + (rect.w - drawW) / 2;
+            const drawY = rect.y + (rect.h - drawH) / 2;
+            slide.addImage({ data: imgData.baseImage, x: drawX, y: drawY, w: drawW, h: drawH });
+            if (imgData.annotations && Array.isArray(imgData.annotations)) { drawAnnotationsOnSlide(slide, pptx, imgData.annotations, drawX, drawY, drawW, drawH, baseW, baseH); }
         });
       });
       await pptx.writeFile({ fileName: `${project.title}_export.pptx` });
@@ -1892,7 +1898,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                     {baseImage && <img src={baseImage.src} className="absolute inset-0 w-full h-full object-contain pointer-events-none" alt="Base" />}
                     <canvas ref={canvasRef} className={`absolute inset-0 w-full h-full ${currentTool === ToolType.SELECT || currentTool === ToolType.LASSO ? 'cursor-default' : 'cursor-crosshair'}`} />
                     {textInput && (
-                      <div className="absolute z-50 transform -translate-x-1/2 -translate-y-1/2 text-overlay pointer-events-auto" style={{ left: `${(textInput.canvasX / canvasRef.current.width) * 100}%`, top: `${(textInput.canvasY / canvasRef.current.height) * 100}%`, transform: `translate(-50%, -50%) rotate(${textInput.rotation || 0}rad) scale(${1 / Math.max(transform.scale, 0.1)})` }}>
+                      <div className="absolute z-50 transform -translate-x-1/2 -translate-y-1/2 text-overlay pointer-events-auto" style={{ left: `${(textInput.canvasX / canvasRef.current.width) * 100}%`, top: `${(textInput.canvasY / canvasRef.current.height) * 100}%`, transform: `translate(-50%, -50%) rotate(${textInput.rotation || 0}rad)` }}>
                         <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 bg-white/95 backdrop-blur-sm px-3 py-2 rounded-xl shadow-2xl flex items-center gap-2 border border-gray-200 whitespace-nowrap" onPointerDown={e => e.stopPropagation()}>
                           <div className="flex gap-1"> {COLORS.slice(0, 4).map(c => <button key={`ti-${c}`} onClick={() => setStrokeColor(c)} className={`w-6 h-6 rounded-full border shadow-sm ${strokeColor === c ? 'border-blue-500 scale-110' : 'border-gray-200'}`} style={{ backgroundColor: c }} />)} </div> <div className="w-px h-5 bg-gray-300 mx-1" /> <div className="flex items-center gap-2"> <span className="text-xs font-bold text-gray-600">ｻｲｽﾞ</span> <input type="range" min="16" max="120" value={fontSize} onChange={e => setFontSize(parseInt(e.target.value))} className="w-20 accent-blue-500" /> </div> <div className="w-px h-5 bg-gray-300 mx-1" /> <button onClick={() => setTextGlow(!textGlow)} className={`p-1.5 rounded-lg flex items-center gap-1 ${textGlow ? 'bg-amber-100 text-amber-600' : 'text-gray-400 hover:bg-gray-100'}`} title="光彩"> <Sparkles size={16} strokeWidth={textGlow ? 2.5 : 2} /> <span className="text-[10px] font-bold">光彩</span> </button> <div className="w-px h-5 bg-gray-300 mx-1" /> <button onClick={handleTextSubmit} className="bg-blue-600 text-white px-4 py-1.5 rounded-lg font-bold text-sm hover:bg-blue-700 shadow-md">確定</button>
                         </div>
