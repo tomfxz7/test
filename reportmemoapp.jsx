@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.4.7';
+const APP_VERSION = 'v1.4.8';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -488,9 +488,15 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
       const startYPx = (svgH - (lines.length - 1) * lineHeightPx) / 2;
       const fillColor = `#${pColor}`;
       const glowStroke = ann.hasGlow ? ' stroke="#ffffff" stroke-width="8" stroke-linejoin="round"' : '';
+      const escapeXml = (value) => String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
       const textNodes = lines.map((line, i) => {
         const y = startYPx + i * lineHeightPx;
-        return `<text x="${svgW / 2}" y="${y}" text-anchor="middle" dominant-baseline="middle" font-family="Meiryo, sans-serif" font-size="${fontPx}" font-weight="700" fill="${fillColor}"${glowStroke}>${String(line).replace(/[&<>\"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c]))}</text>`;
+        return `<text x="${svgW / 2}" y="${y}" text-anchor="middle" dominant-baseline="middle" font-family="Meiryo, sans-serif" font-size="${fontPx}" font-weight="700" fill="${fillColor}"${glowStroke}>${escapeXml(line)}</text>`;
       }).join('');
       const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${svgW} ${svgH}" width="${svgW}" height="${svgH}">${textNodes}</svg>`;
       const svgData = `data:image/svg+xml;base64,${btoa(Array.from(new TextEncoder().encode(svgStr)).map(b => String.fromCharCode(b)).join(''))}`;
