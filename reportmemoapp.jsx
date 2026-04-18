@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.4.8';
+const APP_VERSION = 'v1.4.9';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -480,27 +480,15 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
       const rx = box.x + (ann.tx || 0); const ry = box.y + (ann.ty || 0);
       const rot = (ann.rotation || 0) * (180 / Math.PI);
       const pColor = (ann.color || '#000000').replace('#', '');
-      const lines = (ann.text || '').split('\n');
-      const fontPx = Math.max(1, ann.fontSize || 48);
-      const lineHeightPx = fontPx * 1.2;
-      const svgW = Math.max(1, Math.ceil(box.w));
-      const svgH = Math.max(1, Math.ceil(box.h));
-      const startYPx = (svgH - (lines.length - 1) * lineHeightPx) / 2;
-      const fillColor = `#${pColor}`;
-      const glowStroke = ann.hasGlow ? ' stroke="#ffffff" stroke-width="8" stroke-linejoin="round"' : '';
-      const escapeXml = (value) => String(value)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-      const textNodes = lines.map((line, i) => {
-        const y = startYPx + i * lineHeightPx;
-        return `<text x="${svgW / 2}" y="${y}" text-anchor="middle" dominant-baseline="middle" font-family="Meiryo, sans-serif" font-size="${fontPx}" font-weight="700" fill="${fillColor}"${glowStroke}>${escapeXml(line)}</text>`;
-      }).join('');
-      const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${svgW} ${svgH}" width="${svgW}" height="${svgH}">${textNodes}</svg>`;
-      const svgData = `data:image/svg+xml;base64,${btoa(Array.from(new TextEncoder().encode(svgStr)).map(b => String.fromCharCode(b)).join(''))}`;
-      slide.addImage({ data: svgData, x: drawX + rx * ratioX, y: drawY + ry * ratioY, w: Math.max(0.05, box.w * ratioX), h: Math.max(0.05, box.h * ratioY), rotate: rot });
+      const textRuns = (ann.text || '').split('\n').map((line, idx, arr) => ({ text: line, options: { breakLine: idx < arr.length - 1 } }));
+      const textOpts = {
+        x: drawX + rx * ratioX, y: drawY + ry * ratioY,
+        w: Math.max(0.05, box.w * ratioX * 1.08), h: Math.max(0.05, box.h * ratioY * 1.05),
+        fontSize: Math.max(1, (ann.fontSize || 48) * pxToPt), color: pColor, bold: true, rotate: rot, valign: 'middle', align: 'center',
+        margin: 0, fit: 'resize', fontFace: 'Meiryo',
+        ...glowOpts(ann.hasGlow)
+      };
+      slide.addText(textRuns, textOpts);
     } else {
       const stroke = ann.color || '#000000'; const pColor = stroke.replace('#', '');
       const sw = ann.width || 4; const pptSw = Math.max(0.25, sw * pxToPt);
