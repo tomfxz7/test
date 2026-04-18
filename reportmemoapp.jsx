@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.4.5';
+const APP_VERSION = 'v1.4.7';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -79,14 +79,18 @@ const normalizeImageForPptx = async (src) => {
     img.onload = resolve;
     img.onerror = reject;
   });
-  const width = img.naturalWidth || img.width || 1;
-  const height = img.naturalHeight || img.height || 1;
+  const srcW = img.naturalWidth || img.width || 1;
+  const srcH = img.naturalHeight || img.height || 1;
+  const maxDim = 2200;
+  const downScale = Math.min(1, maxDim / Math.max(srcW, srcH));
+  const width = Math.max(1, Math.round(srcW * downScale));
+  const height = Math.max(1, Math.round(srcH * downScale));
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d');
   ctx.drawImage(img, 0, 0, width, height);
-  return { data: canvas.toDataURL('image/png'), width, height };
+  return { data: canvas.toDataURL('image/jpeg', 0.82), width, height };
 };
 
 // オフスクリーンキャンバス
@@ -476,14 +480,21 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
       const rx = box.x + (ann.tx || 0); const ry = box.y + (ann.ty || 0);
       const rot = (ann.rotation || 0) * (180 / Math.PI);
       const pColor = (ann.color || '#000000').replace('#', '');
-      const textOpts = {
-        x: drawX + rx * ratioX, y: drawY + ry * ratioY, w: Math.max(0.05, box.w * ratioX * 1.08), h: Math.max(0.05, box.h * ratioY * 1.05),
-        fontSize: Math.max(1, (ann.fontSize || 48) * pxToPt), color: pColor, bold: true, rotate: rot, valign: 'middle', align: 'center',
-        margin: 0, breakLine: false, fit: 'resize',
-        fontFace: 'Meiryo',
-        ...glowOpts(ann.hasGlow)
-      };
-      slide.addText(ann.text, textOpts);
+      const lines = (ann.text || '').split('\n');
+      const fontPx = Math.max(1, ann.fontSize || 48);
+      const lineHeightPx = fontPx * 1.2;
+      const svgW = Math.max(1, Math.ceil(box.w));
+      const svgH = Math.max(1, Math.ceil(box.h));
+      const startYPx = (svgH - (lines.length - 1) * lineHeightPx) / 2;
+      const fillColor = `#${pColor}`;
+      const glowStroke = ann.hasGlow ? ' stroke="#ffffff" stroke-width="8" stroke-linejoin="round"' : '';
+      const textNodes = lines.map((line, i) => {
+        const y = startYPx + i * lineHeightPx;
+        return `<text x="${svgW / 2}" y="${y}" text-anchor="middle" dominant-baseline="middle" font-family="Meiryo, sans-serif" font-size="${fontPx}" font-weight="700" fill="${fillColor}"${glowStroke}>${String(line).replace(/[&<>\"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c]))}</text>`;
+      }).join('');
+      const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${svgW} ${svgH}" width="${svgW}" height="${svgH}">${textNodes}</svg>`;
+      const svgData = `data:image/svg+xml;base64,${btoa(Array.from(new TextEncoder().encode(svgStr)).map(b => String.fromCharCode(b)).join(''))}`;
+      slide.addImage({ data: svgData, x: drawX + rx * ratioX, y: drawY + ry * ratioY, w: Math.max(0.05, box.w * ratioX), h: Math.max(0.05, box.h * ratioY), rotate: rot });
     } else {
       const stroke = ann.color || '#000000'; const pColor = stroke.replace('#', '');
       const sw = ann.width || 4; const pptSw = Math.max(0.25, sw * pxToPt);
@@ -1919,7 +1930,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                     <canvas ref={canvasRef} className={`absolute inset-0 w-full h-full ${currentTool === ToolType.SELECT || currentTool === ToolType.LASSO ? 'cursor-default' : 'cursor-crosshair'}`} />
                     {textInput && (
                       <div className="absolute z-50 transform -translate-x-1/2 -translate-y-1/2 text-overlay pointer-events-auto" style={{ left: `${(textInput.canvasX / canvasRef.current.width) * 100}%`, top: `${(textInput.canvasY / canvasRef.current.height) * 100}%`, transform: `translate(-50%, -50%) rotate(${textInput.rotation || 0}rad)` }}>
-                        <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 bg-white/95 backdrop-blur-sm px-3 py-2 rounded-xl shadow-2xl flex items-center gap-2 border border-gray-200 whitespace-nowrap" onPointerDown={e => e.stopPropagation()}>
+                        <div className="absolute left-1/2 bottom-full mb-2 bg-white/95 backdrop-blur-sm px-3 py-2 rounded-xl shadow-2xl flex items-center gap-2 border border-gray-200 whitespace-nowrap" style={{ transform: `translateX(-50%) scale(${1 / Math.max(transform.scale, 0.1)})`, transformOrigin: 'bottom center' }} onPointerDown={e => e.stopPropagation()}>
                           <div className="flex gap-1"> {COLORS.slice(0, 4).map(c => <button key={`ti-${c}`} onClick={() => setStrokeColor(c)} className={`w-6 h-6 rounded-full border shadow-sm ${strokeColor === c ? 'border-blue-500 scale-110' : 'border-gray-200'}`} style={{ backgroundColor: c }} />)} </div> <div className="w-px h-5 bg-gray-300 mx-1" /> <div className="flex items-center gap-2"> <span className="text-xs font-bold text-gray-600">ｻｲｽﾞ</span> <input type="range" min="16" max="120" value={fontSize} onChange={e => setFontSize(parseInt(e.target.value))} className="w-20 accent-blue-500" /> </div> <div className="w-px h-5 bg-gray-300 mx-1" /> <button onClick={() => setTextGlow(!textGlow)} className={`p-1.5 rounded-lg flex items-center gap-1 ${textGlow ? 'bg-amber-100 text-amber-600' : 'text-gray-400 hover:bg-gray-100'}`} title="光彩"> <Sparkles size={16} strokeWidth={textGlow ? 2.5 : 2} /> <span className="text-[10px] font-bold">光彩</span> </button> <div className="w-px h-5 bg-gray-300 mx-1" /> <button onClick={handleTextSubmit} className="bg-blue-600 text-white px-4 py-1.5 rounded-lg font-bold text-sm hover:bg-blue-700 shadow-md">確定</button>
                         </div>
                         <textarea autoFocus value={textInput.value} onChange={(e) => setTextInput({...textInput, value: e.target.value})} onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleTextSubmit(); } }} onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()} className="p-2 font-bold border-4 border-blue-500 rounded-lg shadow-2xl focus:outline-none bg-transparent text-center resize-none overflow-hidden select-text touch-auto" style={{ color: strokeColor, textShadow: textGlow ? '0 0 10px white, 0 0 10px white, 0 0 10px white' : 'none', minWidth: '200px', width: `${Math.max(200, textInput.value.split('\n').reduce((a,b)=>a.length>b.length?a:b, '').length * fontSize * 1.2 + 40)}px`, fontSize: `${fontSize}px`, lineHeight: 1.2, height: `${Math.max(1, textInput.value.split('\n').length) * fontSize * 1.2 + 32}px`, transformOrigin: 'center center' }} placeholder="文字を入力 (Shift+Enterで改行)" />
