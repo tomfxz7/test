@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { Plus, Trash2, ChefHat, ShoppingCart, CalendarDays, Loader2, RefreshCw, Youtube, AlertCircle, Utensils, Clock, ExternalLink, Settings, Key, X } from 'lucide-react';
 
 const apiKey = ""; // The execution environment provides the key at runtime.
+const APP_VERSION = "1.1.0";
 
 // --- IndexedDB ユーティリティ（大容量保存用） ---
 const DB_NAME = 'RecipeMasterDB';
@@ -108,6 +109,8 @@ export default function App() {
   const [reloadingDay, setReloadingDay] = useState(null); // 個別再取得中の曜日を管理
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState('recipes'); 
+  const [saveMessage, setSaveMessage] = useState('');
+  const [linkMessage, setLinkMessage] = useState('');
 
   useEffect(() => {
     getItem('youtubers')
@@ -136,6 +139,14 @@ export default function App() {
         if (key) setUserApiKey(key);
       })
       .catch(err => console.error('Failed to load API key', err));
+
+    getItem('savedMenuData')
+      .then((saved) => {
+        if (saved && saved.recipes && saved.shoppingList) {
+          setMenuData(saved);
+        }
+      })
+      .catch((err) => console.error('Failed to load saved menu data', err));
   }, []);
 
   useEffect(() => {
@@ -368,6 +379,65 @@ ${JSON.stringify(menuData.recipes, null, 2)}
     '日曜日': 'bg-red-100 text-red-800 border-red-200',
   };
 
+  const normalizeYoutubeUrl = (url) => {
+    try {
+      const parsed = new URL(url);
+      const isYoutubeHost = ['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be'].includes(parsed.hostname);
+      if (!isYoutubeHost) return url;
+
+      if (parsed.hostname === 'youtu.be') {
+        const videoId = parsed.pathname.replace('/', '').trim();
+        if (!videoId) return url;
+        return `https://www.youtube.com/watch?v=${videoId}`;
+      }
+
+      const videoId = parsed.searchParams.get('v');
+      if (videoId) {
+        return `https://www.youtube.com/watch?v=${videoId}`;
+      }
+    } catch (err) {}
+    return url;
+  };
+
+  const openExternalLink = (url) => {
+    if (!url) return;
+    const safeUrl = String(url).trim();
+    if (!safeUrl.startsWith('http')) return;
+    setLinkMessage('');
+    const normalizedUrl = normalizeYoutubeUrl(safeUrl);
+
+    const newWindow = window.open(normalizedUrl, '_blank', 'noopener,noreferrer');
+    if (newWindow) {
+      newWindow.opener = null;
+      if (newWindow.focus) newWindow.focus();
+      return;
+    }
+
+    try {
+      if (window.top && window.top !== window.self) {
+        window.top.location.href = normalizedUrl;
+      } else {
+        window.location.href = normalizedUrl;
+      }
+    } catch (err) {
+      window.location.href = normalizedUrl;
+    }
+    setLinkMessage('うまく開けない場合は、ブラウザのポップアップ許可をONにしてください。');
+  };
+
+  const handleSaveCurrentMenu = async () => {
+    if (!menuData) return;
+    try {
+      await setItem('savedMenuData', menuData);
+      const savedTime = new Date().toLocaleString('ja-JP');
+      await setItem('savedMenuUpdatedAt', savedTime);
+      setSaveMessage(`保存しました（${savedTime}）`);
+    } catch (err) {
+      console.error('Failed to save menu data', err);
+      setSaveMessage('保存に失敗しました');
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-50 text-gray-800 font-sans pb-12">
       {/* Header */}
@@ -511,10 +581,28 @@ ${JSON.stringify(menuData.recipes, null, 2)}
             <p className="text-sm">{error}</p>
           </div>
         )}
+        {linkMessage && (
+          <div className="p-4 bg-yellow-50 text-yellow-700 rounded-xl flex items-start gap-3 border border-yellow-100">
+            <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+            <p className="text-sm">{linkMessage}</p>
+          </div>
+        )}
 
         {/* Results Section */}
         {menuData && !loading && (
           <section className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+            <div className="px-4 sm:px-6 pt-4">
+              <div className="flex items-center justify-end gap-3">
+                {saveMessage && <span className="text-xs text-gray-500">{saveMessage}</span>}
+                <button
+                  type="button"
+                  onClick={handleSaveCurrentMenu}
+                  className="px-3 py-2 text-sm font-semibold text-orange-700 bg-orange-50 hover:bg-orange-100 rounded-lg border border-orange-100 transition-colors"
+                >
+                  この献立を保存
+                </button>
+              </div>
+            </div>
             
             {/* Tabs */}
             <div className="flex border-b border-gray-100">
@@ -599,25 +687,23 @@ ${JSON.stringify(menuData.recipes, null, 2)}
                     
                     <div className="sm:w-40 flex flex-col justify-end gap-2 shrink-0 border-t sm:border-t-0 sm:border-l border-gray-100 pt-3 sm:pt-0 sm:pl-4 relative z-10">
                       {recipe.videoUrl && recipe.videoUrl.startsWith('http') && (
-                        <a 
-                          href={recipe.videoUrl}
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="flex items-center justify-center gap-1.5 w-full py-2.5 px-3 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold transition-colors shadow-sm cursor-pointer block text-center"
+                        <button
+                          type="button"
+                          onClick={() => openExternalLink(recipe.videoUrl)}
+                          className="flex items-center justify-center gap-1.5 w-full py-2.5 px-3 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold transition-colors shadow-sm cursor-pointer"
                         >
                           <Youtube className="w-4 h-4 inline-block -mt-0.5" />
                           直接動画へ
-                        </a>
+                        </button>
                       )}
-                      <a 
-                        href={`https://www.youtube.com/results?search_query=${encodeURIComponent(recipe.searchQuery)}`}
-                        target="_blank" 
-                        rel="noopener noreferrer"
-                        className="flex items-center justify-center gap-1.5 w-full py-2.5 px-3 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg text-sm font-semibold transition-colors cursor-pointer block text-center"
+                      <button
+                        type="button"
+                        onClick={() => openExternalLink(`https://www.youtube.com/results?search_query=${encodeURIComponent(recipe.searchQuery)}`)}
+                        className="flex items-center justify-center gap-1.5 w-full py-2.5 px-3 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg text-sm font-semibold transition-colors cursor-pointer"
                       >
                         <ExternalLink className="w-4 h-4 inline-block -mt-0.5" />
                         検索して探す
-                      </a>
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -690,6 +776,9 @@ ${JSON.stringify(menuData.recipes, null, 2)}
                 <p className="text-xs text-gray-500 mt-2 leading-relaxed">
                   献立を生成するためにGoogle GeminiのAPIキーが必要です。入力したキーはあなたのブラウザ内（IndexedDB）にのみ保存され、外部のサーバーには送信されません。
                 </p>
+              </div>
+              <div className="pt-3 border-t border-gray-100">
+                <p className="text-xs text-gray-500">アプリバージョン: <span className="font-semibold text-gray-700">{APP_VERSION}</span></p>
               </div>
             </div>
 
