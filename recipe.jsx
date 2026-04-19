@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { Plus, Trash2, ChefHat, ShoppingCart, CalendarDays, Loader2, RefreshCw, Youtube, AlertCircle, Utensils, Clock, ExternalLink, Settings, Key, X } from 'lucide-react';
 
 const apiKey = ""; // The execution environment provides the key at runtime.
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.2.0";
 
 // --- IndexedDB ユーティリティ（大容量保存用） ---
 const DB_NAME = 'RecipeMasterDB';
@@ -405,6 +405,22 @@ ${JSON.stringify(menuData.recipes, null, 2)}
     if (!safeUrl.startsWith('http')) return;
     setLinkMessage('');
     const normalizedUrl = normalizeYoutubeUrl(safeUrl);
+    const isAndroid = /Android/i.test(navigator.userAgent || '');
+    const isYoutubeUrl = /(^https?:\/\/)(www\.)?(youtube\.com|m\.youtube\.com|youtu\.be)\//i.test(normalizedUrl);
+
+    if (isAndroid && isYoutubeUrl) {
+      try {
+        const parsed = new URL(normalizedUrl);
+        const videoId = parsed.searchParams.get('v');
+        if (videoId) {
+          const intentUrl = `intent://www.youtube.com/watch?v=${videoId}#Intent;scheme=https;package=com.google.android.youtube;S.browser_fallback_url=${encodeURIComponent(normalizedUrl)};end`;
+          window.location.href = intentUrl;
+          return;
+        }
+      } catch (err) {
+        console.error('Failed to build YouTube intent URL', err);
+      }
+    }
 
     const newWindow = window.open(normalizedUrl, '_blank', 'noopener,noreferrer');
     if (newWindow) {
