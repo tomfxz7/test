@@ -368,6 +368,14 @@ ${JSON.stringify(menuData.recipes, null, 2)}
     '日曜日': 'bg-red-100 text-red-800 border-red-200',
   };
 
+  const openExternalLink = (url) => {
+    if (!url) return;
+    const newWindow = window.open(url, '_blank', 'noopener,noreferrer');
+    if (newWindow) {
+      newWindow.opener = null;
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-50 text-gray-800 font-sans pb-12">
       {/* Header */}
@@ -599,25 +607,23 @@ ${JSON.stringify(menuData.recipes, null, 2)}
                     
                     <div className="sm:w-40 flex flex-col justify-end gap-2 shrink-0 border-t sm:border-t-0 sm:border-l border-gray-100 pt-3 sm:pt-0 sm:pl-4 relative z-10">
                       {recipe.videoUrl && recipe.videoUrl.startsWith('http') && (
-                        <a 
-                          href={recipe.videoUrl}
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="flex items-center justify-center gap-1.5 w-full py-2.5 px-3 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold transition-colors shadow-sm cursor-pointer block text-center"
+                        <button
+                          type="button"
+                          onClick={() => openExternalLink(recipe.videoUrl)}
+                          className="flex items-center justify-center gap-1.5 w-full py-2.5 px-3 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold transition-colors shadow-sm cursor-pointer"
                         >
                           <Youtube className="w-4 h-4 inline-block -mt-0.5" />
                           直接動画へ
-                        </a>
+                        </button>
                       )}
-                      <a 
-                        href={`https://www.youtube.com/results?search_query=${encodeURIComponent(recipe.searchQuery)}`}
-                        target="_blank" 
-                        rel="noopener noreferrer"
-                        className="flex items-center justify-center gap-1.5 w-full py-2.5 px-3 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg text-sm font-semibold transition-colors cursor-pointer block text-center"
+                      <button
+                        type="button"
+                        onClick={() => openExternalLink(`https://www.youtube.com/results?search_query=${encodeURIComponent(recipe.searchQuery)}`)}
+                        className="flex items-center justify-center gap-1.5 w-full py-2.5 px-3 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg text-sm font-semibold transition-colors cursor-pointer"
                       >
                         <ExternalLink className="w-4 h-4 inline-block -mt-0.5" />
                         検索して探す
-                      </a>
+                      </button>
                     </div>
                   </div>
                 ))}
