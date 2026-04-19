@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { Plus, Trash2, ChefHat, ShoppingCart, CalendarDays, Loader2, RefreshCw, Youtube, AlertCircle, Utensils, Clock, ExternalLink, Settings, Key, X } from 'lucide-react';
 
 const apiKey = ""; // The execution environment provides the key at runtime.
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.2.0";
 
 // --- IndexedDB ユーティリティ（大容量保存用） ---
 const DB_NAME = 'RecipeMasterDB';
@@ -110,6 +110,7 @@ export default function App() {
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState('recipes'); 
   const [saveMessage, setSaveMessage] = useState('');
+  const [linkMessage, setLinkMessage] = useState('');
 
   useEffect(() => {
     getItem('youtubers')
@@ -378,17 +379,66 @@ ${JSON.stringify(menuData.recipes, null, 2)}
     '日曜日': 'bg-red-100 text-red-800 border-red-200',
   };
 
+  const normalizeYoutubeUrl = (url) => {
+    try {
+      const parsed = new URL(url);
+      const isYoutubeHost = ['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be'].includes(parsed.hostname);
+      if (!isYoutubeHost) return url;
+
+      if (parsed.hostname === 'youtu.be') {
+        const videoId = parsed.pathname.replace('/', '').trim();
+        if (!videoId) return url;
+        return `https://www.youtube.com/watch?v=${videoId}`;
+      }
+
+      const videoId = parsed.searchParams.get('v');
+      if (videoId) {
+        return `https://www.youtube.com/watch?v=${videoId}`;
+      }
+    } catch (err) {}
+    return url;
+  };
+
   const openExternalLink = (url) => {
     if (!url) return;
     const safeUrl = String(url).trim();
     if (!safeUrl.startsWith('http')) return;
+    setLinkMessage('');
+    const normalizedUrl = normalizeYoutubeUrl(safeUrl);
+    const isAndroid = /Android/i.test(navigator.userAgent || '');
+    const isYoutubeUrl = /(^https?:\/\/)(www\.)?(youtube\.com|m\.youtube\.com|youtu\.be)\//i.test(normalizedUrl);
 
-    const newWindow = window.open(safeUrl, '_blank', 'noopener,noreferrer');
+    if (isAndroid && isYoutubeUrl) {
+      try {
+        const parsed = new URL(normalizedUrl);
+        const videoId = parsed.searchParams.get('v');
+        if (videoId) {
+          const intentUrl = `intent://www.youtube.com/watch?v=${videoId}#Intent;scheme=https;package=com.google.android.youtube;S.browser_fallback_url=${encodeURIComponent(normalizedUrl)};end`;
+          window.location.href = intentUrl;
+          return;
+        }
+      } catch (err) {
+        console.error('Failed to build YouTube intent URL', err);
+      }
+    }
+
+    const newWindow = window.open(normalizedUrl, '_blank', 'noopener,noreferrer');
     if (newWindow) {
       newWindow.opener = null;
+      if (newWindow.focus) newWindow.focus();
       return;
     }
-    window.location.assign(safeUrl);
+
+    try {
+      if (window.top && window.top !== window.self) {
+        window.top.location.href = normalizedUrl;
+      } else {
+        window.location.href = normalizedUrl;
+      }
+    } catch (err) {
+      window.location.href = normalizedUrl;
+    }
+    setLinkMessage('うまく開けない場合は、ブラウザのポップアップ許可をONにしてください。');
   };
 
   const handleSaveCurrentMenu = async () => {
@@ -545,6 +595,12 @@ ${JSON.stringify(menuData.recipes, null, 2)}
           <div className="p-4 bg-red-50 text-red-700 rounded-xl flex items-start gap-3 border border-red-100">
             <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
             <p className="text-sm">{error}</p>
+          </div>
+        )}
+        {linkMessage && (
+          <div className="p-4 bg-yellow-50 text-yellow-700 rounded-xl flex items-start gap-3 border border-yellow-100">
+            <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+            <p className="text-sm">{linkMessage}</p>
           </div>
         )}
 
