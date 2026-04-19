@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { Plus, Trash2, ChefHat, ShoppingCart, CalendarDays, Loader2, RefreshCw, Youtube, AlertCircle, Utensils, Clock, ExternalLink, Settings, Key, X } from 'lucide-react';
 
 const apiKey = ""; // The execution environment provides the key at runtime.
+const APP_VERSION = "1.1.0";
 
 // --- IndexedDB ユーティリティ（大容量保存用） ---
 const DB_NAME = 'RecipeMasterDB';
@@ -108,6 +109,7 @@ export default function App() {
   const [reloadingDay, setReloadingDay] = useState(null); // 個別再取得中の曜日を管理
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState('recipes'); 
+  const [saveMessage, setSaveMessage] = useState('');
 
   useEffect(() => {
     getItem('youtubers')
@@ -136,6 +138,14 @@ export default function App() {
         if (key) setUserApiKey(key);
       })
       .catch(err => console.error('Failed to load API key', err));
+
+    getItem('savedMenuData')
+      .then((saved) => {
+        if (saved && saved.recipes && saved.shoppingList) {
+          setMenuData(saved);
+        }
+      })
+      .catch((err) => console.error('Failed to load saved menu data', err));
   }, []);
 
   useEffect(() => {
@@ -370,9 +380,27 @@ ${JSON.stringify(menuData.recipes, null, 2)}
 
   const openExternalLink = (url) => {
     if (!url) return;
-    const newWindow = window.open(url, '_blank', 'noopener,noreferrer');
+    const safeUrl = String(url).trim();
+    if (!safeUrl.startsWith('http')) return;
+
+    const newWindow = window.open(safeUrl, '_blank', 'noopener,noreferrer');
     if (newWindow) {
       newWindow.opener = null;
+      return;
+    }
+    window.location.assign(safeUrl);
+  };
+
+  const handleSaveCurrentMenu = async () => {
+    if (!menuData) return;
+    try {
+      await setItem('savedMenuData', menuData);
+      const savedTime = new Date().toLocaleString('ja-JP');
+      await setItem('savedMenuUpdatedAt', savedTime);
+      setSaveMessage(`保存しました（${savedTime}）`);
+    } catch (err) {
+      console.error('Failed to save menu data', err);
+      setSaveMessage('保存に失敗しました');
     }
   };
 
@@ -523,6 +551,18 @@ ${JSON.stringify(menuData.recipes, null, 2)}
         {/* Results Section */}
         {menuData && !loading && (
           <section className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+            <div className="px-4 sm:px-6 pt-4">
+              <div className="flex items-center justify-end gap-3">
+                {saveMessage && <span className="text-xs text-gray-500">{saveMessage}</span>}
+                <button
+                  type="button"
+                  onClick={handleSaveCurrentMenu}
+                  className="px-3 py-2 text-sm font-semibold text-orange-700 bg-orange-50 hover:bg-orange-100 rounded-lg border border-orange-100 transition-colors"
+                >
+                  この献立を保存
+                </button>
+              </div>
+            </div>
             
             {/* Tabs */}
             <div className="flex border-b border-gray-100">
@@ -696,6 +736,9 @@ ${JSON.stringify(menuData.recipes, null, 2)}
                 <p className="text-xs text-gray-500 mt-2 leading-relaxed">
                   献立を生成するためにGoogle GeminiのAPIキーが必要です。入力したキーはあなたのブラウザ内（IndexedDB）にのみ保存され、外部のサーバーには送信されません。
                 </p>
+              </div>
+              <div className="pt-3 border-t border-gray-100">
+                <p className="text-xs text-gray-500">アプリバージョン: <span className="font-semibold text-gray-700">{APP_VERSION}</span></p>
               </div>
             </div>
 
