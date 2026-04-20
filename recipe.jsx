@@ -53,14 +53,18 @@ async function fetchGeminiWithRetry(prompt, customApiKey, maxRetries = 5) {
     throw new Error("APIキーが設定されていません。設定画面からGemini APIキーを入力してください。");
   }
 
-  const modelName = customApiKey ? "gemini-2.5-flash" : "gemini-2.5-flash-preview-09-2025";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${activeKey}`;
+  const modelCandidates = customApiKey
+    ? ["gemini-2.5-flash", "gemini-2.0-flash"]
+    : ["gemini-2.5-flash-preview-09-2025", "gemini-2.5-flash", "gemini-2.0-flash"];
+
   const payload = {
     contents: [{ parts: [{ text: prompt }] }],
     tools: [{ google_search: {} }] 
   };
 
   for (let i = 0; i < maxRetries; i++) {
+    const modelName = modelCandidates[i % modelCandidates.length];
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${activeKey}`;
     try {
       const response = await fetch(url, {
         method: 'POST',
@@ -70,7 +74,11 @@ async function fetchGeminiWithRetry(prompt, customApiKey, maxRetries = 5) {
 
       if (!response.ok) {
         const errText = await response.text();
-        throw new Error(`APIエラー (${response.status}): ${errText}`);
+        const isRetryable = response.status === 429 || response.status >= 500;
+        if (!isRetryable) {
+          throw new Error(`APIエラー (${response.status}): ${errText}`);
+        }
+        throw new Error(`RETRYABLE_API_ERROR (${response.status}): ${errText}`);
       }
 
       const result = await response.json();
@@ -88,9 +96,13 @@ async function fetchGeminiWithRetry(prompt, customApiKey, maxRetries = 5) {
     } catch (err) {
       if (i === maxRetries - 1) {
         console.error("Gemini API Error:", err);
+        const message = err?.message || "";
+        if (message.includes("503") || message.includes("UNAVAILABLE")) {
+          throw new Error("Gemini APIが高負荷のため一時的に利用できません。少し待ってからもう一度お試しください。");
+        }
         throw err;
       }
-      const delay = Math.pow(2, i) * 1000;
+      const delay = Math.pow(2, i) * 1000 + Math.floor(Math.random() * 500);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
