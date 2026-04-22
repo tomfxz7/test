@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.5.2';
+const APP_VERSION = 'v1.5.3';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
@@ -587,28 +587,60 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
 
 const LayoutRect = ({ rect, onChange, onDragStart, label, bgImg, isMemo, containerRef, isSelected = false, onToggleSelect = null }) => {
   const handlePointerDown = (e, mode) => {
-    e.stopPropagation(); e.preventDefault(); onDragStart();
+    e.stopPropagation();
+    e.preventDefault();
+    onDragStart();
+    if (e.currentTarget?.setPointerCapture) e.currentTarget.setPointerCapture(e.pointerId);
     const startX = e.clientX, startY = e.clientY, startRect = { ...rect };
     const container = containerRef.current; if (!container) return;
     const cWidth = container.clientWidth, cHeight = container.clientHeight;
-
-    const handlePointerMove = (eMove) => {
-      let dx = ((eMove.clientX - startX) / cWidth) * 10, dy = ((eMove.clientY - startY) / cHeight) * 5.625;
+    let rafId = null;
+    let latestMoveEvent = null;
+    const clampRect = (candidate) => {
+      const maxW = 10;
+      const maxH = 5.625;
+      const nextW = Math.min(Math.max(0.5, candidate.w), maxW);
+      const nextH = Math.min(Math.max(0.5, candidate.h), maxH);
+      const nextX = Math.min(Math.max(0, candidate.x), maxW - nextW);
+      const nextY = Math.min(Math.max(0, candidate.y), maxH - nextH);
+      return {
+        ...candidate,
+        x: Math.round(nextX * 100) / 100,
+        y: Math.round(nextY * 100) / 100,
+        w: Math.round(nextW * 100) / 100,
+        h: Math.round(nextH * 100) / 100
+      };
+    };
+    const applyMove = () => {
+      if (!latestMoveEvent) return;
+      let dx = ((latestMoveEvent.clientX - startX) / cWidth) * 10;
+      let dy = ((latestMoveEvent.clientY - startY) / cHeight) * 5.625;
       let newRect = { ...startRect };
       if (mode === 'move') { newRect.x += dx; newRect.y += dy; }
-      else if (mode === 'resize-br') { newRect.w = Math.max(0.5, startRect.w + dx); newRect.h = Math.max(0.5, startRect.h + dy); }
-      else if (mode === 'resize-r') { newRect.w = Math.max(0.5, startRect.w + dx); }
-      else if (mode === 'resize-b') { newRect.h = Math.max(0.5, startRect.h + dy); }
-      newRect.x = Math.round(newRect.x*100)/100; newRect.y = Math.round(newRect.y*100)/100; newRect.w = Math.round(newRect.w*100)/100; newRect.h = Math.round(newRect.h*100)/100;
-      onChange(newRect);
+      else if (mode === 'resize-br') { newRect.w = startRect.w + dx; newRect.h = startRect.h + dy; }
+      else if (mode === 'resize-r') { newRect.w = startRect.w + dx; }
+      else if (mode === 'resize-b') { newRect.h = startRect.h + dy; }
+      onChange(clampRect(newRect));
+      rafId = null;
     };
-    const handlePointerUp = () => { document.removeEventListener('pointermove', handlePointerMove); document.removeEventListener('pointerup', handlePointerUp); };
-    document.addEventListener('pointermove', handlePointerMove); document.addEventListener('pointerup', handlePointerUp);
+    const handlePointerMove = (eMove) => {
+      latestMoveEvent = eMove;
+      if (!rafId) rafId = requestAnimationFrame(applyMove);
+    };
+    const handlePointerUp = () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      document.removeEventListener('pointermove', handlePointerMove);
+      document.removeEventListener('pointerup', handlePointerUp);
+      document.removeEventListener('pointercancel', handlePointerUp);
+    };
+    document.addEventListener('pointermove', handlePointerMove, { passive: true });
+    document.addEventListener('pointerup', handlePointerUp);
+    document.addEventListener('pointercancel', handlePointerUp);
   };
   if (!rect) return null;
   return (
-    <div className={`absolute border-2 ${isMemo ? 'border-gray-500 bg-gray-100/80' : 'border-blue-500 bg-blue-100/80'} ${isSelected ? 'ring-2 ring-fuchsia-500 border-fuchsia-500' : ''} flex flex-col items-center justify-center cursor-move select-none shadow-sm group backdrop-blur-sm hover:z-10`}
-      style={{ left: `${(rect.x / 10) * 100}%`, top: `${(rect.y / 5.625) * 100}%`, width: `${(rect.w / 10) * 100}%`, height: `${(rect.h / 5.625) * 100}%`, backgroundImage: bgImg ? `url(${bgImg})` : 'none', backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundBlendMode: 'overlay' }}
+    <div className={`absolute border-2 ${isMemo ? 'border-gray-500 bg-gray-100/80' : 'border-blue-500 bg-blue-100/80'} ${isSelected ? 'ring-2 ring-fuchsia-500 border-fuchsia-500' : ''} flex flex-col items-center justify-center cursor-move select-none shadow-sm group hover:z-10`}
+      style={{ left: `${(rect.x / 10) * 100}%`, top: `${(rect.y / 5.625) * 100}%`, width: `${(rect.w / 10) * 100}%`, height: `${(rect.h / 5.625) * 100}%`, backgroundImage: bgImg ? `url(${bgImg})` : 'none', backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat', touchAction: 'none' }}
       onPointerDown={(e) => handlePointerDown(e, 'move')}>
       <div className={`px-2 py-0.5 text-[10px] font-bold rounded shadow-sm opacity-90 whitespace-nowrap ${isMemo ? 'bg-gray-800 text-white' : 'bg-blue-600 text-white'}`}>{label}</div>
       {onToggleSelect && !isMemo && (
@@ -621,9 +653,9 @@ const LayoutRect = ({ rect, onChange, onDragStart, label, bgImg, isMemo, contain
           {isSelected ? '選択中' : '選択'}
         </button>
       )}
-      <div className="absolute right-[-6px] bottom-[-6px] w-4 h-4 bg-white border-2 border-blue-600 rounded-full cursor-nwse-resize z-10 opacity-0 group-hover:opacity-100 transition-opacity" onPointerDown={(e) => handlePointerDown(e, 'resize-br')} />
-      <div className="absolute right-[-6px] top-1/2 -translate-y-1/2 w-4 h-4 bg-white border-2 border-blue-600 rounded-full cursor-ew-resize z-10 opacity-0 group-hover:opacity-100 transition-opacity" onPointerDown={(e) => handlePointerDown(e, 'resize-r')} />
-      <div className="absolute left-1/2 bottom-[-6px] -translate-x-1/2 w-4 h-4 bg-white border-2 border-blue-600 rounded-full cursor-ns-resize z-10 opacity-0 group-hover:opacity-100 transition-opacity" onPointerDown={(e) => handlePointerDown(e, 'resize-b')} />
+      <div className="absolute right-[-6px] bottom-[-6px] w-4 h-4 bg-white border-2 border-blue-600 rounded-full cursor-nwse-resize z-10 opacity-100 transition-opacity touch-none" onPointerDown={(e) => handlePointerDown(e, 'resize-br')} />
+      <div className="absolute right-[-6px] top-1/2 -translate-y-1/2 w-4 h-4 bg-white border-2 border-blue-600 rounded-full cursor-ew-resize z-10 opacity-100 transition-opacity touch-none" onPointerDown={(e) => handlePointerDown(e, 'resize-r')} />
+      <div className="absolute left-1/2 bottom-[-6px] -translate-x-1/2 w-4 h-4 bg-white border-2 border-blue-600 rounded-full cursor-ns-resize z-10 opacity-100 transition-opacity touch-none" onPointerDown={(e) => handlePointerDown(e, 'resize-b')} />
     </div>
   );
 };
@@ -1354,16 +1386,16 @@ export default function App() {
                     }}
                   >
                     <div
-                      className="bg-gray-50 px-4 py-2 border-b text-gray-500 font-medium flex justify-between items-center select-none drag-handle cursor-grab active:cursor-grabbing"
-                      style={{ touchAction: 'none' }}
-                      onPointerDown={(e) => {
-                        if (e.target.closest('button')) return;
-                        handleDragStart(index, e);
-                      }}
+                      className="bg-gray-50 px-4 py-2 border-b text-gray-500 font-medium flex justify-between items-center select-none"
                     >
-                      <div className="flex items-center gap-3">
+                      <div
+                        className="flex items-center gap-3 drag-handle cursor-grab active:cursor-grabbing rounded-lg px-2 py-1 -ml-2"
+                        style={{ touchAction: 'none' }}
+                        onPointerDown={(e) => handleDragStart(index, e)}
+                        title="ドラッグしてページ順を変更"
+                      >
                         <GripVertical size={20} className="text-gray-400" />
-                        <span className="font-bold text-gray-700">No. {index + 1}</span>
+                        <span className="font-bold text-gray-700">No. {index + 1}（ドラッグで移動）</span>
                       </div>
                       <div className="flex items-center gap-2 print:hidden pointer-events-auto">
                         {item.memo && (
@@ -1613,6 +1645,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const [imageDropIndex, setImageDropIndex] = useState(null);
   const [imageDragStartPos, setImageDragStartPos] = useState(null);
   const [imageDragMoved, setImageDragMoved] = useState(false);
+  const activeImageDragPointerIdRef = useRef(null);
   const [layoutSettings, setLayoutSettings] = useState(initialItem?.layout || { template: 'default', memoRect: { x: 0.5, y: 1.2, w: 3.5, h: 4.0 }, customImageRects: [] });
   const [isLayoutModalOpen, setIsLayoutModalOpen] = useState(false);
   const [selectedLayoutRectIndexes, setSelectedLayoutRectIndexes] = useState([]);
@@ -1777,7 +1810,12 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     });
   }, []);
   const handleThumbDragStart = (idx, e) => {
-    if (e?.pointerType && e.pointerType !== 'mouse') return;
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.currentTarget?.setPointerCapture) e.currentTarget.setPointerCapture(e.pointerId);
+      activeImageDragPointerIdRef.current = e.pointerId;
+    }
     setDraggingImageIndex(idx);
     setImageDropIndex(idx);
     setImageDragStartPos({ x: e?.clientX || 0, y: e?.clientY || 0 });
@@ -1804,13 +1842,15 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       return thumbs.length > 0 ? thumbs[thumbs.length - 1].idx : draggingImageIndex;
     };
     const onMove = (e) => {
+      if (activeImageDragPointerIdRef.current !== null && e.pointerId !== undefined && e.pointerId !== activeImageDragPointerIdRef.current) return;
       if (imageDragStartPos) {
         const moved = Math.hypot(e.clientX - imageDragStartPos.x, e.clientY - imageDragStartPos.y) > 6;
         if (moved && !imageDragMoved) setImageDragMoved(true);
       }
       setImageDropIndex(calcDropIndex(e.clientX));
     };
-    const onUp = () => {
+    const onUp = (e) => {
+      if (activeImageDragPointerIdRef.current !== null && e?.pointerId !== undefined && e.pointerId !== activeImageDragPointerIdRef.current) return;
       if (imageDragMoved && imageDropIndex !== null && imageDropIndex !== draggingImageIndex) handleThumbDrop(imageDropIndex);
       else {
         setDraggingImageIndex(null);
@@ -1818,6 +1858,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
         setImageDragStartPos(null);
         setImageDragMoved(false);
       }
+      activeImageDragPointerIdRef.current = null;
     };
     window.addEventListener('pointermove', onMove, { passive: true });
     window.addEventListener('pointerup', onUp);
@@ -2346,6 +2387,14 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                       className={`relative w-16 h-16 shrink-0 rounded-lg overflow-hidden border-2 cursor-grab active:cursor-grabbing transition-all ${activeImageId === img.id ? 'border-blue-500 shadow-md ring-2 ring-blue-200' : 'border-gray-200 opacity-70 hover:opacity-100'} ${imageDropIndex === idx && draggingImageIndex !== null && draggingImageIndex !== idx ? 'ring-2 ring-emerald-400' : ''}`}
                     >
                       <img src={img.baseImage.src} className="w-full h-full object-cover bg-gray-100" />
+                      <button
+                        type="button"
+                        onPointerDown={(e) => handleThumbDragStart(idx, e)}
+                        className="absolute bottom-0.5 left-0.5 p-1 bg-black/55 text-white rounded-full hover:bg-black/70 transition touch-none"
+                        title="ドラッグして並び替え"
+                      >
+                        <GripVertical size={12} />
+                      </button>
                       <button onClick={(e) => { e.stopPropagation(); handleDeleteImage(img.id); }} className="absolute top-0.5 right-0.5 p-1 bg-black/60 text-white rounded-full hover:bg-red-500 transition"><X size={12} /></button>
                     </div>
                   ))}
