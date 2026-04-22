@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.5.3';
+const APP_VERSION = 'v1.5.4';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
@@ -1596,12 +1596,19 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const [isLayoutModalOpen, setIsLayoutModalOpen] = useState(false);
   const [isImageSourcePickerOpen, setIsImageSourcePickerOpen] = useState(false);
   const [thumbContextMenu, setThumbContextMenu] = useState(null);
+  const [thumbDraggedIndex, setThumbDraggedIndex] = useState(null);
+  const [thumbDropIndex, setThumbDropIndex] = useState(null);
+  const [thumbDragStartPos, setThumbDragStartPos] = useState(null);
+  const [thumbDragCurrentPos, setThumbDragCurrentPos] = useState(null);
+  const [hasThumbDragMovement, setHasThumbDragMovement] = useState(false);
   const [showAdvancedLayout, setShowAdvancedLayout] = useState(false);
   const previewContainerRef = useRef(null);
+  const thumbStripRef = useRef(null);
   const cameraInputRef = useRef(null);
   const albumInputRef = useRef(null);
   const longPressTimerRef = useRef(null);
   const suppressThumbClickRef = useRef(false);
+  const activeThumbDragPointerIdRef = useRef(null);
   const [baseImage, setBaseImage] = useState(null);
   const [annotations, setAnnotations] = useState([]);
   const [history, setHistory] = useState([]);
@@ -1750,20 +1757,96 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     ));
   }, [activeImageId, history, redoStack]);
 
-  const moveImageByOffset = useCallback((imgId, offset) => {
-    if (offset === 0) return;
+  const calculateThumbDropIndex = useCallback((clientX) => {
+    if (thumbDraggedIndex === null) return null;
+    const thumbs = Array.from(document.querySelectorAll('[data-thumb-index]'))
+      .map(el => ({ el, idx: Number(el.getAttribute('data-thumb-index')) }))
+      .filter(entry => !Number.isNaN(entry.idx) && entry.idx !== thumbDraggedIndex)
+      .sort((a, b) => a.idx - b.idx);
+    if (thumbs.length === 0) return 0;
+    let insertion = thumbs.length;
+    for (let i = 0; i < thumbs.length; i++) {
+      const rect = thumbs[i].el.getBoundingClientRect();
+      const mid = rect.left + rect.width / 2;
+      if (clientX < mid) {
+        insertion = i;
+        break;
+      }
+    }
+    return insertion;
+  }, [thumbDraggedIndex]);
+
+  const reorderThumbsAtDrop = useCallback((fromIdx, toIdxWithoutDragged) => {
     setImagesData(prev => {
       const synced = syncActiveImageState(prev);
-      const fromIndex = synced.findIndex(img => img.id === imgId);
-      if (fromIndex < 0) return prev;
-      const toIndex = Math.max(0, Math.min(synced.length - 1, fromIndex + offset));
-      if (toIndex === fromIndex) return synced;
+      if (fromIdx < 0 || fromIdx >= synced.length) return synced;
       const next = [...synced];
-      const [moved] = next.splice(fromIndex, 1);
-      next.splice(toIndex, 0, moved);
+      const [dragged] = next.splice(fromIdx, 1);
+      next.splice(toIdxWithoutDragged, 0, dragged);
       return next;
     });
   }, [syncActiveImageState]);
+
+  const handleThumbDragStart = useCallback((idx, e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.currentTarget?.setPointerCapture) e.currentTarget.setPointerCapture(e.pointerId);
+    setThumbDraggedIndex(idx);
+    setThumbDropIndex(idx);
+    setThumbDragStartPos({ x: e.clientX, y: e.clientY });
+    setThumbDragCurrentPos({ x: e.clientX, y: e.clientY });
+    setHasThumbDragMovement(false);
+    activeThumbDragPointerIdRef.current = e.pointerId;
+    setThumbContextMenu(null);
+  }, []);
+
+  const handleThumbDragEnd = useCallback(() => {
+    if (thumbDraggedIndex !== null && thumbDropIndex !== null && hasThumbDragMovement && thumbDraggedIndex !== thumbDropIndex) {
+      reorderThumbsAtDrop(thumbDraggedIndex, thumbDropIndex);
+      suppressThumbClickRef.current = true;
+    }
+    setThumbDraggedIndex(null);
+    setThumbDropIndex(null);
+    setThumbDragStartPos(null);
+    setThumbDragCurrentPos(null);
+    setHasThumbDragMovement(false);
+    activeThumbDragPointerIdRef.current = null;
+  }, [thumbDraggedIndex, thumbDropIndex, hasThumbDragMovement, reorderThumbsAtDrop]);
+
+  useEffect(() => {
+    if (thumbDraggedIndex === null) return;
+    document.body.style.userSelect = 'none';
+    const trackThumbDrag = (e) => {
+      if (activeThumbDragPointerIdRef.current !== null && e.pointerId !== activeThumbDragPointerIdRef.current) return;
+      setThumbDragCurrentPos({ x: e.clientX, y: e.clientY });
+      if (thumbDragStartPos) {
+        const moved = Math.hypot(e.clientX - thumbDragStartPos.x, e.clientY - thumbDragStartPos.y) > 6;
+        if (moved && !hasThumbDragMovement) setHasThumbDragMovement(true);
+      }
+      const nextDropIndex = calculateThumbDropIndex(e.clientX);
+      if (nextDropIndex !== null) setThumbDropIndex(nextDropIndex);
+
+      const stripRect = thumbStripRef.current?.getBoundingClientRect();
+      if (!stripRect || !thumbStripRef.current) return;
+      const edge = 56;
+      const speed = 14;
+      if (e.clientX < stripRect.left + edge) thumbStripRef.current.scrollLeft -= speed;
+      else if (e.clientX > stripRect.right - edge) thumbStripRef.current.scrollLeft += speed;
+    };
+    const stopThumbDrag = (e) => {
+      if (activeThumbDragPointerIdRef.current !== null && e?.pointerId !== undefined && e.pointerId !== activeThumbDragPointerIdRef.current) return;
+      handleThumbDragEnd();
+    };
+    window.addEventListener('pointermove', trackThumbDrag, { passive: true });
+    window.addEventListener('pointerup', stopThumbDrag);
+    window.addEventListener('pointercancel', stopThumbDrag);
+    return () => {
+      document.body.style.userSelect = '';
+      window.removeEventListener('pointermove', trackThumbDrag);
+      window.removeEventListener('pointerup', stopThumbDrag);
+      window.removeEventListener('pointercancel', stopThumbDrag);
+    };
+  }, [thumbDraggedIndex, thumbDragStartPos, hasThumbDragMovement, calculateThumbDropIndex, handleThumbDragEnd]);
 
   const handleDeleteImage = (imgId) => { if (confirm('この画像を削除しますか？')) { setImagesData(prev => { const next = prev.filter(img => img.id !== imgId); if (activeImageId === imgId) { if (next.length > 0) setTimeout(() => switchImage(next[0].id, true), 0); else { setActiveImageId(null); setBaseImage(null); setAnnotations([]); setHistory([]); setRedoStack([]); } } return next; }); } };
   const addImagesFromFiles = useCallback((files) => {
@@ -2226,76 +2309,78 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                 </div>
               )}
               {imagesData.length > 0 && (
-                <div className="bg-white border-t px-4 py-2 flex items-center gap-3 overflow-x-auto shrink-0 z-10 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
-                  {imagesData.map((img, idx) => (
-                    <div
-                      key={img.id}
-                      onClick={() => {
-                        if (suppressThumbClickRef.current) {
-                          suppressThumbClickRef.current = false;
-                          return;
-                        }
-                        switchImage(img.id);
-                      }}
-                      onContextMenu={(e) => {
-                        e.preventDefault();
-                        setThumbContextMenu({ img, x: e.clientX, y: e.clientY });
-                      }}
-                      onPointerDown={(e) => {
-                        if (e.pointerType === 'touch') {
-                          if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
-                          longPressTimerRef.current = setTimeout(() => {
-                            suppressThumbClickRef.current = true;
+                <div ref={thumbStripRef} className="bg-white border-t px-4 py-2 flex items-center gap-2 overflow-x-auto shrink-0 z-10 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
+                  {imagesData.map((img, idx) => {
+                    const isDragging = thumbDraggedIndex === idx;
+                    const dragDx = isDragging && thumbDragStartPos && thumbDragCurrentPos ? thumbDragCurrentPos.x - thumbDragStartPos.x : 0;
+                    const dragDy = isDragging && thumbDragStartPos && thumbDragCurrentPos ? thumbDragCurrentPos.y - thumbDragStartPos.y : 0;
+                    return (
+                      <React.Fragment key={img.id}>
+                        {thumbDraggedIndex !== null && hasThumbDragMovement && thumbDropIndex === idx && (
+                          <div className="w-1.5 h-14 bg-blue-500/70 rounded-full shrink-0" />
+                        )}
+                        <div
+                          data-thumb-index={idx}
+                          onClick={() => {
+                            if (suppressThumbClickRef.current) {
+                              suppressThumbClickRef.current = false;
+                              return;
+                            }
+                            switchImage(img.id);
+                          }}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            if (thumbDraggedIndex !== null) return;
                             setThumbContextMenu({ img, x: e.clientX, y: e.clientY });
-                          }, 550);
-                        }
-                      }}
-                      onPointerUp={() => {
-                        if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
-                      }}
-                      onPointerCancel={() => {
-                        if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
-                      }}
-                      className={`relative w-16 h-16 shrink-0 rounded-lg overflow-hidden border-2 cursor-pointer transition-all ${
-                        activeImageId === img.id ? 'border-blue-500 shadow-md ring-2 ring-blue-200' : 'border-gray-200 opacity-70 hover:opacity-100'
-                      }`}
-                    >
-                      <img src={img.baseImage.src} className="w-full h-full object-cover bg-gray-100" />
-                      <div className="absolute inset-x-0 bottom-0 flex justify-center gap-0.5 pb-0.5">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            moveImageByOffset(img.id, -1);
                           }}
-                          disabled={idx === 0}
-                          className="p-0.5 bg-black/60 text-white rounded disabled:opacity-30 hover:bg-blue-600 transition"
-                          title="左へ移動"
-                        >
-                          <ChevronLeft size={12} />
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            moveImageByOffset(img.id, 1);
+                          onPointerDown={(e) => {
+                            if (e.target.closest('.thumb-drag-handle')) {
+                              handleThumbDragStart(idx, e);
+                              return;
+                            }
+                            if (e.pointerType === 'touch') {
+                              if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+                              longPressTimerRef.current = setTimeout(() => {
+                                suppressThumbClickRef.current = true;
+                                setThumbContextMenu({ img, x: e.clientX, y: e.clientY });
+                              }, 550);
+                            }
                           }}
-                          disabled={idx === imagesData.length - 1}
-                          className="p-0.5 bg-black/60 text-white rounded disabled:opacity-30 hover:bg-blue-600 transition"
-                          title="右へ移動"
+                          onPointerUp={() => {
+                            if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+                          }}
+                          onPointerCancel={() => {
+                            if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+                          }}
+                          className={`relative w-16 h-16 shrink-0 rounded-lg overflow-hidden border-2 transition-all ${
+                            activeImageId === img.id ? 'border-blue-500 shadow-md ring-2 ring-blue-200' : 'border-gray-200 opacity-70 hover:opacity-100'
+                          } ${isDragging ? 'z-40 shadow-2xl cursor-grabbing' : 'cursor-pointer'}`}
+                          style={{ transform: isDragging ? `translate(${dragDx}px, ${dragDy}px) scale(1.05)` : undefined }}
                         >
-                          <ChevronRight size={12} />
-                        </button>
-                      </div>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteImage(img.id);
-                        }}
-                        className="absolute top-0.5 right-0.5 p-1 bg-black/60 text-white rounded-full hover:bg-red-500 transition"
-                      >
-                        <X size={12} />
-                      </button>
-                    </div>
-                  ))}
+                          <img src={img.baseImage.src} className="w-full h-full object-cover bg-gray-100 pointer-events-none" />
+                          <div
+                            className="absolute left-0.5 bottom-0.5 p-0.5 bg-black/60 text-white rounded thumb-drag-handle cursor-grab active:cursor-grabbing"
+                            style={{ touchAction: 'none' }}
+                            title="ドラッグで並び替え"
+                          >
+                            <GripVertical size={11} />
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteImage(img.id);
+                            }}
+                            className="absolute top-0.5 right-0.5 p-1 bg-black/60 text-white rounded-full hover:bg-red-500 transition"
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                        {thumbDraggedIndex !== null && hasThumbDragMovement && idx === imagesData.length - 1 && thumbDropIndex === imagesData.length - 1 && (
+                          <div className="w-1.5 h-14 bg-blue-500/70 rounded-full shrink-0" />
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
                   <button
                     onClick={() => setIsImageSourcePickerOpen(true)}
                     className="w-16 h-16 shrink-0 rounded-lg border-2 border-dashed border-gray-300 flex flex-col items-center justify-center text-gray-500 cursor-pointer hover:bg-blue-50 hover:text-blue-600 hover:border-blue-300 transition"
