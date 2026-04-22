@@ -16,7 +16,9 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.5.1';
+const APP_VERSION = 'v1.5.2';
+const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
+const PRESET_CACHE_KEY = 'editor_size_presets_v1';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -630,7 +632,13 @@ export default function App() {
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(true);
   
-  const [undoHistory, setUndoHistory] = useState([]); // Project Item undo history
+  const [reorderUndoHistory, setReorderUndoHistory] = useState([]); // Project page order undo history
+  const [reorderRedoHistory, setReorderRedoHistory] = useState([]); // Project page order redo history
+  const [isRenameProjectModalOpen, setIsRenameProjectModalOpen] = useState(false);
+  const [renameProjectTitle, setRenameProjectTitle] = useState('');
+  const [transferItemModal, setTransferItemModal] = useState(null);
+  const [transferTargetProjectId, setTransferTargetProjectId] = useState('');
+  const [transferMode, setTransferMode] = useState('copy');
   const [isExportSettingsOpen, setIsExportSettingsOpen] = useState(false);
   const [pptxSettings, setPptxSettings] = useState({ showPageNumber: true });
   const [pptxPageMode, setPptxPageMode] = useState('all');
@@ -704,20 +712,57 @@ export default function App() {
   useEffect(() => { const key = localStorage.getItem('gemini_api_key'); if (key) setApiKeyInput(key); }, []);
   useEffect(() => { if (isGlobalExportOpen) setSelectedExportProjectIds(projects.map(p => p.id)); }, [isGlobalExportOpen, projects]);
 
-  // Clear undo history on project change
-  useEffect(() => { setUndoHistory([]); }, [activeProjectId]);
+  // Clear project reorder history on project change
+  useEffect(() => {
+    setReorderUndoHistory([]);
+    setReorderRedoHistory([]);
+  }, [activeProjectId]);
 
-  const saveToUndo = () => {
+  const applyItemOrder = useCallback((items, orderIds) => {
+    const map = new Map(items.map(item => [item.id, item]));
+    const ordered = [];
+    orderIds.forEach(id => {
+      const found = map.get(id);
+      if (found) {
+        ordered.push(found);
+        map.delete(id);
+      }
+    });
+    map.forEach((item) => ordered.push(item));
+    return ordered;
+  }, []);
+
+  const pushReorderUndo = useCallback(() => {
     const currentProject = projects.find(p => p.id === activeProjectId);
-    if (currentProject) setUndoHistory(prev => [...prev, currentProject.items]);
-  };
+    if (!currentProject) return;
+    setReorderUndoHistory(prev => [...prev, currentProject.items.map(item => item.id)]);
+    setReorderRedoHistory([]);
+  }, [projects, activeProjectId]);
 
   const handleUndoAction = () => {
-    if (undoHistory.length > 0) {
-      const prevItems = undoHistory[undoHistory.length - 1];
-      setProjects(prev => prev.map(p => p.id === activeProjectId ? { ...p, items: prevItems } : p));
-      setUndoHistory(prev => prev.slice(0, -1));
-    }
+    if (reorderUndoHistory.length === 0) return;
+    const previousOrder = reorderUndoHistory[reorderUndoHistory.length - 1];
+    const currentProject = projects.find(p => p.id === activeProjectId);
+    if (!currentProject) return;
+    setReorderRedoHistory(prev => [...prev, currentProject.items.map(item => item.id)]);
+    setProjects(prev => prev.map(p => {
+      if (p.id !== activeProjectId) return p;
+      return { ...p, items: applyItemOrder(p.items, previousOrder) };
+    }));
+    setReorderUndoHistory(prev => prev.slice(0, -1));
+  };
+
+  const handleRedoAction = () => {
+    if (reorderRedoHistory.length === 0) return;
+    const nextOrder = reorderRedoHistory[reorderRedoHistory.length - 1];
+    const currentProject = projects.find(p => p.id === activeProjectId);
+    if (!currentProject) return;
+    setReorderUndoHistory(prev => [...prev, currentProject.items.map(item => item.id)]);
+    setProjects(prev => prev.map(p => {
+      if (p.id !== activeProjectId) return p;
+      return { ...p, items: applyItemOrder(p.items, nextOrder) };
+    }));
+    setReorderRedoHistory(prev => prev.slice(0, -1));
   };
 
   const handleExportPPTX = async () => {
@@ -804,7 +849,8 @@ export default function App() {
       if (!importedProject || !Array.isArray(importedProject.items)) throw new Error('invalid');
       const normalized = normalizeProjects([importedProject])[0];
       setProjects(prev => prev.map(p => p.id === activeProjectId ? { ...p, ...normalized, id: p.id, title: p.title } : p));
-      setUndoHistory([]);
+      setReorderUndoHistory([]);
+      setReorderRedoHistory([]);
       alert('プロジェクト内容をインポートデータで上書きしました。');
     } catch (e) {
       console.error(e);
@@ -901,7 +947,7 @@ export default function App() {
 
   const handleDragEnd = useCallback(() => {
     if (draggedIndex !== null && dropIndex !== null && hasDragMovement && draggedIndex !== dropIndex) {
-      saveToUndo();
+      pushReorderUndo();
       reorderAtDrop(draggedIndex, dropIndex);
     }
     setDraggedIndex(null);
@@ -913,7 +959,7 @@ export default function App() {
     setHasDragMovement(false);
     activeDragPointerIdRef.current = null;
     lastDragPointerYRef.current = null;
-  }, [draggedIndex, dropIndex, hasDragMovement, reorderAtDrop, saveToUndo]);
+  }, [draggedIndex, dropIndex, hasDragMovement, reorderAtDrop, pushReorderUndo]);
 
   useEffect(() => {
     if (draggedIndex === null) return;
@@ -973,13 +1019,69 @@ export default function App() {
 
   // --- Delete Item Function (Reliable) ---
   const deleteItem = (itemId) => {
-    if (confirm('この記録を削除しますか？\n「元に戻す」で復元できます。')) {
-      saveToUndo();
+    if (confirm('この記録を削除しますか？')) {
       setProjects(prev => prev.map(p => {
         if (p.id !== activeProjectId) return p;
         return { ...p, items: p.items.filter(item => item.id !== itemId) };
       }));
     }
+  };
+
+  const duplicateItemInProject = (itemId) => {
+    setProjects(prev => prev.map(p => {
+      if (p.id !== activeProjectId) return p;
+      const idx = p.items.findIndex(item => item.id === itemId);
+      if (idx < 0) return p;
+      const src = p.items[idx];
+      const copied = {
+        ...JSON.parse(JSON.stringify(src)),
+        id: `item_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+      };
+      const nextItems = [...p.items];
+      nextItems.splice(idx + 1, 0, copied);
+      return { ...p, items: nextItems };
+    }));
+  };
+
+  const openTransferItemModal = (item) => {
+    setTransferItemModal(item);
+    const fallbackTarget = projects.find(p => p.id !== activeProjectId)?.id || activeProjectId || '';
+    setTransferTargetProjectId(fallbackTarget);
+    setTransferMode('copy');
+  };
+
+  const executeTransferItem = () => {
+    if (!transferItemModal) return;
+    if (!transferTargetProjectId) {
+      alert('コピー/移動先のプロジェクトを選択してください。');
+      return;
+    }
+    if (transferMode === 'move' && transferTargetProjectId === activeProjectId) {
+      alert('同一プロジェクトへの移動はできません。');
+      return;
+    }
+    setProjects(prev => {
+      const sourceProject = prev.find(p => p.id === activeProjectId);
+      if (!sourceProject) return prev;
+      const sourceItem = sourceProject.items.find(item => item.id === transferItemModal.id);
+      if (!sourceItem) return prev;
+      return prev.map(p => {
+        if (p.id === activeProjectId && transferMode === 'move') {
+          return { ...p, items: p.items.filter(item => item.id !== transferItemModal.id) };
+        }
+        if (p.id === transferTargetProjectId) {
+          const inserted = transferMode === 'copy'
+            ? {
+                ...JSON.parse(JSON.stringify(sourceItem)),
+                id: `item_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+              }
+            : sourceItem;
+          return { ...p, items: [...p.items, inserted] };
+        }
+        return p;
+      });
+    });
+    setTransferItemModal(null);
   };
 
   useEffect(() => {
@@ -1031,6 +1133,12 @@ export default function App() {
     document.body.removeChild(link);
   };
   const activeProject = projects.find(p => p.id === activeProjectId);
+  const submitRenameProject = () => {
+    const nextTitle = renameProjectTitle.trim();
+    if (!nextTitle) return;
+    setProjects(prev => prev.map(p => p.id === activeProjectId ? { ...p, title: nextTitle } : p));
+    setIsRenameProjectModalOpen(false);
+  };
 
   if (!isProjectsLoaded) {
     return (
@@ -1169,13 +1277,28 @@ export default function App() {
           <div className="flex items-center gap-4">
             <button onClick={() => setCurrentView('home')} className="p-2 hover:bg-gray-100 rounded-full text-gray-600"><ChevronLeft size={28} /></button>
             <h1 className="text-2xl font-bold text-gray-800 break-all">{project.title}</h1>
-            {undoHistory.length > 0 && (
-              <button onClick={handleUndoAction} className="flex items-center gap-1.5 ml-4 px-3 py-1.5 bg-amber-50 text-amber-700 rounded-lg font-bold text-sm transition border border-amber-200 shadow-sm hover:bg-amber-100">
-                <Undo size={16} /> 元に戻す
-              </button>
-            )}
+            <button
+              onClick={handleUndoAction}
+              disabled={reorderUndoHistory.length === 0}
+              className="flex items-center gap-1.5 ml-2 px-3 py-1.5 bg-amber-50 text-amber-700 rounded-lg font-bold text-sm transition border border-amber-200 shadow-sm hover:bg-amber-100 disabled:opacity-40"
+            >
+              <Undo size={16} /> 並び替えを戻す
+            </button>
+            <button
+              onClick={handleRedoAction}
+              disabled={reorderRedoHistory.length === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-lime-50 text-lime-700 rounded-lg font-bold text-sm transition border border-lime-200 shadow-sm hover:bg-lime-100 disabled:opacity-40"
+            >
+              <Redo2 size={16} /> やり直す
+            </button>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => { setRenameProjectTitle(project.title || ''); setIsRenameProjectModalOpen(true); }}
+              className="flex items-center gap-2 bg-sky-100 text-sky-700 px-4 py-2 rounded-lg font-bold hover:bg-sky-200"
+            >
+              <Edit size={20} /> <span className="hidden sm:inline">名前を編集</span>
+            </button>
             <button onClick={handleProjectExport} className="flex items-center gap-2 bg-emerald-100 text-emerald-700 px-4 py-2 rounded-lg font-bold hover:bg-emerald-200">
               <Download size={20} /> <span className="hidden sm:inline">プロジェクトJSON</span>
             </button>
@@ -1244,6 +1367,22 @@ export default function App() {
                           className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition font-bold text-sm"
                         >
                           <Edit size={16} /> 編集
+                        </button>
+                        <button
+                          type="button"
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => { e.stopPropagation(); duplicateItemInProject(item.id); }}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-50 text-violet-700 rounded-lg hover:bg-violet-100 transition font-bold text-sm"
+                        >
+                          <Copy size={16} /> ページ複製
+                        </button>
+                        <button
+                          type="button"
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => { e.stopPropagation(); openTransferItemModal(item); }}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-50 text-cyan-700 rounded-lg hover:bg-cyan-100 transition font-bold text-sm"
+                        >
+                          <FolderOpen size={16} /> 別PJへ
                         </button>
                         <button 
                           type="button"
@@ -1315,6 +1454,59 @@ export default function App() {
           </div>
         )}
 
+        {isRenameProjectModalOpen && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[85] p-4">
+            <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl">
+              <h2 className="text-xl font-bold mb-4 text-gray-800">プロジェクト名を編集</h2>
+              <input
+                autoFocus
+                type="text"
+                value={renameProjectTitle}
+                onChange={(e) => setRenameProjectTitle(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') submitRenameProject(); }}
+                className="w-full px-4 py-3 border border-gray-300 rounded-xl text-lg focus:outline-none focus:ring-2 focus:ring-blue-500 select-text"
+              />
+              <div className="flex justify-end gap-3 mt-5">
+                <button onClick={() => setIsRenameProjectModalOpen(false)} className="px-5 py-2.5 rounded-xl text-gray-600 hover:bg-gray-100 font-medium">キャンセル</button>
+                <button onClick={submitRenameProject} disabled={!renameProjectTitle.trim()} className="px-5 py-2.5 bg-sky-600 text-white rounded-xl hover:bg-sky-700 disabled:opacity-50 font-medium">保存</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {transferItemModal && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[85] p-4">
+            <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl">
+              <h2 className="text-xl font-bold mb-2 text-gray-800">ページをコピー / 移動</h2>
+              <p className="text-sm text-gray-500 mb-4">対象ページを別プロジェクトへコピー、または移動します。</p>
+              <div className="space-y-2 mb-4">
+                <label className="flex items-center gap-3 border rounded-xl p-3">
+                  <input type="radio" name="transferMode" checked={transferMode === 'copy'} onChange={() => setTransferMode('copy')} />
+                  <span className="font-medium text-gray-800">コピー</span>
+                </label>
+                <label className="flex items-center gap-3 border rounded-xl p-3">
+                  <input type="radio" name="transferMode" checked={transferMode === 'move'} onChange={() => setTransferMode('move')} />
+                  <span className="font-medium text-gray-800">移動</span>
+                </label>
+              </div>
+              <select
+                value={transferTargetProjectId}
+                onChange={(e) => setTransferTargetProjectId(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-xl bg-white"
+              >
+                <option value="">コピー/移動先を選択</option>
+                {projects.filter(p => p.id !== activeProjectId || transferMode === 'copy').map(p => (
+                  <option key={p.id} value={p.id}>{p.title}</option>
+                ))}
+              </select>
+              <div className="flex justify-end gap-3 mt-5">
+                <button onClick={() => setTransferItemModal(null)} className="px-5 py-2.5 rounded-xl text-gray-600 hover:bg-gray-100 font-medium">キャンセル</button>
+                <button onClick={executeTransferItem} className="px-5 py-2.5 bg-cyan-600 text-white rounded-xl hover:bg-cyan-700 font-medium">実行</button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {isExportSettingsOpen && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[80] p-4 font-sans">
             <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl">
@@ -1369,7 +1561,6 @@ export default function App() {
         editorPrefs={mergeEditorPrefs(activeProject?.editorPrefs)}
         onCancel={() => setCurrentView('project')}
         onSave={(newItem, updatedEditorPrefs) => {
-          saveToUndo();
           setProjects(prev => prev.map(p => {
             if (p.id !== activeProjectId) return p;
             const existingIdx = p.items.findIndex(i => i.id === newItem.id);
@@ -1440,8 +1631,28 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const panStartClientRef = useRef(null);
   const [currentAnnotation, setCurrentAnnotation] = useState(null);
   const [currentTool, setCurrentTool] = useState(ToolType.PEN); const currentToolRef = useRef(currentTool);
-  const [lineWidth, setLineWidth] = useState(mergedPrefs.freehand.lineWidth); const [fontSize, setFontSize] = useState(mergedPrefs.text.fontSize);
-  const [widthPresets, setWidthPresets] = useState([2, 6, 12]);
+  const [lineWidth, setLineWidth] = useState(() => {
+    if (typeof window === 'undefined') return mergedPrefs.freehand.lineWidth;
+    const cached = parseInt(localStorage.getItem(LINE_WIDTH_CACHE_KEY) || '', 10);
+    return Number.isFinite(cached) ? Math.max(1, Math.min(40, cached)) : mergedPrefs.freehand.lineWidth;
+  });
+  const [fontSize, setFontSize] = useState(mergedPrefs.text.fontSize);
+  const [widthPresets, setWidthPresets] = useState(() => {
+    if (typeof window === 'undefined') return [2, 6, 12];
+    try {
+      const raw = JSON.parse(localStorage.getItem(PRESET_CACHE_KEY) || '{}');
+      const arr = Array.isArray(raw?.widthPresets) ? raw.widthPresets.slice(0, 3).map(v => Math.max(1, Math.min(40, parseInt(v, 10) || 1))) : [2, 6, 12];
+      return arr.length === 3 ? arr : [2, 6, 12];
+    } catch { return [2, 6, 12]; }
+  });
+  const [fontPresets, setFontPresets] = useState(() => {
+    if (typeof window === 'undefined') return [24, 48, 72];
+    try {
+      const raw = JSON.parse(localStorage.getItem(PRESET_CACHE_KEY) || '{}');
+      const arr = Array.isArray(raw?.fontPresets) ? raw.fontPresets.slice(0, 3).map(v => Math.max(8, Math.min(200, parseInt(v, 10) || 8))) : [24, 48, 72];
+      return arr.length === 3 ? arr : [24, 48, 72];
+    } catch { return [24, 48, 72]; }
+  });
   const [strokeColor, setStrokeColor] = useState(COLORS[0]); const [fillColor, setFillColor] = useState(COLORS[1]);
   const [isFillTransparent, setIsFillTransparent] = useState(true); const [textGlow, setTextGlow] = useState(mergedPrefs.freehand.textGlow);
   const toolSettingsRef = useRef({
@@ -1693,6 +1904,14 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   useEffect(() => {
     if (currentTool === ToolType.TEXT && ['width', 'stroke', 'fill'].includes(activePopover || '')) textAreaRef.current?.blur();
   }, [activePopover, currentTool]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(LINE_WIDTH_CACHE_KEY, String(lineWidth));
+  }, [lineWidth]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(PRESET_CACHE_KEY, JSON.stringify({ widthPresets, fontPresets }));
+  }, [widthPresets, fontPresets]);
   const updateSettings = useCallback((updatesObj) => {
     if (updatesObj.lineWidth !== undefined) setLineWidth(updatesObj.lineWidth); if (updatesObj.fontSize !== undefined) setFontSize(updatesObj.fontSize); if (updatesObj.strokeColor !== undefined) setStrokeColor(updatesObj.strokeColor); if (updatesObj.fillColor !== undefined) setFillColor(updatesObj.fillColor); if (updatesObj.isFillTransparent !== undefined) setIsFillTransparent(updatesObj.isFillTransparent); if (updatesObj.textGlow !== undefined) setTextGlow(updatesObj.textGlow); if (currentTool !== ToolType.SELECT && currentTool !== ToolType.LASSO && toolSettingsRef.current[currentTool]) Object.assign(toolSettingsRef.current[currentTool], updatesObj);
     const group = getPrefsGroup(currentTool);
@@ -1957,7 +2176,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                     {textInput && (
                       <div className="absolute z-50 transform -translate-x-1/2 -translate-y-1/2 text-overlay pointer-events-auto" style={{ left: `${(textInput.canvasX / canvasRef.current.width) * 100}%`, top: `${(textInput.canvasY / canvasRef.current.height) * 100}%`, transform: `translate(-50%, -50%) rotate(${textInput.rotation || 0}rad)` }}>
                         <div className="absolute left-1/2 bottom-full mb-2 bg-white/95 backdrop-blur-sm px-3 py-2 rounded-xl shadow-2xl flex items-center gap-2 border border-gray-200 whitespace-nowrap" style={{ transform: `translateX(-50%) scale(${1 / Math.max(transform.scale, 0.1)})`, transformOrigin: 'bottom center' }} onPointerDown={e => e.stopPropagation()}>
-                          <div className="flex gap-1"> {COLORS.slice(0, 4).map(c => <button key={`ti-${c}`} onClick={() => setStrokeColor(c)} className={`w-6 h-6 rounded-full border shadow-sm ${strokeColor === c ? 'border-blue-500 scale-110' : 'border-gray-200'}`} style={{ backgroundColor: c }} />)} </div> <div className="w-px h-5 bg-gray-300 mx-1" /> <div className="flex items-center gap-2"> <span className="text-xs font-bold text-gray-600">ｻｲｽﾞ</span> <input type="range" min="16" max="120" value={fontSize} onChange={e => setFontSize(parseInt(e.target.value))} className="w-20 accent-blue-500" /> </div> <div className="w-px h-5 bg-gray-300 mx-1" /> <button onClick={() => setTextGlow(!textGlow)} className={`p-1.5 rounded-lg flex items-center gap-1 ${textGlow ? 'bg-amber-100 text-amber-600' : 'text-gray-400 hover:bg-gray-100'}`} title="光彩"> <Sparkles size={16} strokeWidth={textGlow ? 2.5 : 2} /> <span className="text-[10px] font-bold">光彩</span> </button> <div className="w-px h-5 bg-gray-300 mx-1" /> <button onClick={handleTextSubmit} className="bg-blue-600 text-white px-4 py-1.5 rounded-lg font-bold text-sm hover:bg-blue-700 shadow-md">確定</button>
+                          <div className="flex gap-1"> {COLORS.slice(0, 4).map(c => <button key={`ti-${c}`} onClick={() => setStrokeColor(c)} className={`w-6 h-6 rounded-full border shadow-sm ${strokeColor === c ? 'border-blue-500 scale-110' : 'border-gray-200'}`} style={{ backgroundColor: c }} />)} </div> <div className="w-px h-5 bg-gray-300 mx-1" /> <div className="flex flex-col gap-1"> <div className="flex items-center gap-2"><span className="text-xs font-bold text-gray-600">ｻｲｽﾞ</span><input type="range" min="16" max="120" value={fontSize} onChange={e => setFontSize(parseInt(e.target.value))} className="w-20 accent-blue-500" /></div><div className="flex gap-1">{fontPresets.map((fs,idx)=>(<button key={`fp-${idx}`} onClick={() => setFontSize(fs)} className={`px-1.5 py-0.5 text-[10px] rounded border ${fontSize===fs ? 'bg-blue-100 border-blue-400 text-blue-700' : 'bg-white border-gray-200 text-gray-600'}`}>{fs}</button>))}</div><div className="grid grid-cols-3 gap-1">{fontPresets.map((fs,idx)=>(<input key={`fps-${idx}`} type="range" min="16" max="120" value={fs} onChange={(e) => setFontPresets(prev => prev.map((pv,i)=> i===idx ? parseInt(e.target.value) : pv))} className="w-full accent-blue-500 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer" />))}</div></div> <div className="w-px h-5 bg-gray-300 mx-1" /> <button onClick={() => setTextGlow(!textGlow)} className={`p-1.5 rounded-lg flex items-center gap-1 ${textGlow ? 'bg-amber-100 text-amber-600' : 'text-gray-400 hover:bg-gray-100'}`} title="光彩"> <Sparkles size={16} strokeWidth={textGlow ? 2.5 : 2} /> <span className="text-[10px] font-bold">光彩</span> </button> <div className="w-px h-5 bg-gray-300 mx-1" /> <button onClick={handleTextSubmit} className="bg-blue-600 text-white px-4 py-1.5 rounded-lg font-bold text-sm hover:bg-blue-700 shadow-md">確定</button>
                         </div>
                         <textarea ref={textAreaRef} autoFocus value={textInput.value} onChange={(e) => setTextInput({...textInput, value: e.target.value})} onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleTextSubmit(); } }} onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()} className="p-2 font-bold border-4 border-blue-500 rounded-lg shadow-2xl focus:outline-none bg-transparent text-center resize-none overflow-hidden select-text touch-auto" style={{ color: strokeColor, textShadow: textGlow ? '0 0 10px white, 0 0 10px white, 0 0 10px white' : 'none', minWidth: '200px', width: `${Math.max(200, textInput.value.split('\n').reduce((a,b)=>a.length>b.length?a:b, '').length * fontSize * 1.2 + 40)}px`, fontSize: `${fontSize}px`, lineHeight: 1.2, height: `${Math.max(1, textInput.value.split('\n').length) * fontSize * 1.2 + 32}px`, transformOrigin: 'center center' }} placeholder="文字を入力 (Shift+Enterで改行)" />
                       </div>
