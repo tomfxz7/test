@@ -5,7 +5,7 @@ import {
   Undo, Trash2, Save, ChevronLeft, Printer, 
   Droplet, FileText, Maximize, Minimize, MousePointer2, Eraser,
   Scaling, Sparkles, Minus, Lasso, ScanText, Loader2, Hand, PenLine, Settings,
-  Download, Upload, Presentation, Copy, ClipboardPaste, X, RefreshCw, Link, Unlink, LayoutTemplate, ChevronDown, ChevronUp, GripVertical, Edit, Redo2
+  Download, Upload, Presentation, Copy, ClipboardPaste, X, RefreshCw, Link, Unlink, LayoutTemplate, ChevronDown, ChevronUp, ChevronRight, GripVertical, Edit, Redo2
 } from 'lucide-react';
 
 // --- Constants & Types ---
@@ -1740,6 +1740,31 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     });
   };
 
+  const syncActiveImageState = useCallback((list) => {
+    if (!activeImageId) return list;
+    const currentFinal = canvasRef.current ? captureCurrentCanvas() : null;
+    return list.map(img => (
+      img.id === activeImageId
+        ? { ...img, annotations: annotationsRef.current, history, redoHistory: redoStack, finalImage: currentFinal }
+        : img
+    ));
+  }, [activeImageId, history, redoStack]);
+
+  const moveImageByOffset = useCallback((imgId, offset) => {
+    if (offset === 0) return;
+    setImagesData(prev => {
+      const synced = syncActiveImageState(prev);
+      const fromIndex = synced.findIndex(img => img.id === imgId);
+      if (fromIndex < 0) return prev;
+      const toIndex = Math.max(0, Math.min(synced.length - 1, fromIndex + offset));
+      if (toIndex === fromIndex) return synced;
+      const next = [...synced];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    });
+  }, [syncActiveImageState]);
+
   const handleDeleteImage = (imgId) => { if (confirm('この画像を削除しますか？')) { setImagesData(prev => { const next = prev.filter(img => img.id !== imgId); if (activeImageId === imgId) { if (next.length > 0) setTimeout(() => switchImage(next[0].id, true), 0); else { setActiveImageId(null); setBaseImage(null); setAnnotations([]); setHistory([]); setRedoStack([]); } } return next; }); } };
   const addImagesFromFiles = useCallback((files) => {
     let validFiles = files.filter(file => file.type.startsWith('image/')); if (validFiles.length === 0) return;
@@ -2192,7 +2217,87 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                   </div>
                 </div>
               )}
-              {imagesData.length > 0 && ( <div className="bg-white border-t px-4 py-2 flex items-center gap-3 overflow-x-auto shrink-0 z-10 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]"> {imagesData.map((img) => ( <div key={img.id} onClick={() => { if (suppressThumbClickRef.current) { suppressThumbClickRef.current = false; return; } switchImage(img.id); }} onContextMenu={(e) => { e.preventDefault(); setThumbContextMenu({ img, x: e.clientX, y: e.clientY }); }} onPointerDown={(e) => { if (e.pointerType === 'touch') { if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current); longPressTimerRef.current = setTimeout(() => { suppressThumbClickRef.current = true; setThumbContextMenu({ img, x: e.clientX, y: e.clientY }); }, 550); } }} onPointerUp={() => { if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current); }} onPointerCancel={() => { if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current); }} className={`relative w-16 h-16 shrink-0 rounded-lg overflow-hidden border-2 cursor-pointer transition-all ${activeImageId === img.id ? 'border-blue-500 shadow-md ring-2 ring-blue-200' : 'border-gray-200 opacity-70 hover:opacity-100'}`}> <img src={img.baseImage.src} className="w-full h-full object-cover bg-gray-100" /> <button onClick={(e) => { e.stopPropagation(); handleDeleteImage(img.id); }} className="absolute top-0.5 right-0.5 p-1 bg-black/60 text-white rounded-full hover:bg-red-500 transition"><X size={12} /></button> </div> ))} <button onClick={() => setIsImageSourcePickerOpen(true)} className="w-16 h-16 shrink-0 rounded-lg border-2 border-dashed border-gray-300 flex flex-col items-center justify-center text-gray-500 cursor-pointer hover:bg-blue-50 hover:text-blue-600 hover:border-blue-300 transition" title="追加方法を選択"> <Plus size={20} /><span className="text-[9px] mt-0.5 font-bold">追加</span></button> </div> )}
+              {imagesData.length > 0 && (
+                <div className="bg-white border-t px-4 py-2 flex items-center gap-3 overflow-x-auto shrink-0 z-10 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
+                  {imagesData.map((img, idx) => (
+                    <div
+                      key={img.id}
+                      onClick={() => {
+                        if (suppressThumbClickRef.current) {
+                          suppressThumbClickRef.current = false;
+                          return;
+                        }
+                        switchImage(img.id);
+                      }}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        setThumbContextMenu({ img, x: e.clientX, y: e.clientY });
+                      }}
+                      onPointerDown={(e) => {
+                        if (e.pointerType === 'touch') {
+                          if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+                          longPressTimerRef.current = setTimeout(() => {
+                            suppressThumbClickRef.current = true;
+                            setThumbContextMenu({ img, x: e.clientX, y: e.clientY });
+                          }, 550);
+                        }
+                      }}
+                      onPointerUp={() => {
+                        if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+                      }}
+                      onPointerCancel={() => {
+                        if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+                      }}
+                      className={`relative w-16 h-16 shrink-0 rounded-lg overflow-hidden border-2 cursor-pointer transition-all ${
+                        activeImageId === img.id ? 'border-blue-500 shadow-md ring-2 ring-blue-200' : 'border-gray-200 opacity-70 hover:opacity-100'
+                      }`}
+                    >
+                      <img src={img.baseImage.src} className="w-full h-full object-cover bg-gray-100" />
+                      <div className="absolute inset-x-0 bottom-0 flex justify-center gap-0.5 pb-0.5">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            moveImageByOffset(img.id, -1);
+                          }}
+                          disabled={idx === 0}
+                          className="p-0.5 bg-black/60 text-white rounded disabled:opacity-30 hover:bg-blue-600 transition"
+                          title="左へ移動"
+                        >
+                          <ChevronLeft size={12} />
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            moveImageByOffset(img.id, 1);
+                          }}
+                          disabled={idx === imagesData.length - 1}
+                          className="p-0.5 bg-black/60 text-white rounded disabled:opacity-30 hover:bg-blue-600 transition"
+                          title="右へ移動"
+                        >
+                          <ChevronRight size={12} />
+                        </button>
+                      </div>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteImage(img.id);
+                        }}
+                        className="absolute top-0.5 right-0.5 p-1 bg-black/60 text-white rounded-full hover:bg-red-500 transition"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    onClick={() => setIsImageSourcePickerOpen(true)}
+                    className="w-16 h-16 shrink-0 rounded-lg border-2 border-dashed border-gray-300 flex flex-col items-center justify-center text-gray-500 cursor-pointer hover:bg-blue-50 hover:text-blue-600 hover:border-blue-300 transition"
+                    title="追加方法を選択"
+                  >
+                    <Plus size={20} />
+                    <span className="text-[9px] mt-0.5 font-bold">追加</span>
+                  </button>
+                </div>
+              )}
             </>
           )}
         </div>
