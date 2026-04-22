@@ -1346,9 +1346,6 @@ export default function App() {
                   )}
                   <div
                     data-item-index={index}
-                    onPointerDown={(e) => {
-                      if (e.target.closest('.drag-handle')) handleDragStart(index, e);
-                    }}
                     className={`bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden print:border-gray-300 print:shadow-none break-inside-avoid relative group ${isDragging ? 'z-50 shadow-2xl ring-2 ring-blue-200 transition-none' : 'z-10 transition-all duration-200 ease-out'}`}
                     style={{
                       transform: isDragging ? `translate(${dragDx}px, ${dragDy}px) scale(1.02)` : 'translate(0, 0) scale(1)',
@@ -1356,7 +1353,14 @@ export default function App() {
                       cursor: isDragging ? 'grabbing' : 'default'
                     }}
                   >
-                    <div className="bg-gray-50 px-4 py-2 border-b text-gray-500 font-medium flex justify-between items-center select-none drag-handle cursor-grab active:cursor-grabbing" style={{ touchAction: 'none' }}>
+                    <div
+                      className="bg-gray-50 px-4 py-2 border-b text-gray-500 font-medium flex justify-between items-center select-none drag-handle cursor-grab active:cursor-grabbing"
+                      style={{ touchAction: 'none' }}
+                      onPointerDown={(e) => {
+                        if (e.target.closest('button')) return;
+                        handleDragStart(index, e);
+                      }}
+                    >
                       <div className="flex items-center gap-3">
                         <GripVertical size={20} className="text-gray-400" />
                         <span className="font-bold text-gray-700">No. {index + 1}</span>
@@ -1607,11 +1611,12 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const [activeImageId, setActiveImageId] = useState(null);
   const [draggingImageIndex, setDraggingImageIndex] = useState(null);
   const [imageDropIndex, setImageDropIndex] = useState(null);
+  const [imageDragStartPos, setImageDragStartPos] = useState(null);
+  const [imageDragMoved, setImageDragMoved] = useState(false);
   const [layoutSettings, setLayoutSettings] = useState(initialItem?.layout || { template: 'default', memoRect: { x: 0.5, y: 1.2, w: 3.5, h: 4.0 }, customImageRects: [] });
   const [isLayoutModalOpen, setIsLayoutModalOpen] = useState(false);
   const [selectedLayoutRectIndexes, setSelectedLayoutRectIndexes] = useState([]);
   const [bulkResizeMode, setBulkResizeMode] = useState(false);
-  const [bulkResizePercent, setBulkResizePercent] = useState(100);
   const [isImageSourcePickerOpen, setIsImageSourcePickerOpen] = useState(false);
   const [thumbContextMenu, setThumbContextMenu] = useState(null);
   const [showAdvancedLayout, setShowAdvancedLayout] = useState(false);
@@ -1771,16 +1776,58 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       return next;
     });
   }, []);
-  const handleThumbDragStart = (idx) => {
+  const handleThumbDragStart = (idx, e) => {
+    if (e?.pointerType && e.pointerType !== 'mouse') return;
     setDraggingImageIndex(idx);
     setImageDropIndex(idx);
+    setImageDragStartPos({ x: e?.clientX || 0, y: e?.clientY || 0 });
+    setImageDragMoved(false);
   };
   const handleThumbDrop = (idx) => {
     if (draggingImageIndex === null) return;
     reorderImages(draggingImageIndex, idx);
     setDraggingImageIndex(null);
     setImageDropIndex(null);
+    setImageDragStartPos(null);
+    setImageDragMoved(false);
   };
+  useEffect(() => {
+    if (draggingImageIndex === null) return;
+    const calcDropIndex = (clientX) => {
+      const thumbs = Array.from(document.querySelectorAll('[data-thumb-index]'))
+        .map(el => ({ idx: Number(el.getAttribute('data-thumb-index')), rect: el.getBoundingClientRect() }))
+        .filter(v => !Number.isNaN(v.idx))
+        .sort((a, b) => a.idx - b.idx);
+      for (const t of thumbs) {
+        if (clientX < t.rect.left + t.rect.width / 2) return t.idx;
+      }
+      return thumbs.length > 0 ? thumbs[thumbs.length - 1].idx : draggingImageIndex;
+    };
+    const onMove = (e) => {
+      if (imageDragStartPos) {
+        const moved = Math.hypot(e.clientX - imageDragStartPos.x, e.clientY - imageDragStartPos.y) > 6;
+        if (moved && !imageDragMoved) setImageDragMoved(true);
+      }
+      setImageDropIndex(calcDropIndex(e.clientX));
+    };
+    const onUp = () => {
+      if (imageDragMoved && imageDropIndex !== null && imageDropIndex !== draggingImageIndex) handleThumbDrop(imageDropIndex);
+      else {
+        setDraggingImageIndex(null);
+        setImageDropIndex(null);
+        setImageDragStartPos(null);
+        setImageDragMoved(false);
+      }
+    };
+    window.addEventListener('pointermove', onMove, { passive: true });
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+  }, [draggingImageIndex, imageDropIndex, imageDragMoved, imageDragStartPos]);
   const scaleRectAroundCenter = useCallback((rect, scaleFactor) => {
     const cx = rect.x + rect.w / 2;
     const cy = rect.y + rect.h / 2;
@@ -1794,15 +1841,35 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     const newY = Math.min(Math.max(0, cy - clampedH / 2), maxH - clampedH);
     return { ...rect, x: newX, y: newY, w: clampedW, h: clampedH };
   }, []);
-  const applyBulkResize = useCallback((percent) => {
-    if (selectedLayoutRectIndexes.length === 0) return;
-    const factor = Math.max(0.2, percent / 100);
-    setLayoutSettings(prev => ({
-      ...prev,
-      template: 'custom',
-      customImageRects: prev.customImageRects.map((rect, idx) => selectedLayoutRectIndexes.includes(idx) ? scaleRectAroundCenter(rect, factor) : rect)
-    }));
-  }, [selectedLayoutRectIndexes, scaleRectAroundCenter]);
+  const handleLayoutRectChange = useCallback((index, nextRect) => {
+    setLayoutSettings(prev => {
+      const oldRect = prev.customImageRects[index];
+      if (!oldRect) return prev;
+      const nextRects = [...prev.customImageRects];
+      nextRects[index] = nextRect;
+      const shouldSync = bulkResizeMode && selectedLayoutRectIndexes.includes(index) && selectedLayoutRectIndexes.length > 1;
+      if (shouldSync) {
+        const dx = nextRect.x - oldRect.x;
+        const dy = nextRect.y - oldRect.y;
+        const scaleW = oldRect.w !== 0 ? nextRect.w / oldRect.w : 1;
+        const scaleH = oldRect.h !== 0 ? nextRect.h / oldRect.h : 1;
+        selectedLayoutRectIndexes.forEach((idx) => {
+          if (idx === index) return;
+          const base = prev.customImageRects[idx];
+          if (!base) return;
+          const synced = {
+            ...base,
+            x: base.x + dx,
+            y: base.y + dy,
+            w: Math.max(0.2, base.w * scaleW),
+            h: Math.max(0.2, base.h * scaleH)
+          };
+          nextRects[idx] = scaleRectAroundCenter(synced, 1);
+        });
+      }
+      return { ...prev, template: 'custom', customImageRects: nextRects };
+    });
+  }, [bulkResizeMode, selectedLayoutRectIndexes, scaleRectAroundCenter]);
   const addImagesFromFiles = useCallback((files) => {
     let validFiles = files.filter(file => file.type.startsWith('image/')); if (validFiles.length === 0) return;
     validFiles.forEach(file => {
@@ -2259,14 +2326,21 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                   {imagesData.map((img, idx) => (
                     <div
                       key={img.id}
-                      draggable
-                      onDragStart={() => handleThumbDragStart(idx)}
-                      onDragOver={(e) => { e.preventDefault(); setImageDropIndex(idx); }}
-                      onDrop={(e) => { e.preventDefault(); handleThumbDrop(idx); }}
-                      onDragEnd={() => { setDraggingImageIndex(null); setImageDropIndex(null); }}
+                      data-thumb-index={idx}
+                      onPointerDown={(e) => {
+                        if (e.target.closest('button')) return;
+                        if (e.pointerType === 'touch') {
+                          if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+                          longPressTimerRef.current = setTimeout(() => {
+                            suppressThumbClickRef.current = true;
+                            setThumbContextMenu({ img, x: e.clientX, y: e.clientY });
+                          }, 550);
+                          return;
+                        }
+                        handleThumbDragStart(idx, e);
+                      }}
                       onClick={() => { if (suppressThumbClickRef.current) { suppressThumbClickRef.current = false; return; } switchImage(img.id); }}
                       onContextMenu={(e) => { e.preventDefault(); setThumbContextMenu({ img, x: e.clientX, y: e.clientY }); }}
-                      onPointerDown={(e) => { if (e.pointerType === 'touch') { if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current); longPressTimerRef.current = setTimeout(() => { suppressThumbClickRef.current = true; setThumbContextMenu({ img, x: e.clientX, y: e.clientY }); }, 550); } }}
                       onPointerUp={() => { if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current); }}
                       onPointerCancel={() => { if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current); }}
                       className={`relative w-16 h-16 shrink-0 rounded-lg overflow-hidden border-2 cursor-grab active:cursor-grabbing transition-all ${activeImageId === img.id ? 'border-blue-500 shadow-md ring-2 ring-blue-200' : 'border-gray-200 opacity-70 hover:opacity-100'} ${imageDropIndex === idx && draggingImageIndex !== null && draggingImageIndex !== idx ? 'ring-2 ring-emerald-400' : ''}`}
@@ -2288,7 +2362,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       {isImageSourcePickerOpen && ( <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[65] p-4"> <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl"> <h2 className="text-2xl font-bold text-gray-800 mb-2">画像の追加方法</h2><p className="text-gray-500 mb-5">カメラで撮影するか、アルバムから選択してください。</p><div className="flex flex-col sm:flex-row gap-4"> <button onClick={() => { setIsImageSourcePickerOpen(false); setTimeout(() => cameraInputRef.current?.click(), 0); }} className="flex-1 flex flex-col items-center justify-center bg-blue-50 p-6 rounded-2xl hover:bg-blue-100 text-blue-700 transition"><Camera size={44} className="mb-3" /><span className="font-bold text-lg">カメラで撮影</span></button> <button onClick={() => { setIsImageSourcePickerOpen(false); setTimeout(() => albumInputRef.current?.click(), 0); }} className="flex-1 flex flex-col items-center justify-center bg-indigo-50 p-6 rounded-2xl hover:bg-indigo-100 text-indigo-700 transition"><ImageIcon size={44} className="mb-3" /><span className="font-bold text-lg">アルバムから選択</span></button> </div><div className="mt-5 flex justify-end"><button onClick={() => setIsImageSourcePickerOpen(false)} className="px-5 py-2.5 rounded-xl text-gray-600 hover:bg-gray-100 font-medium">キャンセル</button></div></div></div> )}
       <input ref={cameraInputRef} type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={handleImageUpload} />
       <input ref={albumInputRef} type="file" multiple accept="image/*" className="hidden" onChange={handleImageUpload} />
-      {isLayoutModalOpen && ( <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[70] p-4 font-sans select-none backdrop-blur-sm"> <div className="bg-white rounded-2xl p-6 w-full max-w-3xl shadow-2xl max-h-[95vh] overflow-y-auto flex flex-col"> <div className="flex justify-between items-center mb-4"> <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2"><LayoutTemplate size={24} className="text-blue-600" /> スライド出力レイアウト設定</h2> <button onClick={() => setIsLayoutModalOpen(false)} className="p-2 text-gray-400 hover:bg-gray-100 rounded-full transition"><X size={24} /></button> </div> <div className="mb-6 flex gap-2 overflow-x-auto pb-2 shrink-0"> {[ { id: 'default', label: 'デフォルト (左メモ / 右画像)' }, { id: 'top_bottom', label: '上下分割 (上メモ / 下画像)' }, { id: 'images_only', label: '画像のみ (メモ非表示)' }, { id: 'custom', label: '完全カスタム (プレビューを操作)' } ].map(tpl => ( <button key={tpl.id} onClick={() => setLayoutSettings(prev => ({ ...prev, template: tpl.id }))} className={`px-4 py-2.5 border-2 rounded-xl text-sm font-bold whitespace-nowrap transition ${layoutSettings.template === tpl.id ? 'border-blue-500 bg-blue-50 text-blue-700 shadow-sm' : 'border-gray-200 text-gray-600 hover:bg-gray-50 hover:border-gray-300'}`}>{tpl.label}</button> ))} </div> <div className="mb-3 flex flex-wrap items-center gap-2 border border-fuchsia-100 bg-fuchsia-50/60 p-3 rounded-xl"> <label className="flex items-center gap-2 text-sm font-bold text-fuchsia-700"><input type="checkbox" checked={bulkResizeMode} onChange={(e) => { const enabled = e.target.checked; setBulkResizeMode(enabled); if (!enabled) setSelectedLayoutRectIndexes([]); }} /> 複数選択リサイズモード</label> <button onClick={() => setSelectedLayoutRectIndexes(layoutSettings.customImageRects.map((_, idx) => idx))} disabled={!bulkResizeMode || layoutSettings.customImageRects.length === 0} className="px-2 py-1 text-xs rounded border bg-white text-fuchsia-700 disabled:opacity-40">全選択</button> <button onClick={() => setSelectedLayoutRectIndexes([])} disabled={!bulkResizeMode || selectedLayoutRectIndexes.length === 0} className="px-2 py-1 text-xs rounded border bg-white text-fuchsia-700 disabled:opacity-40">解除</button> <div className="text-xs text-fuchsia-800">選択中: {selectedLayoutRectIndexes.length} 枚</div> {bulkResizeMode && ( <><input type="range" min="50" max="200" value={bulkResizePercent} onChange={(e) => setBulkResizePercent(parseInt(e.target.value, 10))} className="w-40 accent-fuchsia-600" /><button onClick={() => applyBulkResize(bulkResizePercent)} disabled={selectedLayoutRectIndexes.length === 0} className="px-3 py-1.5 text-xs rounded-lg bg-fuchsia-600 text-white disabled:opacity-40">選択画像を{bulkResizePercent}%に一括変更</button></> )} </div> <div className="mb-4"> <div className="flex justify-between items-end mb-2"><h3 className="font-bold text-gray-700 text-sm">プレビュー (ドラッグ＆リサイズ可能)</h3><span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">16:9 スライド</span></div> <div ref={previewContainerRef} className="relative w-full aspect-video bg-white border-2 border-gray-300 shadow-inner overflow-hidden rounded-lg" style={{ backgroundImage: 'radial-gradient(#e5e7eb 1px, transparent 1px)', backgroundSize: '40px 40px', backgroundPosition: '0 0' }}> <div className="absolute top-1/2 left-0 w-full h-px bg-blue-500/20 pointer-events-none"></div><div className="absolute left-1/2 top-0 w-px h-full bg-blue-500/20 pointer-events-none"></div> {layoutSettings.memoRect && ( <LayoutRect rect={layoutSettings.memoRect} onChange={(r) => setLayoutSettings(p => ({...p, memoRect: r}))} onDragStart={() => setLayoutSettings(p => ({...p, template: 'custom'}))} label="📝 メモ配置エリア" isMemo={true} containerRef={previewContainerRef} /> )} {layoutSettings.customImageRects.map((rect, i) => ( <LayoutRect key={i} rect={rect} onChange={(r) => { const newArr = [...layoutSettings.customImageRects]; newArr[i] = r; setLayoutSettings(p => ({...p, customImageRects: newArr})); }} onDragStart={() => setLayoutSettings(p => ({...p, template: 'custom'}))} onToggleSelect={bulkResizeMode ? () => setSelectedLayoutRectIndexes(prev => prev.includes(i) ? prev.filter(v => v !== i) : [...prev, i]) : null} isSelected={selectedLayoutRectIndexes.includes(i)} label={`🖼️ ${i+1}枚目の画像`} bgImg={imagesData[i]?.baseImage?.src} isMemo={false} containerRef={previewContainerRef} /> ))} </div> </div> <div className="border border-gray-200 rounded-xl overflow-hidden shrink-0"> <button onClick={() => setShowAdvancedLayout(!showAdvancedLayout)} className="w-full px-4 py-3 bg-gray-50 hover:bg-gray-100 flex justify-between items-center text-sm font-bold text-gray-700 transition">詳細な数値を手入力して微調整する {showAdvancedLayout ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button> {showAdvancedLayout && ( <div className="p-4 bg-white space-y-4"> <p className="text-xs text-gray-500 mb-2">※単位は「インチ」です（標準16:9スライド幅10.0、高さ5.625）。左上が原点(0,0)です。</p> {layoutSettings.memoRect && ( <div className="space-y-1"><h4 className="font-bold text-gray-700 text-xs flex items-center gap-1.5"><FileText size={14}/> メモ枠</h4> <div className="flex flex-wrap gap-2 items-center text-xs bg-gray-50 p-2 rounded border"> <label className="flex items-center gap-1 font-bold text-gray-600">X: <input type="number" step="0.1" value={layoutSettings.memoRect.x} onChange={e => setLayoutSettings(p => ({...p, template: 'custom', memoRect: {...p.memoRect, x: parseFloat(e.target.value)||0}}))} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">Y: <input type="number" step="0.1" value={layoutSettings.memoRect.y} onChange={e => setLayoutSettings(p => ({...p, template: 'custom', memoRect: {...p.memoRect, y: parseFloat(e.target.value)||0}}))} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">W: <input type="number" step="0.1" value={layoutSettings.memoRect.w} onChange={e => setLayoutSettings(p => ({...p, template: 'custom', memoRect: {...p.memoRect, w: parseFloat(e.target.value)||0}}))} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">H: <input type="number" step="0.1" value={layoutSettings.memoRect.h} onChange={e => setLayoutSettings(p => ({...p, template: 'custom', memoRect: {...p.memoRect, h: parseFloat(e.target.value)||0}}))} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> </div> </div> )} <div className="space-y-1"><h4 className="font-bold text-gray-700 text-xs flex items-center justify-between"><span className="flex items-center gap-1.5"><ImageIcon size={14}/> 各画像枠</span><button onClick={() => setLayoutSettings(p => ({...p, template: 'custom', customImageRects: [...p.customImageRects, {x:0.5, y:1.0, w:4.0, h:3.0}]}))} className="text-blue-600 hover:text-blue-800 text-xs font-bold flex items-center gap-1"><Plus size={12}/> 枠を追加</button></h4> <div className="space-y-2 max-h-32 overflow-y-auto pr-1"> {layoutSettings.customImageRects.map((rect, idx) => ( <div key={idx} className={`flex flex-wrap gap-2 items-center text-xs bg-gray-50 p-2 border rounded ${selectedLayoutRectIndexes.includes(idx) ? 'ring-1 ring-fuchsia-400' : ''}`}> <span className="font-bold text-blue-600 w-12 text-center">{idx + 1}枚目</span> <button onClick={() => setSelectedLayoutRectIndexes(prev => prev.includes(idx) ? prev.filter(v => v !== idx) : [...prev, idx])} disabled={!bulkResizeMode} className="px-1.5 py-0.5 rounded border text-[10px] font-bold disabled:opacity-40">{selectedLayoutRectIndexes.includes(idx) ? '選択中' : '選択'}</button> <label className="flex items-center gap-1 font-bold text-gray-600">X: <input type="number" step="0.1" value={rect.x} onChange={e => { const newArr = [...layoutSettings.customImageRects]; newArr[idx].x = parseFloat(e.target.value)||0; setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">Y: <input type="number" step="0.1" value={rect.y} onChange={e => { const newArr = [...layoutSettings.customImageRects]; newArr[idx].y = parseFloat(e.target.value)||0; setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">W: <input type="number" step="0.1" value={rect.w} onChange={e => { const newArr = [...layoutSettings.customImageRects]; newArr[idx].w = parseFloat(e.target.value)||0; setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">H: <input type="number" step="0.1" value={rect.h} onChange={e => { const newArr = [...layoutSettings.customImageRects]; newArr[idx].h = parseFloat(e.target.value)||0; setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <button onClick={() => { const newArr = layoutSettings.customImageRects.filter((_, i) => i !== idx); setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="ml-auto text-red-500 hover:bg-red-100 p-1 rounded transition"><Trash2 size={14} /></button> </div> ))} </div> </div> </div> )} </div> <div className="mt-6 flex justify-end shrink-0"> <button onClick={() => setIsLayoutModalOpen(false)} className="px-8 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold transition shadow-lg flex items-center gap-2">設定を保存して戻る</button> </div> </div> </div> )}
+      {isLayoutModalOpen && ( <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[70] p-4 font-sans select-none backdrop-blur-sm"> <div className="bg-white rounded-2xl p-6 w-full max-w-3xl shadow-2xl max-h-[95vh] overflow-y-auto flex flex-col"> <div className="flex justify-between items-center mb-4"> <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2"><LayoutTemplate size={24} className="text-blue-600" /> スライド出力レイアウト設定</h2> <button onClick={() => setIsLayoutModalOpen(false)} className="p-2 text-gray-400 hover:bg-gray-100 rounded-full transition"><X size={24} /></button> </div> <div className="mb-6 flex gap-2 overflow-x-auto pb-2 shrink-0"> {[ { id: 'default', label: 'デフォルト (左メモ / 右画像)' }, { id: 'top_bottom', label: '上下分割 (上メモ / 下画像)' }, { id: 'images_only', label: '画像のみ (メモ非表示)' }, { id: 'custom', label: '完全カスタム (プレビューを操作)' } ].map(tpl => ( <button key={tpl.id} onClick={() => setLayoutSettings(prev => ({ ...prev, template: tpl.id }))} className={`px-4 py-2.5 border-2 rounded-xl text-sm font-bold whitespace-nowrap transition ${layoutSettings.template === tpl.id ? 'border-blue-500 bg-blue-50 text-blue-700 shadow-sm' : 'border-gray-200 text-gray-600 hover:bg-gray-50 hover:border-gray-300'}`}>{tpl.label}</button> ))} </div> <div className="mb-3 flex flex-wrap items-center gap-2 border border-fuchsia-100 bg-fuchsia-50/60 p-3 rounded-xl"> <label className="flex items-center gap-2 text-sm font-bold text-fuchsia-700"><input type="checkbox" checked={bulkResizeMode} onChange={(e) => { const enabled = e.target.checked; setBulkResizeMode(enabled); if (!enabled) setSelectedLayoutRectIndexes([]); }} /> 複数選択同期モード</label> <button onClick={() => setSelectedLayoutRectIndexes(layoutSettings.customImageRects.map((_, idx) => idx))} disabled={!bulkResizeMode || layoutSettings.customImageRects.length === 0} className="px-2 py-1 text-xs rounded border bg-white text-fuchsia-700 disabled:opacity-40">全選択</button> <button onClick={() => setSelectedLayoutRectIndexes([])} disabled={!bulkResizeMode || selectedLayoutRectIndexes.length === 0} className="px-2 py-1 text-xs rounded border bg-white text-fuchsia-700 disabled:opacity-40">解除</button> <div className="text-xs text-fuchsia-800">選択中: {selectedLayoutRectIndexes.length} 枚（1つを移動/拡大縮小すると他も同期）</div> </div> <div className="mb-4"> <div className="flex justify-between items-end mb-2"><h3 className="font-bold text-gray-700 text-sm">プレビュー (ドラッグ＆リサイズ可能)</h3><span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">16:9 スライド</span></div> <div ref={previewContainerRef} className="relative w-full aspect-video bg-white border-2 border-gray-300 shadow-inner overflow-hidden rounded-lg" style={{ backgroundImage: 'radial-gradient(#e5e7eb 1px, transparent 1px)', backgroundSize: '40px 40px', backgroundPosition: '0 0' }}> <div className="absolute top-1/2 left-0 w-full h-px bg-blue-500/20 pointer-events-none"></div><div className="absolute left-1/2 top-0 w-px h-full bg-blue-500/20 pointer-events-none"></div> {layoutSettings.memoRect && ( <LayoutRect rect={layoutSettings.memoRect} onChange={(r) => setLayoutSettings(p => ({...p, memoRect: r}))} onDragStart={() => setLayoutSettings(p => ({...p, template: 'custom'}))} label="📝 メモ配置エリア" isMemo={true} containerRef={previewContainerRef} /> )} {layoutSettings.customImageRects.map((rect, i) => ( <LayoutRect key={i} rect={rect} onChange={(r) => handleLayoutRectChange(i, r)} onDragStart={() => setLayoutSettings(p => ({...p, template: 'custom'}))} onToggleSelect={bulkResizeMode ? () => setSelectedLayoutRectIndexes(prev => prev.includes(i) ? prev.filter(v => v !== i) : [...prev, i]) : null} isSelected={selectedLayoutRectIndexes.includes(i)} label={`🖼️ ${i+1}枚目の画像`} bgImg={imagesData[i]?.baseImage?.src} isMemo={false} containerRef={previewContainerRef} /> ))} </div> </div> <div className="border border-gray-200 rounded-xl overflow-hidden shrink-0"> <button onClick={() => setShowAdvancedLayout(!showAdvancedLayout)} className="w-full px-4 py-3 bg-gray-50 hover:bg-gray-100 flex justify-between items-center text-sm font-bold text-gray-700 transition">詳細な数値を手入力して微調整する {showAdvancedLayout ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button> {showAdvancedLayout && ( <div className="p-4 bg-white space-y-4"> <p className="text-xs text-gray-500 mb-2">※単位は「インチ」です（標準16:9スライド幅10.0、高さ5.625）。左上が原点(0,0)です。</p> {layoutSettings.memoRect && ( <div className="space-y-1"><h4 className="font-bold text-gray-700 text-xs flex items-center gap-1.5"><FileText size={14}/> メモ枠</h4> <div className="flex flex-wrap gap-2 items-center text-xs bg-gray-50 p-2 rounded border"> <label className="flex items-center gap-1 font-bold text-gray-600">X: <input type="number" step="0.1" value={layoutSettings.memoRect.x} onChange={e => setLayoutSettings(p => ({...p, template: 'custom', memoRect: {...p.memoRect, x: parseFloat(e.target.value)||0}}))} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">Y: <input type="number" step="0.1" value={layoutSettings.memoRect.y} onChange={e => setLayoutSettings(p => ({...p, template: 'custom', memoRect: {...p.memoRect, y: parseFloat(e.target.value)||0}}))} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">W: <input type="number" step="0.1" value={layoutSettings.memoRect.w} onChange={e => setLayoutSettings(p => ({...p, template: 'custom', memoRect: {...p.memoRect, w: parseFloat(e.target.value)||0}}))} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">H: <input type="number" step="0.1" value={layoutSettings.memoRect.h} onChange={e => setLayoutSettings(p => ({...p, template: 'custom', memoRect: {...p.memoRect, h: parseFloat(e.target.value)||0}}))} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> </div> </div> )} <div className="space-y-1"><h4 className="font-bold text-gray-700 text-xs flex items-center justify-between"><span className="flex items-center gap-1.5"><ImageIcon size={14}/> 各画像枠</span><button onClick={() => setLayoutSettings(p => ({...p, template: 'custom', customImageRects: [...p.customImageRects, {x:0.5, y:1.0, w:4.0, h:3.0}]}))} className="text-blue-600 hover:text-blue-800 text-xs font-bold flex items-center gap-1"><Plus size={12}/> 枠を追加</button></h4> <div className="space-y-2 max-h-32 overflow-y-auto pr-1"> {layoutSettings.customImageRects.map((rect, idx) => ( <div key={idx} className={`flex flex-wrap gap-2 items-center text-xs bg-gray-50 p-2 border rounded ${selectedLayoutRectIndexes.includes(idx) ? 'ring-1 ring-fuchsia-400' : ''}`}> <span className="font-bold text-blue-600 w-12 text-center">{idx + 1}枚目</span> <button onClick={() => setSelectedLayoutRectIndexes(prev => prev.includes(idx) ? prev.filter(v => v !== idx) : [...prev, idx])} disabled={!bulkResizeMode} className="px-1.5 py-0.5 rounded border text-[10px] font-bold disabled:opacity-40">{selectedLayoutRectIndexes.includes(idx) ? '選択中' : '選択'}</button> <label className="flex items-center gap-1 font-bold text-gray-600">X: <input type="number" step="0.1" value={rect.x} onChange={e => { const newArr = [...layoutSettings.customImageRects]; newArr[idx].x = parseFloat(e.target.value)||0; setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">Y: <input type="number" step="0.1" value={rect.y} onChange={e => { const newArr = [...layoutSettings.customImageRects]; newArr[idx].y = parseFloat(e.target.value)||0; setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">W: <input type="number" step="0.1" value={rect.w} onChange={e => { const newArr = [...layoutSettings.customImageRects]; newArr[idx].w = parseFloat(e.target.value)||0; setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">H: <input type="number" step="0.1" value={rect.h} onChange={e => { const newArr = [...layoutSettings.customImageRects]; newArr[idx].h = parseFloat(e.target.value)||0; setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <button onClick={() => { const newArr = layoutSettings.customImageRects.filter((_, i) => i !== idx); setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="ml-auto text-red-500 hover:bg-red-100 p-1 rounded transition"><Trash2 size={14} /></button> </div> ))} </div> </div> </div> )} </div> <div className="mt-6 flex justify-end shrink-0"> <button onClick={() => setIsLayoutModalOpen(false)} className="px-8 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold transition shadow-lg flex items-center gap-2">設定を保存して戻る</button> </div> </div> </div> )}
     </div>
   );
 }
