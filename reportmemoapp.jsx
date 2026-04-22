@@ -5,7 +5,7 @@ import {
   Undo, Trash2, Save, ChevronLeft, Printer, 
   Droplet, FileText, Maximize, Minimize, MousePointer2, Eraser,
   Scaling, Sparkles, Minus, Lasso, ScanText, Loader2, Hand, PenLine, Settings,
-  Download, Upload, Presentation, Copy, ClipboardPaste, X, RefreshCw, Link, Unlink, LayoutTemplate, ChevronDown, ChevronUp, GripVertical, Edit, Redo2
+  Download, Upload, Presentation, Copy, ClipboardPaste, X, RefreshCw, Link, Unlink, LayoutTemplate, ChevronDown, ChevronUp, ChevronRight, GripVertical, Edit, Redo2
 } from 'lucide-react';
 
 // --- Constants & Types ---
