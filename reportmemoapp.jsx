@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.5.2';
+const APP_VERSION = 'v1.5.8';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
@@ -24,6 +24,9 @@ const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
 const APP_DB_STORE = 'app_data';
 const PROJECTS_KEY = 'eval_report_projects';
+const AUTO_BACKUP_CONFIG_KEY = 'eval_report_auto_backup_cfg_v1';
+const BACKUP_REMINDER_CONFIG_KEY = 'eval_report_backup_reminder_cfg_v1';
+const REMOTE_BACKUP_CONFIG_KEY = 'eval_report_remote_backup_cfg_v1';
 const normalizeProjects = (rawProjects) => {
   if (!Array.isArray(rawProjects)) return [];
   return rawProjects.map(p => ({
@@ -629,6 +632,24 @@ export default function App() {
   const [newProjectTitle, setNewProjectTitle] = useState('');
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(true);
+  const [autoBackupEnabled, setAutoBackupEnabled] = useState(false);
+  const [autoBackupIntervalMin, setAutoBackupIntervalMin] = useState(10);
+  const [autoBackupHasHandle, setAutoBackupHasHandle] = useState(false);
+  const [backupReminderEnabled, setBackupReminderEnabled] = useState(true);
+  const [backupReminderIntervalMin, setBackupReminderIntervalMin] = useState(30);
+  const [showBackupReminder, setShowBackupReminder] = useState(false);
+  const [remoteBackupEnabled, setRemoteBackupEnabled] = useState(false);
+  const [remoteBackupUrl, setRemoteBackupUrl] = useState('');
+  const [remoteBackupToken, setRemoteBackupToken] = useState('');
+  const [remoteBackupIntervalMin, setRemoteBackupIntervalMin] = useState(15);
+  const [remoteBackupStatus, setRemoteBackupStatus] = useState('');
+  const autoBackupHandleRef = useRef(null);
+  const autoBackupTimerRef = useRef(null);
+  const autoBackupInFlightRef = useRef(false);
+  const backupReminderTimerRef = useRef(null);
+  const remoteBackupTimerRef = useRef(null);
+  const remoteBackupInFlightRef = useRef(false);
+  const isAutoBackupFileSupported = typeof window !== 'undefined' && typeof window.showSaveFilePicker === 'function';
   
   const [reorderUndoHistory, setReorderUndoHistory] = useState([]); // Project page order undo history
   const [reorderRedoHistory, setReorderRedoHistory] = useState([]); // Project page order redo history
@@ -706,6 +727,192 @@ export default function App() {
     };
     saveProjects();
   }, [projects, isProjectsLoaded]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const raw = JSON.parse(localStorage.getItem(AUTO_BACKUP_CONFIG_KEY) || '{}');
+      setAutoBackupEnabled(!!raw.enabled);
+      const parsedInterval = parseInt(raw.intervalMin, 10);
+      if (Number.isFinite(parsedInterval)) setAutoBackupIntervalMin(Math.max(1, Math.min(120, parsedInterval)));
+    } catch {
+      // ignore invalid config
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(AUTO_BACKUP_CONFIG_KEY, JSON.stringify({
+      enabled: autoBackupEnabled,
+      intervalMin: autoBackupIntervalMin
+    }));
+  }, [autoBackupEnabled, autoBackupIntervalMin]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const raw = JSON.parse(localStorage.getItem(BACKUP_REMINDER_CONFIG_KEY) || '{}');
+      setBackupReminderEnabled(raw.enabled !== false);
+      const parsedInterval = parseInt(raw.intervalMin, 10);
+      if (Number.isFinite(parsedInterval)) setBackupReminderIntervalMin(Math.max(5, Math.min(240, parsedInterval)));
+    } catch {
+      // ignore invalid config
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(BACKUP_REMINDER_CONFIG_KEY, JSON.stringify({
+      enabled: backupReminderEnabled,
+      intervalMin: backupReminderIntervalMin
+    }));
+  }, [backupReminderEnabled, backupReminderIntervalMin]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const raw = JSON.parse(localStorage.getItem(REMOTE_BACKUP_CONFIG_KEY) || '{}');
+      setRemoteBackupEnabled(!!raw.enabled);
+      setRemoteBackupUrl(typeof raw.url === 'string' ? raw.url : '');
+      setRemoteBackupToken(typeof raw.token === 'string' ? raw.token : '');
+      const parsedInterval = parseInt(raw.intervalMin, 10);
+      if (Number.isFinite(parsedInterval)) setRemoteBackupIntervalMin(Math.max(5, Math.min(240, parsedInterval)));
+    } catch {
+      // ignore invalid config
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(REMOTE_BACKUP_CONFIG_KEY, JSON.stringify({
+      enabled: remoteBackupEnabled,
+      url: remoteBackupUrl,
+      token: remoteBackupToken,
+      intervalMin: remoteBackupIntervalMin
+    }));
+  }, [remoteBackupEnabled, remoteBackupUrl, remoteBackupToken, remoteBackupIntervalMin]);
+
+  useEffect(() => {
+    if (!isAutoBackupFileSupported && autoBackupEnabled) setAutoBackupEnabled(false);
+  }, [isAutoBackupFileSupported, autoBackupEnabled]);
+
+  const sendRemoteBackupNow = useCallback(async (showAlert = false) => {
+    if (!remoteBackupUrl.trim() || remoteBackupInFlightRef.current) return false;
+    remoteBackupInFlightRef.current = true;
+    setRemoteBackupStatus('送信中...');
+    try {
+      const payload = { type: 'project-bundle', exportedAt: new Date().toISOString(), projects };
+      const headers = { 'Content-Type': 'application/json' };
+      if (remoteBackupToken.trim()) headers['Authorization'] = `Bearer ${remoteBackupToken.trim()}`;
+      const res = await fetch(remoteBackupUrl.trim(), { method: 'POST', headers, body: JSON.stringify(payload) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const msg = `最終送信: ${new Date().toLocaleString()}`;
+      setRemoteBackupStatus(msg);
+      if (showAlert) alert('リモートバックアップを送信しました。');
+      return true;
+    } catch (e) {
+      console.warn('remote backup failed', e);
+      setRemoteBackupStatus(`送信失敗: ${new Date().toLocaleTimeString()}`);
+      if (showAlert) alert('リモートバックアップの送信に失敗しました。URL/CORS設定を確認してください。');
+      return false;
+    } finally {
+      remoteBackupInFlightRef.current = false;
+    }
+  }, [projects, remoteBackupUrl, remoteBackupToken]);
+
+  const writeAutoBackupNow = useCallback(async (notifyOnSuccess = false) => {
+    if (!autoBackupHandleRef.current || autoBackupInFlightRef.current) return false;
+    autoBackupInFlightRef.current = true;
+    try {
+      const payload = {
+        type: 'project-bundle',
+        exportedAt: new Date().toISOString(),
+        projects
+      };
+      const writable = await autoBackupHandleRef.current.createWritable();
+      await writable.write(JSON.stringify(payload, null, 2));
+      await writable.close();
+      if (notifyOnSuccess) alert('自動バックアップ先に保存しました。');
+      return true;
+    } catch (e) {
+      console.warn('auto backup write failed', e);
+      if (notifyOnSuccess) alert('バックアップ保存に失敗しました。保存先を再選択してください。');
+      return false;
+    } finally {
+      autoBackupInFlightRef.current = false;
+    }
+  }, [projects]);
+
+  const selectAutoBackupDestination = useCallback(async () => {
+    if (!isAutoBackupFileSupported) {
+      return;
+    }
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: `report_auto_backup_${new Date().toISOString().slice(0, 10)}.json`,
+        types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }]
+      });
+      autoBackupHandleRef.current = handle;
+      setAutoBackupHasHandle(true);
+      await writeAutoBackupNow(true);
+    } catch (e) {
+      if (e?.name !== 'AbortError') {
+        console.warn('select auto backup destination failed', e);
+        alert('バックアップ先の設定に失敗しました。');
+      }
+    }
+  }, [isAutoBackupFileSupported, writeAutoBackupNow]);
+
+  useEffect(() => {
+    if (autoBackupTimerRef.current) {
+      clearInterval(autoBackupTimerRef.current);
+      autoBackupTimerRef.current = null;
+    }
+    if (!isAutoBackupFileSupported || !autoBackupEnabled || !isProjectsLoaded || !autoBackupHasHandle) return;
+    autoBackupTimerRef.current = setInterval(() => {
+      writeAutoBackupNow(false);
+    }, Math.max(1, autoBackupIntervalMin) * 60 * 1000);
+    return () => {
+      if (autoBackupTimerRef.current) {
+        clearInterval(autoBackupTimerRef.current);
+        autoBackupTimerRef.current = null;
+      }
+    };
+  }, [isAutoBackupFileSupported, autoBackupEnabled, autoBackupIntervalMin, autoBackupHasHandle, isProjectsLoaded, writeAutoBackupNow]);
+
+  useEffect(() => {
+    if (backupReminderTimerRef.current) {
+      clearInterval(backupReminderTimerRef.current);
+      backupReminderTimerRef.current = null;
+    }
+    if (isAutoBackupFileSupported || !backupReminderEnabled || !isProjectsLoaded || projects.length === 0) return;
+    backupReminderTimerRef.current = setInterval(() => {
+      setShowBackupReminder(true);
+    }, Math.max(5, backupReminderIntervalMin) * 60 * 1000);
+    return () => {
+      if (backupReminderTimerRef.current) {
+        clearInterval(backupReminderTimerRef.current);
+        backupReminderTimerRef.current = null;
+      }
+    };
+  }, [isAutoBackupFileSupported, backupReminderEnabled, backupReminderIntervalMin, isProjectsLoaded, projects.length]);
+
+  useEffect(() => {
+    if (remoteBackupTimerRef.current) {
+      clearInterval(remoteBackupTimerRef.current);
+      remoteBackupTimerRef.current = null;
+    }
+    if (!remoteBackupEnabled || !isProjectsLoaded || !remoteBackupUrl.trim()) return;
+    remoteBackupTimerRef.current = setInterval(() => {
+      sendRemoteBackupNow(false);
+    }, Math.max(5, remoteBackupIntervalMin) * 60 * 1000);
+    return () => {
+      if (remoteBackupTimerRef.current) {
+        clearInterval(remoteBackupTimerRef.current);
+        remoteBackupTimerRef.current = null;
+      }
+    };
+  }, [remoteBackupEnabled, remoteBackupIntervalMin, remoteBackupUrl, isProjectsLoaded, sendRemoteBackupNow]);
 
   useEffect(() => { const key = localStorage.getItem('gemini_api_key'); if (key) setApiKeyInput(key); }, []);
   useEffect(() => { if (isGlobalExportOpen) setSelectedExportProjectIds(projects.map(p => p.id)); }, [isGlobalExportOpen, projects]);
@@ -810,15 +1017,26 @@ export default function App() {
     const json = JSON.stringify(dataObj, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
     const file = new File([blob], fileName, { type: 'application/json' });
+    const isAndroid = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent || '');
     const canUseFileShare = typeof navigator !== 'undefined'
-      && navigator.canShare
       && navigator.share
-      && navigator.canShare({ files: [file] });
+      && (
+        (navigator.canShare && navigator.canShare({ files: [file] }))
+        || isAndroid
+      );
     if (canUseFileShare) {
       try {
         await navigator.share({ files: [file], title: fileName, text: 'JSONを保存または共有します。' });
         return;
       } catch (e) {
+        if (isAndroid && navigator.share && e?.name !== 'AbortError') {
+          try {
+            await navigator.share({ title: fileName, text: 'JSONエクスポートを共有します。' });
+            return;
+          } catch (e2) {
+            if (e2?.name !== 'AbortError') console.warn('android share fallback failed.', e2);
+          }
+        }
         if (e?.name !== 'AbortError') console.warn('share failed. fallback to download.', e);
       }
     }
@@ -866,6 +1084,18 @@ export default function App() {
     }
     await saveJsonFile({ type: 'project-bundle', exportedAt: new Date().toISOString(), projects: selected }, `report_projects_bundle_${new Date().toISOString().slice(0, 10)}.json`);
     setIsGlobalExportOpen(false);
+  };
+
+  const handleQuickBackupExport = async () => {
+    if (projects.length === 0) {
+      alert('バックアップ対象のプロジェクトがありません。');
+      return;
+    }
+    await saveJsonFile(
+      { type: 'project-bundle', exportedAt: new Date().toISOString(), projects },
+      `report_backup_${new Date().toISOString().slice(0, 10)}.json`
+    );
+    setShowBackupReminder(false);
   };
 
   const mergeImportedProjects = (incomingProjects, mode) => {
@@ -1189,8 +1419,164 @@ export default function App() {
                 保存
               </button>
             </div>
+            <div className="mt-6 pt-5 border-t border-gray-100">
+              <h3 className="text-base font-bold text-gray-800 mb-2">バックアップ設定（ブラウザ外保存）</h3>
+              {isAutoBackupFileSupported ? (
+                <>
+                  <p className="text-sm text-gray-500 mb-3">
+                    指定したJSONファイルへ定期保存します。ブラウザのデータが消えた場合の保険として使えます。
+                  </p>
+                  <div className="flex flex-col md:flex-row md:items-center gap-3">
+                    <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
+                      <input
+                        type="checkbox"
+                        checked={autoBackupEnabled}
+                        onChange={(e) => setAutoBackupEnabled(e.target.checked)}
+                      />
+                      自動バックアップを有効化
+                    </label>
+                    <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+                      間隔(分)
+                      <input
+                        type="number"
+                        min="1"
+                        max="120"
+                        value={autoBackupIntervalMin}
+                        onChange={(e) => setAutoBackupIntervalMin(Math.max(1, Math.min(120, parseInt(e.target.value, 10) || 1)))}
+                        className="w-20 px-2 py-1 border rounded-lg"
+                      />
+                    </label>
+                    <button
+                      onClick={selectAutoBackupDestination}
+                      className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-bold text-sm"
+                    >
+                      保存先ファイルを選択
+                    </button>
+                    <button
+                      onClick={() => writeAutoBackupNow(true)}
+                      disabled={!autoBackupHasHandle}
+                      className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-bold text-sm disabled:opacity-40"
+                    >
+                      今すぐバックアップ
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-2">
+                    保存先: {autoBackupHasHandle ? '設定済み（このタブを開いている間有効）' : '未設定'}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3 mb-3">
+                    このブラウザは「定期的に同一ファイルへ自動保存」機能に未対応です（iPhone Safari等）。
+                  </p>
+                  <p className="text-sm text-gray-600 mb-3">
+                    代わりに、下のボタンからワンタップでバックアップJSONを共有/保存してください。さらに、定期リマインダーで保存忘れを防げます。
+                  </p>
+                  <div className="flex flex-col md:flex-row md:items-center gap-3 mb-3">
+                    <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
+                      <input
+                        type="checkbox"
+                        checked={backupReminderEnabled}
+                        onChange={(e) => setBackupReminderEnabled(e.target.checked)}
+                      />
+                      定期リマインダーを有効化
+                    </label>
+                    <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+                      間隔(分)
+                      <input
+                        type="number"
+                        min="5"
+                        max="240"
+                        value={backupReminderIntervalMin}
+                        onChange={(e) => setBackupReminderIntervalMin(Math.max(5, Math.min(240, parseInt(e.target.value, 10) || 5)))}
+                        className="w-20 px-2 py-1 border rounded-lg"
+                      />
+                    </label>
+                  </div>
+                  <button
+                    onClick={handleQuickBackupExport}
+                    className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-bold text-sm"
+                  >
+                    今すぐバックアップJSONを共有/保存
+                  </button>
+                </>
+              )}
+            </div>
+            <div className="mt-6 pt-5 border-t border-gray-100">
+              <h3 className="text-base font-bold text-gray-800 mb-2">自動リモート保存（iPhone Safari対応）</h3>
+              <p className="text-sm text-gray-500 mb-3">
+                任意のバックアップURLへ、一定間隔でJSONを自動POSTします。サーバー側の保存先（Cloudflare Worker / Apps Script / 自社API等）を用意してください。
+              </p>
+              <div className="space-y-3">
+                <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={remoteBackupEnabled}
+                    onChange={(e) => setRemoteBackupEnabled(e.target.checked)}
+                  />
+                  自動リモート保存を有効化
+                </label>
+                <input
+                  type="url"
+                  value={remoteBackupUrl}
+                  onChange={(e) => setRemoteBackupUrl(e.target.value)}
+                  placeholder="https://your-backup-endpoint.example.com/save"
+                  className="w-full px-3 py-2 border rounded-lg text-sm"
+                />
+                <input
+                  type="password"
+                  value={remoteBackupToken}
+                  onChange={(e) => setRemoteBackupToken(e.target.value)}
+                  placeholder="認証トークン（任意）"
+                  className="w-full px-3 py-2 border rounded-lg text-sm"
+                />
+                <div className="flex flex-col md:flex-row md:items-center gap-3">
+                  <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+                    間隔(分)
+                    <input
+                      type="number"
+                      min="5"
+                      max="240"
+                      value={remoteBackupIntervalMin}
+                      onChange={(e) => setRemoteBackupIntervalMin(Math.max(5, Math.min(240, parseInt(e.target.value, 10) || 5)))}
+                      className="w-20 px-2 py-1 border rounded-lg"
+                    />
+                  </label>
+                  <button
+                    onClick={() => sendRemoteBackupNow(true)}
+                    disabled={!remoteBackupUrl.trim()}
+                    className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-bold text-sm disabled:opacity-40"
+                  >
+                    今すぐ送信テスト
+                  </button>
+                  <span className="text-xs text-gray-500">{remoteBackupStatus || '未送信'}</span>
+                </div>
+              </div>
+            </div>
             <p className="text-xs text-gray-500 mt-3">アプリバージョン: <span className="font-semibold text-gray-700">{APP_VERSION}</span></p>
           </section>
+        )}
+        {showBackupReminder && !isAutoBackupFileSupported && (
+          <div className="mb-6 bg-amber-50 border border-amber-200 rounded-2xl p-4 flex flex-col md:flex-row md:items-center gap-3">
+            <div className="flex-1 text-amber-900">
+              <div className="font-bold">バックアップの時間です</div>
+              <div className="text-sm">iPhone Safari では自動ファイル保存が使えないため、手動でJSONを共有/保存してください。</div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={handleQuickBackupExport}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-bold text-sm"
+              >
+                今すぐバックアップ
+              </button>
+              <button
+                onClick={() => setShowBackupReminder(false)}
+                className="px-4 py-2 bg-white text-gray-700 rounded-lg border border-gray-300 hover:bg-gray-50 font-bold text-sm"
+              >
+                あとで
+              </button>
+            </div>
+          </div>
         )}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {projects.length === 0 ? (
@@ -1596,12 +1982,20 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const [isLayoutModalOpen, setIsLayoutModalOpen] = useState(false);
   const [isImageSourcePickerOpen, setIsImageSourcePickerOpen] = useState(false);
   const [thumbContextMenu, setThumbContextMenu] = useState(null);
+  const [thumbDraggedIndex, setThumbDraggedIndex] = useState(null);
+  const [thumbDropIndex, setThumbDropIndex] = useState(null);
+  const [thumbDragStartPos, setThumbDragStartPos] = useState(null);
+  const [thumbDragCurrentPos, setThumbDragCurrentPos] = useState(null);
+  const [hasThumbDragMovement, setHasThumbDragMovement] = useState(false);
   const [showAdvancedLayout, setShowAdvancedLayout] = useState(false);
   const previewContainerRef = useRef(null);
+  const thumbStripRef = useRef(null);
   const cameraInputRef = useRef(null);
   const albumInputRef = useRef(null);
   const longPressTimerRef = useRef(null);
   const suppressThumbClickRef = useRef(false);
+  const activeThumbDragPointerIdRef = useRef(null);
+  const thumbDropCentersRef = useRef([]);
   const [baseImage, setBaseImage] = useState(null);
   const [annotations, setAnnotations] = useState([]);
   const [history, setHistory] = useState([]);
@@ -1739,6 +2133,121 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       return nextData;
     });
   };
+
+  const syncActiveImageState = useCallback((list) => {
+    if (!activeImageId) return list;
+    const currentFinal = canvasRef.current ? captureCurrentCanvas() : null;
+    return list.map(img => (
+      img.id === activeImageId
+        ? { ...img, annotations: annotationsRef.current, history, redoHistory: redoStack, finalImage: currentFinal }
+        : img
+    ));
+  }, [activeImageId, history, redoStack]);
+
+  const calculateThumbDropIndex = useCallback((clientX) => {
+    if (thumbDraggedIndex === null) return null;
+    const strip = thumbStripRef.current;
+    if (!strip) return null;
+    const stripRect = strip.getBoundingClientRect();
+    const pointerXInStrip = (clientX - stripRect.left) + strip.scrollLeft;
+    const centers = thumbDropCentersRef.current;
+    if (!centers.length) return 0;
+    let insertion = centers.length;
+    for (let i = 0; i < centers.length; i++) {
+      if (pointerXInStrip < centers[i]) {
+        insertion = i;
+        break;
+      }
+    }
+    return insertion;
+  }, [thumbDraggedIndex]);
+
+  const reorderThumbsAtDrop = useCallback((fromIdx, toIdxWithoutDragged) => {
+    setImagesData(prev => {
+      const synced = syncActiveImageState(prev);
+      if (fromIdx < 0 || fromIdx >= synced.length) return synced;
+      const next = [...synced];
+      const [dragged] = next.splice(fromIdx, 1);
+      next.splice(toIdxWithoutDragged, 0, dragged);
+      return next;
+    });
+  }, [syncActiveImageState]);
+
+  const handleThumbDragStart = useCallback((idx, e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.currentTarget?.setPointerCapture) e.currentTarget.setPointerCapture(e.pointerId);
+    setThumbDraggedIndex(idx);
+    setThumbDropIndex(idx);
+    setThumbDragStartPos({ x: e.clientX, y: e.clientY });
+    setThumbDragCurrentPos({ x: e.clientX, y: e.clientY });
+    setHasThumbDragMovement(false);
+    activeThumbDragPointerIdRef.current = e.pointerId;
+    setThumbContextMenu(null);
+    const strip = thumbStripRef.current;
+    if (strip) {
+      const stripRect = strip.getBoundingClientRect();
+      thumbDropCentersRef.current = Array.from(strip.querySelectorAll('[data-thumb-index]'))
+        .map((el) => ({ el, itemIdx: Number(el.getAttribute('data-thumb-index')) }))
+        .filter(entry => !Number.isNaN(entry.itemIdx) && entry.itemIdx !== idx)
+        .sort((a, b) => a.itemIdx - b.itemIdx)
+        .map(({ el }) => {
+          const rect = el.getBoundingClientRect();
+          return (rect.left - stripRect.left + rect.width / 2) + strip.scrollLeft;
+        });
+    } else {
+      thumbDropCentersRef.current = [];
+    }
+  }, []);
+
+  const handleThumbDragEnd = useCallback(() => {
+    if (thumbDraggedIndex !== null && thumbDropIndex !== null && hasThumbDragMovement && thumbDraggedIndex !== thumbDropIndex) {
+      reorderThumbsAtDrop(thumbDraggedIndex, thumbDropIndex);
+      suppressThumbClickRef.current = true;
+    }
+    setThumbDraggedIndex(null);
+    setThumbDropIndex(null);
+    setThumbDragStartPos(null);
+    setThumbDragCurrentPos(null);
+    setHasThumbDragMovement(false);
+    activeThumbDragPointerIdRef.current = null;
+    thumbDropCentersRef.current = [];
+  }, [thumbDraggedIndex, thumbDropIndex, hasThumbDragMovement, reorderThumbsAtDrop]);
+
+  useEffect(() => {
+    if (thumbDraggedIndex === null) return;
+    document.body.style.userSelect = 'none';
+    const trackThumbDrag = (e) => {
+      if (activeThumbDragPointerIdRef.current !== null && e.pointerId !== activeThumbDragPointerIdRef.current) return;
+      setThumbDragCurrentPos({ x: e.clientX, y: e.clientY });
+      if (thumbDragStartPos) {
+        const moved = Math.hypot(e.clientX - thumbDragStartPos.x, e.clientY - thumbDragStartPos.y) > 6;
+        if (moved && !hasThumbDragMovement) setHasThumbDragMovement(true);
+      }
+      const nextDropIndex = calculateThumbDropIndex(e.clientX);
+      if (nextDropIndex !== null) setThumbDropIndex(nextDropIndex);
+
+      const stripRect = thumbStripRef.current?.getBoundingClientRect();
+      if (!stripRect || !thumbStripRef.current) return;
+      const edge = 56;
+      const speed = 14;
+      if (e.clientX < stripRect.left + edge) thumbStripRef.current.scrollLeft -= speed;
+      else if (e.clientX > stripRect.right - edge) thumbStripRef.current.scrollLeft += speed;
+    };
+    const stopThumbDrag = (e) => {
+      if (activeThumbDragPointerIdRef.current !== null && e?.pointerId !== undefined && e.pointerId !== activeThumbDragPointerIdRef.current) return;
+      handleThumbDragEnd();
+    };
+    window.addEventListener('pointermove', trackThumbDrag, { passive: true });
+    window.addEventListener('pointerup', stopThumbDrag);
+    window.addEventListener('pointercancel', stopThumbDrag);
+    return () => {
+      document.body.style.userSelect = '';
+      window.removeEventListener('pointermove', trackThumbDrag);
+      window.removeEventListener('pointerup', stopThumbDrag);
+      window.removeEventListener('pointercancel', stopThumbDrag);
+    };
+  }, [thumbDraggedIndex, thumbDragStartPos, hasThumbDragMovement, calculateThumbDropIndex, handleThumbDragEnd]);
 
   const handleDeleteImage = (imgId) => { if (confirm('この画像を削除しますか？')) { setImagesData(prev => { const next = prev.filter(img => img.id !== imgId); if (activeImageId === imgId) { if (next.length > 0) setTimeout(() => switchImage(next[0].id, true), 0); else { setActiveImageId(null); setBaseImage(null); setAnnotations([]); setHistory([]); setRedoStack([]); } } return next; }); } };
   const addImagesFromFiles = useCallback((files) => {
@@ -2088,11 +2597,19 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const handlePointerDown = (e) => {
     if (e.target.closest('.text-overlay') || e.target.closest('.selection-menu')) return; if (e.target.tagName === 'CANVAS' || e.target.closest('.canvas-container')) e.preventDefault(); const isTouch = e.pointerType === 'touch'; const isCanvasArea = e.target.tagName === 'CANVAS' || !!e.target.closest('.canvas-container'); const keepTextInputForTouchPan = isTouch && isCanvasArea && currentToolRef.current === ToolType.TEXT && !fingerDrawMode; setActivePopover(null); if (textInput && !keepTextInputForTouchPan) handleTextSubmit(); historySnapshotRef.current = annotations; activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (activePointers.current.size >= 2) { isDrawingRef.current = false; setCurrentAnnotation(null); dragModeRef.current = null; const pts = Array.from(activePointers.current.values()); const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y); const center = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }; lastPinch.current = { dist, center, initialTransform: { ...transformRef.current } }; return; }
-    if (activePointers.current.size === 1) { const isPanHandle = !!e.target.closest('.page-pan-handle'); if (isPanHandle) { isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return; } if (e.target.tagName !== 'CANVAS') return; const pos = getCanvasPos(e.clientX, e.clientY); const isTouchNavigation = isTouch && !fingerDrawMode && ![ToolType.PEN, ToolType.HANDWRITING_TEXT].includes(currentToolRef.current); const isUniversalNavigation = e.button === 1 || (e.button === 0 && e.altKey) || isTouchNavigation; const isTouchPan = isTouch && !fingerDrawMode && currentToolRef.current === ToolType.TEXT && !!textInput; if (isTouchPan) { isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return; } const effectiveShouldNavigate = isUniversalNavigation || currentToolRef.current === ToolType.SELECT;
+    if (activePointers.current.size === 1) { const isPanHandle = !!e.target.closest('.page-pan-handle'); if (isPanHandle) { isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return; } if (e.target.tagName !== 'CANVAS') return; const pos = getCanvasPos(e.clientX, e.clientY); const isTouchNavigation = isTouch && !fingerDrawMode; const isUniversalNavigation = e.button === 1 || (e.button === 0 && e.altKey) || isTouchNavigation; const isTouchPan = isTouch && !fingerDrawMode && currentToolRef.current === ToolType.TEXT && !!textInput; if (isTouchPan) { isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return; } const effectiveShouldNavigate = isUniversalNavigation || currentToolRef.current === ToolType.SELECT;
       if (effectiveShouldNavigate) { if (selectedIds.length === 1) { const selAnn = annotations.find(a => a.id === selectedIds[0]); const handle = checkHandleHit(pos.x, pos.y, selAnn); if (handle) { dragModeRef.current = handle; dragStartPointerRef.current = pos; dragStartAnnsRef.current = [JSON.parse(JSON.stringify(selAnn))]; if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = false; return; } }
         if (selectedIds.length > 0) { const mBox = getMultiBBox(annotations, selectedIds); if (mBox && pos.x >= mBox.x && pos.x <= mBox.x + mBox.w && pos.y >= mBox.y && pos.y <= mBox.y + mBox.h) { dragModeRef.current = 'move_multi'; dragStartPointerRef.current = pos; dragStartAnnsRef.current = annotations.filter(a => selectedIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; return; } }
         const hit = checkHit(pos.x, pos.y, annotations); if (hit) { let targetIds = [hit.id]; if (hit.groupId) targetIds = annotations.filter(a => a.groupId === hit.groupId).map(a => a.id); setSelectedIds(targetIds); if (hit.color) setStrokeColor(hit.color); if (hit.fillColor !== undefined) { setIsFillTransparent(hit.fillColor === 'transparent'); if (hit.fillColor !== 'transparent') setFillColor(hit.fillColor); } if (hit.width) setLineWidth(hit.width); if (hit.fontSize) setFontSize(hit.fontSize); if (hit.hasGlow !== undefined) setTextGlow(hit.hasGlow); dragModeRef.current = 'move'; dragStartPointerRef.current = pos; dragStartAnnsRef.current = annotations.filter(a => targetIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; return; }
-        if (currentToolRef.current === ToolType.SELECT) setSelectedIds([]); isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; return;
+        if (currentToolRef.current === ToolType.SELECT) setSelectedIds([]);
+        isPotentialTapRef.current = true;
+        dragStartClientPosRef.current = { x: e.clientX, y: e.clientY };
+        if (isTouchNavigation) {
+          dragModeRef.current = 'canvas_pan';
+          panStartClientRef.current = { x: e.clientX, y: e.clientY };
+          panStartTransformRef.current = { ...transformRef.current };
+        }
+        return;
       }
       if (currentToolRef.current === ToolType.LASSO) { setSelectedIds([]); setLassoPoints([pos]); isDrawingRef.current = true; return; } if (currentToolRef.current === ToolType.ERASER_OBJ) { if (isTouch && !fingerDrawMode) return; isDrawingRef.current = true; const hit = checkHit(pos.x, pos.y, annotations); if (hit) { pushHistory(annotations); setAnnotations(prev => prev.filter(a => a.id !== hit.id && (!hit.groupId || a.groupId !== hit.groupId))); } return; } if (currentToolRef.current === ToolType.TEXT) { setSelectedIds([]); setTextInput({ canvasX: pos.x, canvasY: pos.y, value: '' }); return; } if (currentToolRef.current === ToolType.HANDWRITING_TEXT) { if (handwritingTimerRef.current) clearTimeout(handwritingTimerRef.current); }
       if (isTouch && !fingerDrawMode) return;
@@ -2192,7 +2709,89 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                   </div>
                 </div>
               )}
-              {imagesData.length > 0 && ( <div className="bg-white border-t px-4 py-2 flex items-center gap-3 overflow-x-auto shrink-0 z-10 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]"> {imagesData.map((img) => ( <div key={img.id} onClick={() => { if (suppressThumbClickRef.current) { suppressThumbClickRef.current = false; return; } switchImage(img.id); }} onContextMenu={(e) => { e.preventDefault(); setThumbContextMenu({ img, x: e.clientX, y: e.clientY }); }} onPointerDown={(e) => { if (e.pointerType === 'touch') { if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current); longPressTimerRef.current = setTimeout(() => { suppressThumbClickRef.current = true; setThumbContextMenu({ img, x: e.clientX, y: e.clientY }); }, 550); } }} onPointerUp={() => { if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current); }} onPointerCancel={() => { if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current); }} className={`relative w-16 h-16 shrink-0 rounded-lg overflow-hidden border-2 cursor-pointer transition-all ${activeImageId === img.id ? 'border-blue-500 shadow-md ring-2 ring-blue-200' : 'border-gray-200 opacity-70 hover:opacity-100'}`}> <img src={img.baseImage.src} className="w-full h-full object-cover bg-gray-100" /> <button onClick={(e) => { e.stopPropagation(); handleDeleteImage(img.id); }} className="absolute top-0.5 right-0.5 p-1 bg-black/60 text-white rounded-full hover:bg-red-500 transition"><X size={12} /></button> </div> ))} <button onClick={() => setIsImageSourcePickerOpen(true)} className="w-16 h-16 shrink-0 rounded-lg border-2 border-dashed border-gray-300 flex flex-col items-center justify-center text-gray-500 cursor-pointer hover:bg-blue-50 hover:text-blue-600 hover:border-blue-300 transition" title="追加方法を選択"> <Plus size={20} /><span className="text-[9px] mt-0.5 font-bold">追加</span></button> </div> )}
+              {imagesData.length > 0 && (
+                <div ref={thumbStripRef} className="bg-white border-t px-4 py-2 flex items-center gap-2 overflow-x-auto shrink-0 z-10 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
+                  {imagesData.map((img, idx) => {
+                    const isDragging = thumbDraggedIndex === idx;
+                    const dragDx = isDragging && thumbDragStartPos && thumbDragCurrentPos ? thumbDragCurrentPos.x - thumbDragStartPos.x : 0;
+                    const dragDy = isDragging && thumbDragStartPos && thumbDragCurrentPos ? thumbDragCurrentPos.y - thumbDragStartPos.y : 0;
+                    return (
+                      <React.Fragment key={img.id}>
+                        {thumbDraggedIndex !== null && hasThumbDragMovement && thumbDropIndex === idx && (
+                          <div className="w-1.5 h-14 bg-blue-500/70 rounded-full shrink-0" />
+                        )}
+                        <div
+                          data-thumb-index={idx}
+                          onClick={() => {
+                            if (suppressThumbClickRef.current) {
+                              suppressThumbClickRef.current = false;
+                              return;
+                            }
+                            switchImage(img.id);
+                          }}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            if (thumbDraggedIndex !== null) return;
+                            setThumbContextMenu({ img, x: e.clientX, y: e.clientY });
+                          }}
+                          onPointerDown={(e) => {
+                            if (e.target.closest('.thumb-drag-handle')) {
+                              handleThumbDragStart(idx, e);
+                              return;
+                            }
+                            if (e.pointerType === 'touch') {
+                              if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+                              longPressTimerRef.current = setTimeout(() => {
+                                suppressThumbClickRef.current = true;
+                                setThumbContextMenu({ img, x: e.clientX, y: e.clientY });
+                              }, 550);
+                            }
+                          }}
+                          onPointerUp={() => {
+                            if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+                          }}
+                          onPointerCancel={() => {
+                            if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+                          }}
+                          className={`relative w-16 h-16 shrink-0 rounded-lg overflow-hidden border-2 ${
+                            activeImageId === img.id ? 'border-blue-500 shadow-md ring-2 ring-blue-200' : 'border-gray-200 opacity-70 hover:opacity-100'
+                          } ${isDragging ? 'z-40 shadow-2xl cursor-grabbing transition-none' : 'cursor-pointer transition-all'}`}
+                          style={{ transform: isDragging ? `translate(${dragDx}px, ${dragDy}px) scale(1.05)` : undefined }}
+                        >
+                          <img src={img.baseImage.src} className="w-full h-full object-cover bg-gray-100 pointer-events-none" />
+                          <div
+                            className="absolute left-0.5 bottom-0.5 p-0.5 bg-black/60 text-white rounded thumb-drag-handle cursor-grab active:cursor-grabbing"
+                            style={{ touchAction: 'none' }}
+                            title="ドラッグで並び替え"
+                          >
+                            <GripVertical size={11} />
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteImage(img.id);
+                            }}
+                            className="absolute top-0.5 right-0.5 p-1 bg-black/60 text-white rounded-full hover:bg-red-500 transition"
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                        {thumbDraggedIndex !== null && hasThumbDragMovement && idx === imagesData.length - 1 && thumbDropIndex === imagesData.length - 1 && (
+                          <div className="w-1.5 h-14 bg-blue-500/70 rounded-full shrink-0" />
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                  <button
+                    onClick={() => setIsImageSourcePickerOpen(true)}
+                    className="w-16 h-16 shrink-0 rounded-lg border-2 border-dashed border-gray-300 flex flex-col items-center justify-center text-gray-500 cursor-pointer hover:bg-blue-50 hover:text-blue-600 hover:border-blue-300 transition"
+                    title="追加方法を選択"
+                  >
+                    <Plus size={20} />
+                    <span className="text-[9px] mt-0.5 font-bold">追加</span>
+                  </button>
+                </div>
+              )}
             </>
           )}
         </div>
