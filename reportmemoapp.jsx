@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.5.5';
+const APP_VERSION = 'v1.5.6';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
@@ -24,6 +24,7 @@ const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
 const APP_DB_STORE = 'app_data';
 const PROJECTS_KEY = 'eval_report_projects';
+const AUTO_BACKUP_CONFIG_KEY = 'eval_report_auto_backup_cfg_v1';
 const normalizeProjects = (rawProjects) => {
   if (!Array.isArray(rawProjects)) return [];
   return rawProjects.map(p => ({
@@ -629,6 +630,12 @@ export default function App() {
   const [newProjectTitle, setNewProjectTitle] = useState('');
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(true);
+  const [autoBackupEnabled, setAutoBackupEnabled] = useState(false);
+  const [autoBackupIntervalMin, setAutoBackupIntervalMin] = useState(10);
+  const [autoBackupHasHandle, setAutoBackupHasHandle] = useState(false);
+  const autoBackupHandleRef = useRef(null);
+  const autoBackupTimerRef = useRef(null);
+  const autoBackupInFlightRef = useRef(false);
   
   const [reorderUndoHistory, setReorderUndoHistory] = useState([]); // Project page order undo history
   const [reorderRedoHistory, setReorderRedoHistory] = useState([]); // Project page order redo history
@@ -706,6 +713,87 @@ export default function App() {
     };
     saveProjects();
   }, [projects, isProjectsLoaded]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const raw = JSON.parse(localStorage.getItem(AUTO_BACKUP_CONFIG_KEY) || '{}');
+      setAutoBackupEnabled(!!raw.enabled);
+      const parsedInterval = parseInt(raw.intervalMin, 10);
+      if (Number.isFinite(parsedInterval)) setAutoBackupIntervalMin(Math.max(1, Math.min(120, parsedInterval)));
+    } catch {
+      // ignore invalid config
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(AUTO_BACKUP_CONFIG_KEY, JSON.stringify({
+      enabled: autoBackupEnabled,
+      intervalMin: autoBackupIntervalMin
+    }));
+  }, [autoBackupEnabled, autoBackupIntervalMin]);
+
+  const writeAutoBackupNow = useCallback(async (notifyOnSuccess = false) => {
+    if (!autoBackupHandleRef.current || autoBackupInFlightRef.current) return false;
+    autoBackupInFlightRef.current = true;
+    try {
+      const payload = {
+        type: 'project-bundle',
+        exportedAt: new Date().toISOString(),
+        projects
+      };
+      const writable = await autoBackupHandleRef.current.createWritable();
+      await writable.write(JSON.stringify(payload, null, 2));
+      await writable.close();
+      if (notifyOnSuccess) alert('自動バックアップ先に保存しました。');
+      return true;
+    } catch (e) {
+      console.warn('auto backup write failed', e);
+      if (notifyOnSuccess) alert('バックアップ保存に失敗しました。保存先を再選択してください。');
+      return false;
+    } finally {
+      autoBackupInFlightRef.current = false;
+    }
+  }, [projects]);
+
+  const selectAutoBackupDestination = useCallback(async () => {
+    if (typeof window === 'undefined' || !window.showSaveFilePicker) {
+      alert('このブラウザは自動バックアップ先のファイル指定に対応していません。');
+      return;
+    }
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: `report_auto_backup_${new Date().toISOString().slice(0, 10)}.json`,
+        types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }]
+      });
+      autoBackupHandleRef.current = handle;
+      setAutoBackupHasHandle(true);
+      await writeAutoBackupNow(true);
+    } catch (e) {
+      if (e?.name !== 'AbortError') {
+        console.warn('select auto backup destination failed', e);
+        alert('バックアップ先の設定に失敗しました。');
+      }
+    }
+  }, [writeAutoBackupNow]);
+
+  useEffect(() => {
+    if (autoBackupTimerRef.current) {
+      clearInterval(autoBackupTimerRef.current);
+      autoBackupTimerRef.current = null;
+    }
+    if (!autoBackupEnabled || !isProjectsLoaded || !autoBackupHasHandle) return;
+    autoBackupTimerRef.current = setInterval(() => {
+      writeAutoBackupNow(false);
+    }, Math.max(1, autoBackupIntervalMin) * 60 * 1000);
+    return () => {
+      if (autoBackupTimerRef.current) {
+        clearInterval(autoBackupTimerRef.current);
+        autoBackupTimerRef.current = null;
+      }
+    };
+  }, [autoBackupEnabled, autoBackupIntervalMin, autoBackupHasHandle, isProjectsLoaded, writeAutoBackupNow]);
 
   useEffect(() => { const key = localStorage.getItem('gemini_api_key'); if (key) setApiKeyInput(key); }, []);
   useEffect(() => { if (isGlobalExportOpen) setSelectedExportProjectIds(projects.map(p => p.id)); }, [isGlobalExportOpen, projects]);
@@ -1199,6 +1287,49 @@ export default function App() {
               >
                 保存
               </button>
+            </div>
+            <div className="mt-6 pt-5 border-t border-gray-100">
+              <h3 className="text-base font-bold text-gray-800 mb-2">バックアップ設定（ブラウザ外保存）</h3>
+              <p className="text-sm text-gray-500 mb-3">
+                指定したJSONファイルへ定期保存します。ブラウザのデータが消えた場合の保険として使えます（この機能は対応ブラウザでのみ動作）。
+              </p>
+              <div className="flex flex-col md:flex-row md:items-center gap-3">
+                <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={autoBackupEnabled}
+                    onChange={(e) => setAutoBackupEnabled(e.target.checked)}
+                  />
+                  自動バックアップを有効化
+                </label>
+                <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+                  間隔(分)
+                  <input
+                    type="number"
+                    min="1"
+                    max="120"
+                    value={autoBackupIntervalMin}
+                    onChange={(e) => setAutoBackupIntervalMin(Math.max(1, Math.min(120, parseInt(e.target.value, 10) || 1)))}
+                    className="w-20 px-2 py-1 border rounded-lg"
+                  />
+                </label>
+                <button
+                  onClick={selectAutoBackupDestination}
+                  className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-bold text-sm"
+                >
+                  保存先ファイルを選択
+                </button>
+                <button
+                  onClick={() => writeAutoBackupNow(true)}
+                  disabled={!autoBackupHasHandle}
+                  className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-bold text-sm disabled:opacity-40"
+                >
+                  今すぐバックアップ
+                </button>
+              </div>
+              <p className="text-xs text-gray-500 mt-2">
+                保存先: {autoBackupHasHandle ? '設定済み（このタブを開いている間有効）' : '未設定'}
+              </p>
             </div>
             <p className="text-xs text-gray-500 mt-3">アプリバージョン: <span className="font-semibold text-gray-700">{APP_VERSION}</span></p>
           </section>
