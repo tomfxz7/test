@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.5.4';
+const APP_VERSION = 'v1.5.5';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
@@ -810,15 +810,26 @@ export default function App() {
     const json = JSON.stringify(dataObj, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
     const file = new File([blob], fileName, { type: 'application/json' });
+    const isAndroid = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent || '');
     const canUseFileShare = typeof navigator !== 'undefined'
-      && navigator.canShare
       && navigator.share
-      && navigator.canShare({ files: [file] });
+      && (
+        (navigator.canShare && navigator.canShare({ files: [file] }))
+        || isAndroid
+      );
     if (canUseFileShare) {
       try {
         await navigator.share({ files: [file], title: fileName, text: 'JSONを保存または共有します。' });
         return;
       } catch (e) {
+        if (isAndroid && navigator.share && e?.name !== 'AbortError') {
+          try {
+            await navigator.share({ title: fileName, text: 'JSONエクスポートを共有します。' });
+            return;
+          } catch (e2) {
+            if (e2?.name !== 'AbortError') console.warn('android share fallback failed.', e2);
+          }
+        }
         if (e?.name !== 'AbortError') console.warn('share failed. fallback to download.', e);
       }
     }
@@ -1609,6 +1620,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const longPressTimerRef = useRef(null);
   const suppressThumbClickRef = useRef(false);
   const activeThumbDragPointerIdRef = useRef(null);
+  const thumbDropCentersRef = useRef([]);
   const [baseImage, setBaseImage] = useState(null);
   const [annotations, setAnnotations] = useState([]);
   const [history, setHistory] = useState([]);
@@ -1759,16 +1771,15 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
 
   const calculateThumbDropIndex = useCallback((clientX) => {
     if (thumbDraggedIndex === null) return null;
-    const thumbs = Array.from(document.querySelectorAll('[data-thumb-index]'))
-      .map(el => ({ el, idx: Number(el.getAttribute('data-thumb-index')) }))
-      .filter(entry => !Number.isNaN(entry.idx) && entry.idx !== thumbDraggedIndex)
-      .sort((a, b) => a.idx - b.idx);
-    if (thumbs.length === 0) return 0;
-    let insertion = thumbs.length;
-    for (let i = 0; i < thumbs.length; i++) {
-      const rect = thumbs[i].el.getBoundingClientRect();
-      const mid = rect.left + rect.width / 2;
-      if (clientX < mid) {
+    const strip = thumbStripRef.current;
+    if (!strip) return null;
+    const stripRect = strip.getBoundingClientRect();
+    const pointerXInStrip = (clientX - stripRect.left) + strip.scrollLeft;
+    const centers = thumbDropCentersRef.current;
+    if (!centers.length) return 0;
+    let insertion = centers.length;
+    for (let i = 0; i < centers.length; i++) {
+      if (pointerXInStrip < centers[i]) {
         insertion = i;
         break;
       }
@@ -1798,6 +1809,20 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     setHasThumbDragMovement(false);
     activeThumbDragPointerIdRef.current = e.pointerId;
     setThumbContextMenu(null);
+    const strip = thumbStripRef.current;
+    if (strip) {
+      const stripRect = strip.getBoundingClientRect();
+      thumbDropCentersRef.current = Array.from(strip.querySelectorAll('[data-thumb-index]'))
+        .map((el) => ({ el, itemIdx: Number(el.getAttribute('data-thumb-index')) }))
+        .filter(entry => !Number.isNaN(entry.itemIdx) && entry.itemIdx !== idx)
+        .sort((a, b) => a.itemIdx - b.itemIdx)
+        .map(({ el }) => {
+          const rect = el.getBoundingClientRect();
+          return (rect.left - stripRect.left + rect.width / 2) + strip.scrollLeft;
+        });
+    } else {
+      thumbDropCentersRef.current = [];
+    }
   }, []);
 
   const handleThumbDragEnd = useCallback(() => {
@@ -1811,6 +1836,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     setThumbDragCurrentPos(null);
     setHasThumbDragMovement(false);
     activeThumbDragPointerIdRef.current = null;
+    thumbDropCentersRef.current = [];
   }, [thumbDraggedIndex, thumbDropIndex, hasThumbDragMovement, reorderThumbsAtDrop]);
 
   useEffect(() => {
@@ -2352,9 +2378,9 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                           onPointerCancel={() => {
                             if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
                           }}
-                          className={`relative w-16 h-16 shrink-0 rounded-lg overflow-hidden border-2 transition-all ${
+                          className={`relative w-16 h-16 shrink-0 rounded-lg overflow-hidden border-2 ${
                             activeImageId === img.id ? 'border-blue-500 shadow-md ring-2 ring-blue-200' : 'border-gray-200 opacity-70 hover:opacity-100'
-                          } ${isDragging ? 'z-40 shadow-2xl cursor-grabbing' : 'cursor-pointer'}`}
+                          } ${isDragging ? 'z-40 shadow-2xl cursor-grabbing transition-none' : 'cursor-pointer transition-all'}`}
                           style={{ transform: isDragging ? `translate(${dragDx}px, ${dragDy}px) scale(1.05)` : undefined }}
                         >
                           <img src={img.baseImage.src} className="w-full h-full object-cover bg-gray-100 pointer-events-none" />
