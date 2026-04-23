@@ -1,0 +1,65 @@
+{
+  "expo": {
+    "name": "ReportMemo",
+    "slug": "reportmemo-native",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1e40af"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.reportmemo.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "写真を撮影してレポートに追加するために使用します。",
+        "NSPhotoLibraryUsageDescription": "フォトライブラリから画像を選択するために使用します。",
+        "NSPhotoLibraryAddUsageDescription": "作成したレポートを写真ライブラリに保存するために使用します。",
+        "NSMicrophoneUsageDescription": "動画撮影時に音声を録音するために使用します。"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1e40af"
+      },
+      "permissions": [
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "写真を撮影してレポートに追加するために使用します。"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "フォトライブラリから画像を選択するために使用します。"
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "ファイルを保存するために使用します。",
+          "savePhotosPermission": "ファイルを保存するために使用します。"
+        }
+      ]
+    ],
+    "scheme": "reportmemo",
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
