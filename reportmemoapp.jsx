@@ -24,7 +24,7 @@ const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
 const APP_DB_STORE = 'app_data';
 const PROJECTS_KEY = 'eval_report_projects';
-const AUTO_BACKUP_CONFIG_KEY = 'eval_report_auto_backup_cfg_v1';
+const AUTO_BACKUP_CONFIG_KEY = 'eval_report_auto_backup_cfg_v3';
 const normalizeProjects = (rawProjects) => {
   if (!Array.isArray(rawProjects)) return [];
   return rawProjects.map(p => ({
@@ -630,12 +630,11 @@ export default function App() {
   const [newProjectTitle, setNewProjectTitle] = useState('');
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(true);
-  const [autoBackupEnabled, setAutoBackupEnabled] = useState(false);
-  const [autoBackupIntervalMin, setAutoBackupIntervalMin] = useState(10);
-  const [autoBackupHasHandle, setAutoBackupHasHandle] = useState(false);
-  const autoBackupHandleRef = useRef(null);
-  const autoBackupTimerRef = useRef(null);
-  const autoBackupInFlightRef = useRef(false);
+  const [projectBackupEnabledMap, setProjectBackupEnabledMap] = useState({});
+  const [projectLastBackupAtMap, setProjectLastBackupAtMap] = useState({});
+  const [backupStatusNow, setBackupStatusNow] = useState(Date.now());
+  const autoBackupHandlesRef = useRef({});
+  const autoBackupInFlightRef = useRef({});
   
   const [reorderUndoHistory, setReorderUndoHistory] = useState([]); // Project page order undo history
   const [reorderRedoHistory, setReorderRedoHistory] = useState([]); // Project page order redo history
@@ -718,9 +717,7 @@ export default function App() {
     if (typeof window === 'undefined') return;
     try {
       const raw = JSON.parse(localStorage.getItem(AUTO_BACKUP_CONFIG_KEY) || '{}');
-      setAutoBackupEnabled(!!raw.enabled);
-      const parsedInterval = parseInt(raw.intervalMin, 10);
-      if (Number.isFinite(parsedInterval)) setAutoBackupIntervalMin(Math.max(1, Math.min(120, parsedInterval)));
+      setProjectBackupEnabledMap(raw?.enabledByProject && typeof raw.enabledByProject === 'object' ? raw.enabledByProject : {});
     } catch {
       // ignore invalid config
     }
@@ -729,71 +726,68 @@ export default function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     localStorage.setItem(AUTO_BACKUP_CONFIG_KEY, JSON.stringify({
-      enabled: autoBackupEnabled,
-      intervalMin: autoBackupIntervalMin
+      enabledByProject: projectBackupEnabledMap
     }));
-  }, [autoBackupEnabled, autoBackupIntervalMin]);
+  }, [projectBackupEnabledMap]);
 
-  const writeAutoBackupNow = useCallback(async (notifyOnSuccess = false) => {
-    if (!autoBackupHandleRef.current || autoBackupInFlightRef.current) return false;
-    autoBackupInFlightRef.current = true;
+  const writeAutoBackupNow = useCallback(async (projectId = activeProjectId) => {
+    const targetProject = projects.find(p => p.id === projectId);
+    if (!targetProject) return false;
+    if (!autoBackupHandlesRef.current[projectId] || autoBackupInFlightRef.current[projectId]) return false;
+    autoBackupInFlightRef.current[projectId] = true;
     try {
       const payload = {
-        type: 'project-bundle',
+        type: 'single-project',
         exportedAt: new Date().toISOString(),
-        projects
+        project: targetProject
       };
-      const writable = await autoBackupHandleRef.current.createWritable();
+      const writable = await autoBackupHandlesRef.current[projectId].createWritable();
       await writable.write(JSON.stringify(payload, null, 2));
       await writable.close();
-      if (notifyOnSuccess) alert('自動バックアップ先に保存しました。');
+      setProjectLastBackupAtMap(prev => ({ ...prev, [projectId]: new Date().toISOString() }));
       return true;
     } catch (e) {
       console.warn('auto backup write failed', e);
-      if (notifyOnSuccess) alert('バックアップ保存に失敗しました。保存先を再選択してください。');
       return false;
     } finally {
-      autoBackupInFlightRef.current = false;
+      autoBackupInFlightRef.current[projectId] = false;
     }
-  }, [projects]);
+  }, [projects, activeProjectId]);
 
   const selectAutoBackupDestination = useCallback(async () => {
+    if (!activeProjectId) return;
+    const targetProject = projects.find(p => p.id === activeProjectId);
+    if (!targetProject) return;
     if (typeof window === 'undefined' || !window.showSaveFilePicker) {
       alert('このブラウザは自動バックアップ先のファイル指定に対応していません。');
       return;
     }
     try {
       const handle = await window.showSaveFilePicker({
-        suggestedName: `report_auto_backup_${new Date().toISOString().slice(0, 10)}.json`,
+        suggestedName: `${sanitizeFileName(targetProject.title || 'project')}_auto_backup_${new Date().toISOString().slice(0, 10)}.json`,
         types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }]
       });
-      autoBackupHandleRef.current = handle;
-      setAutoBackupHasHandle(true);
-      await writeAutoBackupNow(true);
+      autoBackupHandlesRef.current[activeProjectId] = handle;
+      await writeAutoBackupNow(activeProjectId);
     } catch (e) {
       if (e?.name !== 'AbortError') {
         console.warn('select auto backup destination failed', e);
         alert('バックアップ先の設定に失敗しました。');
       }
     }
-  }, [writeAutoBackupNow]);
+  }, [activeProjectId, projects, writeAutoBackupNow]);
 
   useEffect(() => {
-    if (autoBackupTimerRef.current) {
-      clearInterval(autoBackupTimerRef.current);
-      autoBackupTimerRef.current = null;
-    }
-    if (!autoBackupEnabled || !isProjectsLoaded || !autoBackupHasHandle) return;
-    autoBackupTimerRef.current = setInterval(() => {
-      writeAutoBackupNow(false);
-    }, Math.max(1, autoBackupIntervalMin) * 60 * 1000);
-    return () => {
-      if (autoBackupTimerRef.current) {
-        clearInterval(autoBackupTimerRef.current);
-        autoBackupTimerRef.current = null;
-      }
-    };
-  }, [autoBackupEnabled, autoBackupIntervalMin, autoBackupHasHandle, isProjectsLoaded, writeAutoBackupNow]);
+    if (!isProjectsLoaded || !activeProjectId) return;
+    if (!projectBackupEnabledMap[activeProjectId]) return;
+    if (!autoBackupHandlesRef.current[activeProjectId]) return;
+    writeAutoBackupNow(activeProjectId);
+  }, [projects, isProjectsLoaded, activeProjectId, projectBackupEnabledMap, writeAutoBackupNow]);
+
+  useEffect(() => {
+    const t = setInterval(() => setBackupStatusNow(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => { const key = localStorage.getItem('gemini_api_key'); if (key) setApiKeyInput(key); }, []);
   useEffect(() => { if (isGlobalExportOpen) setSelectedExportProjectIds(projects.map(p => p.id)); }, [isGlobalExportOpen, projects]);
@@ -1288,49 +1282,6 @@ export default function App() {
                 保存
               </button>
             </div>
-            <div className="mt-6 pt-5 border-t border-gray-100">
-              <h3 className="text-base font-bold text-gray-800 mb-2">バックアップ設定（ブラウザ外保存）</h3>
-              <p className="text-sm text-gray-500 mb-3">
-                指定したJSONファイルへ定期保存します。ブラウザのデータが消えた場合の保険として使えます（この機能は対応ブラウザでのみ動作）。
-              </p>
-              <div className="flex flex-col md:flex-row md:items-center gap-3">
-                <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
-                  <input
-                    type="checkbox"
-                    checked={autoBackupEnabled}
-                    onChange={(e) => setAutoBackupEnabled(e.target.checked)}
-                  />
-                  自動バックアップを有効化
-                </label>
-                <label className="inline-flex items-center gap-2 text-sm text-gray-700">
-                  間隔(分)
-                  <input
-                    type="number"
-                    min="1"
-                    max="120"
-                    value={autoBackupIntervalMin}
-                    onChange={(e) => setAutoBackupIntervalMin(Math.max(1, Math.min(120, parseInt(e.target.value, 10) || 1)))}
-                    className="w-20 px-2 py-1 border rounded-lg"
-                  />
-                </label>
-                <button
-                  onClick={selectAutoBackupDestination}
-                  className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-bold text-sm"
-                >
-                  保存先ファイルを選択
-                </button>
-                <button
-                  onClick={() => writeAutoBackupNow(true)}
-                  disabled={!autoBackupHasHandle}
-                  className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-bold text-sm disabled:opacity-40"
-                >
-                  今すぐバックアップ
-                </button>
-              </div>
-              <p className="text-xs text-gray-500 mt-2">
-                保存先: {autoBackupHasHandle ? '設定済み（このタブを開いている間有効）' : '未設定'}
-              </p>
-            </div>
             <p className="text-xs text-gray-500 mt-3">アプリバージョン: <span className="font-semibold text-gray-700">{APP_VERSION}</span></p>
           </section>
         )}
@@ -1410,7 +1361,22 @@ export default function App() {
 
   if (currentView === 'project') {
     const project = activeProject;
-    if (!project) return null;
+    if (!project) {
+      return (
+        <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+          <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm text-center">
+            <p className="text-gray-700 font-bold mb-3">プロジェクトが見つかりませんでした。</p>
+            <button onClick={() => setCurrentView('home')} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold">
+              ホームに戻る
+            </button>
+          </div>
+        </div>
+      );
+    }
+    const projectBackupEnabled = !!projectBackupEnabledMap[project.id];
+    const projectBackupHasHandle = !!autoBackupHandlesRef.current[project.id];
+    const lastProjectBackupAtIso = projectLastBackupAtMap[project.id] || null;
+    const lastProjectBackupAt = lastProjectBackupAtIso ? new Date(lastProjectBackupAtIso) : null;
 
     return (
       <div className="min-h-screen bg-gray-50 font-sans print:bg-white select-none">
@@ -1461,6 +1427,41 @@ export default function App() {
             <h1 className="text-4xl font-bold text-black">{project.title}</h1>
             <p className="text-gray-500 mt-2">作成日: {new Date(project.createdAt).toLocaleDateString()}</p>
           </div>
+          <section className="mb-6 bg-white border border-gray-200 rounded-2xl p-5 shadow-sm print:hidden">
+            <h3 className="text-base font-bold text-gray-800 mb-2">このプロジェクトのバックアップ設定（ブラウザ外保存）</h3>
+            <p className="text-sm text-gray-500 mb-3">
+              このプロジェクトのページ内容が保存されるたびに、指定したJSONファイルへ最新版を書き出します。
+            </p>
+            <div className="flex flex-col md:flex-row md:items-center gap-3">
+              <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={projectBackupEnabled}
+                  onChange={(e) => setProjectBackupEnabledMap(prev => ({ ...prev, [project.id]: e.target.checked }))}
+                />
+                このプロジェクトの自動バックアップを有効化
+              </label>
+              <button
+                onClick={selectAutoBackupDestination}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-bold text-sm"
+              >
+                保存先ファイルを選択
+              </button>
+              <button
+                onClick={() => writeAutoBackupNow(project.id)}
+                disabled={!projectBackupHasHandle}
+                className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-bold text-sm disabled:opacity-40"
+              >
+                今すぐバックアップ
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mt-2">
+              保存先: {projectBackupHasHandle ? '設定済み（このタブを開いている間有効）' : '未設定'}
+            </p>
+            <p className="text-xs text-gray-500 mt-1">
+              最新版保存: {lastProjectBackupAt ? `${Math.max(0, Math.floor((backupStatusNow - lastProjectBackupAt.getTime()) / 60000))}分前` : 'まだ保存されていません'}
+            </p>
+          </section>
 
           <div className="relative space-y-4">
             {project.items.map((item, index) => {
@@ -1716,7 +1717,16 @@ export default function App() {
       />
     );
   }
-  return null;
+  return (
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+      <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm text-center">
+        <p className="text-gray-700 font-bold mb-3">表示に失敗しました。</p>
+        <button onClick={() => setCurrentView('home')} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold">
+          ホームに戻る
+        </button>
+      </div>
+    </div>
+  );
 }
 
 // --- Item Editor Component ---
