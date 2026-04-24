@@ -1907,6 +1907,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const handwritingTimerRef = useRef(null); const handwritingStrokesRef = useRef([]); const [isAutoOcrLoading, setIsAutoOcrLoading] = useState(false);
   const clipboardReadInFlightRef = useRef(false);
   const lastPasteEventAtRef = useRef(0);
+  const lastImageInsertAtRef = useRef(0);
 
   useEffect(() => {
     if (initialItem && initialItem.images) {
@@ -2115,7 +2116,10 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
           files.push(new File([blob], `clipboard-${Date.now()}.png`, { type: imageType }));
         }
         if (files.length > 0) {
+          const now = Date.now();
+          if (now - lastImageInsertAtRef.current < 500) return true;
           addImagesFromFiles(files);
+          lastImageInsertAtRef.current = now;
           return true;
         }
         if (attempt < maxAttempts - 1) await new Promise(r => setTimeout(r, waitMs));
@@ -2142,6 +2146,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       if (imageFiles.length > 0) {
         e.preventDefault();
         addImagesFromFiles(imageFiles);
+        lastImageInsertAtRef.current = Date.now();
         return;
       }
       const readViaAPI = await readImagesFromClipboardAPI();
@@ -2157,7 +2162,9 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       if (document.activeElement.tagName === 'TEXTAREA' || document.activeElement.tagName === 'INPUT') return;
       // iPadでpasteイベントが来ないケースのみフォールバック読み取り
       setTimeout(() => {
-        if (Date.now() - lastPasteEventAtRef.current > 160) readImagesFromClipboardAPI({ waitForPermission: true });
+        if (Date.now() - lastPasteEventAtRef.current > 450 && Date.now() - lastImageInsertAtRef.current > 500) {
+          readImagesFromClipboardAPI({ waitForPermission: true });
+        }
       }, 180);
     };
     window.addEventListener('keydown', handlePasteShortcut);
@@ -2469,8 +2476,13 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const handleTextSubmit = () => { if (textInput) { pushHistory(annotationsRef.current); if (textInput.value.trim() !== '') { if (textInput.id) setAnnotations(prev => prev.map(a => a.id === textInput.id ? { ...a, text: textInput.value.trim(), color: strokeColor, fontSize: fontSize, hasGlow: textGlow } : a)); else setAnnotations(prev => [...prev, { id: Date.now().toString(), type: 'text', x: textInput.canvasX, y: textInput.canvasY, text: textInput.value.trim(), color: strokeColor, fontSize: fontSize, scaleX: 1, scaleY: 1, rotation: 0, tx: 0, ty: 0, hasGlow: textGlow }]); } else if (textInput.id) setAnnotations(prev => prev.filter(a => a.id !== textInput.id)); } setTextInput(null); };
   const ToolButton = ({ tool, icon: Icon, label, onClick }) => { const isActive = currentTool === tool; return ( <button onClick={onClick || (() => handleToolChange(tool))} className={`p-2 rounded-lg flex flex-col items-center gap-1 transition-colors min-w-[44px] ${isActive ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-100 text-gray-600'}`}> <Icon size={22} strokeWidth={isActive ? 2.5 : 2} /> <span className="text-[9px] font-bold">{label}</span> </button> ); };
   const isSelectionMode = currentTool === ToolType.SELECT || currentTool === ToolType.LASSO; const shouldShowSelectionMenu = selectedIds.length > 0 && isSelectionMode; const boundingBoxForMenu = shouldShowSelectionMenu ? getMultiBBox(annotations, selectedIds) : null; const hasInkSelected = selectedIds.some(id => ['pen', 'handwriting_text'].includes(annotations.find(a => a.id === id)?.type)); const isSingleTextSelected = selectedIds.length === 1 && annotations.find(a => a.id === selectedIds[0])?.type === 'text'; const isGroupable = selectedIds.length > 1; const isUngroupable = selectedIds.length > 0 && selectedIds.every(id => { const ann = annotations.find(a => a.id === id); return ann?.groupId && annotations.filter(a => a.groupId === ann.groupId).every(a => selectedIds.includes(a.id)); });
+  const handleArrowToolToggle = () => {
+    if (currentTool === ToolType.ARROW) handleToolChange('double_arrow');
+    else if (currentTool === 'double_arrow') handleToolChange(ToolType.ARROW);
+    else handleToolChange(ToolType.ARROW);
+  };
   const shapeTools = [{ tool: ToolType.LINE, icon: Minus, label: '直線' }, { tool: ToolType.ARROW, icon: ArrowUpRight, label: '矢印' }, { tool: ToolType.RECT, icon: Square, label: '四角' }, { tool: ToolType.CIRCLE, icon: Circle, label: '丸' }];
-  const currentShapeMeta = shapeTools.find(s => s.tool === currentTool) || shapeTools[0];
+  const currentShapeMeta = shapeTools.find(s => s.tool === currentTool || (s.tool === ToolType.ARROW && currentTool === 'double_arrow')) || shapeTools[0];
   const CurrentShapeIcon = currentShapeMeta.icon;
   const viewportW = typeof window !== 'undefined' ? window.innerWidth : 1024;
   const viewportH = typeof window !== 'undefined' ? window.innerHeight : 768;
@@ -2487,7 +2499,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                 <div className="flex items-center bg-gray-50 p-1 rounded-xl">
                   <ToolButton tool={ToolType.SELECT} icon={MousePointer2} label="選択" /> <ToolButton tool={ToolType.LASSO} icon={Lasso} label="投げ輪" /> <div className="w-px h-6 bg-gray-300 mx-1"></div> <ToolButton tool={ToolType.PEN} icon={PenTool} label="ペン" /> <ToolButton tool={ToolType.HANDWRITING_TEXT} icon={PenLine} label="手書き" /> <ToolButton tool={ToolType.TEXT} icon={Type} label="文字" />
                   <div className="hidden sm:flex items-center">
-                    <ToolButton tool={ToolType.LINE} icon={Minus} label="直線" /> <ToolButton tool={ToolType.ARROW} icon={ArrowUpRight} label="矢印" /> <ToolButton tool={ToolType.RECT} icon={Square} label="四角" /> <ToolButton tool={ToolType.CIRCLE} icon={Circle} label="丸" />
+                    <ToolButton tool={ToolType.LINE} icon={Minus} label="直線" /> <ToolButton tool={currentTool === 'double_arrow' ? 'double_arrow' : ToolType.ARROW} icon={ArrowUpRight} label={currentTool === 'double_arrow' ? '両矢印' : '矢印'} onClick={handleArrowToolToggle} /> <ToolButton tool={ToolType.RECT} icon={Square} label="四角" /> <ToolButton tool={ToolType.CIRCLE} icon={Circle} label="丸" />
                   </div>
                   <div className="relative sm:hidden mx-1">
                     <button onClick={() => setActivePopover(activePopover === 'shape' ? null : 'shape')} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${activePopover === 'shape' ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-100 text-gray-600'}`}>
@@ -2497,7 +2509,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                     {activePopover === 'shape' && (
                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 bg-white p-2 rounded-xl shadow-xl border border-gray-200 z-50 grid grid-cols-2 gap-1 w-36">
                         {shapeTools.map(({ tool, icon: Icon, label }) => (
-                          <button key={tool} onClick={() => { handleToolChange(tool); setActivePopover(null); }} className={`p-2 rounded-lg flex flex-col items-center ${currentTool === tool ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-100 text-gray-600'}`}>
+                          <button key={tool} onClick={() => { if (tool === ToolType.ARROW) handleArrowToolToggle(); else handleToolChange(tool); setActivePopover(null); }} className={`p-2 rounded-lg flex flex-col items-center ${currentTool === tool || (tool === ToolType.ARROW && currentTool === 'double_arrow') ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-100 text-gray-600'}`}>
                             <Icon size={18} />
                             <span className="text-[10px] font-bold mt-1">{label}</span>
                           </button>
