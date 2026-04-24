@@ -24,7 +24,8 @@ const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
 const APP_DB_STORE = 'app_data';
 const PROJECTS_KEY = 'eval_report_projects';
-const AUTO_BACKUP_CONFIG_KEY = 'eval_report_auto_backup_cfg_v1';
+const AUTO_BACKUP_CONFIG_KEY = 'eval_report_auto_backup_cfg_v3';
+const AUTO_BACKUP_HANDLES_KEY = 'eval_report_auto_backup_handles_v1';
 const normalizeProjects = (rawProjects) => {
   if (!Array.isArray(rawProjects)) return [];
   return rawProjects.map(p => ({
@@ -587,11 +588,15 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
 const LayoutRect = ({ rect, onChange, onDragStart, label, bgImg, isMemo, containerRef }) => {
   const handlePointerDown = (e, mode) => {
     e.stopPropagation(); e.preventDefault(); onDragStart();
+    if (e.currentTarget?.setPointerCapture) {
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
+    }
     const startX = e.clientX, startY = e.clientY, startRect = { ...rect };
     const container = containerRef.current; if (!container) return;
     const cWidth = container.clientWidth, cHeight = container.clientHeight;
 
     const handlePointerMove = (eMove) => {
+      eMove.preventDefault();
       let dx = ((eMove.clientX - startX) / cWidth) * 10, dy = ((eMove.clientY - startY) / cHeight) * 5.625;
       let newRect = { ...startRect };
       if (mode === 'move') { newRect.x += dx; newRect.y += dy; }
@@ -602,17 +607,18 @@ const LayoutRect = ({ rect, onChange, onDragStart, label, bgImg, isMemo, contain
       onChange(newRect);
     };
     const handlePointerUp = () => { document.removeEventListener('pointermove', handlePointerMove); document.removeEventListener('pointerup', handlePointerUp); };
-    document.addEventListener('pointermove', handlePointerMove); document.addEventListener('pointerup', handlePointerUp);
+    document.addEventListener('pointermove', handlePointerMove, { passive: false });
+    document.addEventListener('pointerup', handlePointerUp);
   };
   if (!rect) return null;
   return (
     <div className={`absolute border-2 ${isMemo ? 'border-gray-500 bg-gray-100/80' : 'border-blue-500 bg-blue-100/80'} flex flex-col items-center justify-center cursor-move select-none shadow-sm group backdrop-blur-sm hover:z-10`}
-      style={{ left: `${(rect.x / 10) * 100}%`, top: `${(rect.y / 5.625) * 100}%`, width: `${(rect.w / 10) * 100}%`, height: `${(rect.h / 5.625) * 100}%`, backgroundImage: bgImg ? `url(${bgImg})` : 'none', backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundBlendMode: 'overlay' }}
+      style={{ left: `${(rect.x / 10) * 100}%`, top: `${(rect.y / 5.625) * 100}%`, width: `${(rect.w / 10) * 100}%`, height: `${(rect.h / 5.625) * 100}%`, backgroundImage: bgImg ? `url(${bgImg})` : 'none', backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundBlendMode: 'overlay', touchAction: 'none' }}
       onPointerDown={(e) => handlePointerDown(e, 'move')}>
       <div className={`px-2 py-0.5 text-[10px] font-bold rounded shadow-sm opacity-90 whitespace-nowrap ${isMemo ? 'bg-gray-800 text-white' : 'bg-blue-600 text-white'}`}>{label}</div>
-      <div className="absolute right-[-6px] bottom-[-6px] w-4 h-4 bg-white border-2 border-blue-600 rounded-full cursor-nwse-resize z-10 opacity-0 group-hover:opacity-100 transition-opacity" onPointerDown={(e) => handlePointerDown(e, 'resize-br')} />
-      <div className="absolute right-[-6px] top-1/2 -translate-y-1/2 w-4 h-4 bg-white border-2 border-blue-600 rounded-full cursor-ew-resize z-10 opacity-0 group-hover:opacity-100 transition-opacity" onPointerDown={(e) => handlePointerDown(e, 'resize-r')} />
-      <div className="absolute left-1/2 bottom-[-6px] -translate-x-1/2 w-4 h-4 bg-white border-2 border-blue-600 rounded-full cursor-ns-resize z-10 opacity-0 group-hover:opacity-100 transition-opacity" onPointerDown={(e) => handlePointerDown(e, 'resize-b')} />
+      <div className="absolute right-[-6px] bottom-[-6px] w-4 h-4 bg-white border-2 border-blue-600 rounded-full cursor-nwse-resize z-10 opacity-0 group-hover:opacity-100 transition-opacity" style={{ touchAction: 'none' }} onPointerDown={(e) => handlePointerDown(e, 'resize-br')} />
+      <div className="absolute right-[-6px] top-1/2 -translate-y-1/2 w-4 h-4 bg-white border-2 border-blue-600 rounded-full cursor-ew-resize z-10 opacity-0 group-hover:opacity-100 transition-opacity" style={{ touchAction: 'none' }} onPointerDown={(e) => handlePointerDown(e, 'resize-r')} />
+      <div className="absolute left-1/2 bottom-[-6px] -translate-x-1/2 w-4 h-4 bg-white border-2 border-blue-600 rounded-full cursor-ns-resize z-10 opacity-0 group-hover:opacity-100 transition-opacity" style={{ touchAction: 'none' }} onPointerDown={(e) => handlePointerDown(e, 'resize-b')} />
     </div>
   );
 };
@@ -630,12 +636,12 @@ export default function App() {
   const [newProjectTitle, setNewProjectTitle] = useState('');
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(true);
-  const [autoBackupEnabled, setAutoBackupEnabled] = useState(false);
-  const [autoBackupIntervalMin, setAutoBackupIntervalMin] = useState(10);
-  const [autoBackupHasHandle, setAutoBackupHasHandle] = useState(false);
-  const autoBackupHandleRef = useRef(null);
-  const autoBackupTimerRef = useRef(null);
-  const autoBackupInFlightRef = useRef(false);
+  const [projectBackupEnabledMap, setProjectBackupEnabledMap] = useState({});
+  const [projectBackupHasHandleMap, setProjectBackupHasHandleMap] = useState({});
+  const [projectLastBackupAtMap, setProjectLastBackupAtMap] = useState({});
+  const [backupStatusNow, setBackupStatusNow] = useState(Date.now());
+  const autoBackupHandlesRef = useRef({});
+  const autoBackupInFlightRef = useRef({});
   
   const [reorderUndoHistory, setReorderUndoHistory] = useState([]); // Project page order undo history
   const [reorderRedoHistory, setReorderRedoHistory] = useState([]); // Project page order redo history
@@ -645,7 +651,7 @@ export default function App() {
   const [transferTargetProjectId, setTransferTargetProjectId] = useState('');
   const [transferMode, setTransferMode] = useState('copy');
   const [isExportSettingsOpen, setIsExportSettingsOpen] = useState(false);
-  const [pptxSettings, setPptxSettings] = useState({ showPageNumber: true });
+  const [pptxSettings, setPptxSettings] = useState({ showPageNumber: true, annotationMode: 'pptx' });
   const [pptxPageMode, setPptxPageMode] = useState('all');
   const [pptxSelectedItemIds, setPptxSelectedItemIds] = useState([]);
   const [isExportingPPTX, setIsExportingPPTX] = useState(false);
@@ -718,9 +724,7 @@ export default function App() {
     if (typeof window === 'undefined') return;
     try {
       const raw = JSON.parse(localStorage.getItem(AUTO_BACKUP_CONFIG_KEY) || '{}');
-      setAutoBackupEnabled(!!raw.enabled);
-      const parsedInterval = parseInt(raw.intervalMin, 10);
-      if (Number.isFinite(parsedInterval)) setAutoBackupIntervalMin(Math.max(1, Math.min(120, parsedInterval)));
+      setProjectBackupEnabledMap(raw?.enabledByProject && typeof raw.enabledByProject === 'object' ? raw.enabledByProject : {});
     } catch {
       // ignore invalid config
     }
@@ -729,71 +733,99 @@ export default function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     localStorage.setItem(AUTO_BACKUP_CONFIG_KEY, JSON.stringify({
-      enabled: autoBackupEnabled,
-      intervalMin: autoBackupIntervalMin
+      enabledByProject: projectBackupEnabledMap
     }));
-  }, [autoBackupEnabled, autoBackupIntervalMin]);
+  }, [projectBackupEnabledMap]);
 
-  const writeAutoBackupNow = useCallback(async (notifyOnSuccess = false) => {
-    if (!autoBackupHandleRef.current || autoBackupInFlightRef.current) return false;
-    autoBackupInFlightRef.current = true;
+  const persistAutoBackupHandles = useCallback(async () => {
+    try {
+      await idbSet(AUTO_BACKUP_HANDLES_KEY, autoBackupHandlesRef.current);
+      setProjectBackupHasHandleMap(Object.keys(autoBackupHandlesRef.current).reduce((acc, projectId) => {
+        acc[projectId] = !!autoBackupHandlesRef.current[projectId];
+        return acc;
+      }, {}));
+    } catch (e) {
+      console.warn('persist auto backup handles failed', e);
+    }
+  }, []);
+
+  useEffect(() => {
+    const loadBackupHandles = async () => {
+      try {
+        const savedHandles = await idbGet(AUTO_BACKUP_HANDLES_KEY);
+        if (savedHandles && typeof savedHandles === 'object') {
+          autoBackupHandlesRef.current = savedHandles;
+          setProjectBackupHasHandleMap(Object.keys(savedHandles).reduce((acc, projectId) => {
+            acc[projectId] = !!savedHandles[projectId];
+            return acc;
+          }, {}));
+        }
+      } catch (e) {
+        console.warn('load auto backup handles failed', e);
+      }
+    };
+    loadBackupHandles();
+  }, []);
+
+  const writeAutoBackupNow = useCallback(async (projectId = activeProjectId) => {
+    const targetProject = projects.find(p => p.id === projectId);
+    if (!targetProject) return false;
+    if (!autoBackupHandlesRef.current[projectId] || autoBackupInFlightRef.current[projectId]) return false;
+    autoBackupInFlightRef.current[projectId] = true;
     try {
       const payload = {
-        type: 'project-bundle',
+        type: 'single-project',
         exportedAt: new Date().toISOString(),
-        projects
+        project: targetProject
       };
-      const writable = await autoBackupHandleRef.current.createWritable();
+      const writable = await autoBackupHandlesRef.current[projectId].createWritable();
       await writable.write(JSON.stringify(payload, null, 2));
       await writable.close();
-      if (notifyOnSuccess) alert('自動バックアップ先に保存しました。');
+      setProjectLastBackupAtMap(prev => ({ ...prev, [projectId]: new Date().toISOString() }));
       return true;
     } catch (e) {
       console.warn('auto backup write failed', e);
-      if (notifyOnSuccess) alert('バックアップ保存に失敗しました。保存先を再選択してください。');
       return false;
     } finally {
-      autoBackupInFlightRef.current = false;
+      autoBackupInFlightRef.current[projectId] = false;
     }
-  }, [projects]);
+  }, [projects, activeProjectId]);
 
   const selectAutoBackupDestination = useCallback(async () => {
+    if (!activeProjectId) return;
+    const targetProject = projects.find(p => p.id === activeProjectId);
+    if (!targetProject) return;
     if (typeof window === 'undefined' || !window.showSaveFilePicker) {
       alert('このブラウザは自動バックアップ先のファイル指定に対応していません。');
       return;
     }
     try {
       const handle = await window.showSaveFilePicker({
-        suggestedName: `report_auto_backup_${new Date().toISOString().slice(0, 10)}.json`,
+        suggestedName: `${sanitizeFileName(targetProject.title || 'project')}_auto_backup_${new Date().toISOString().slice(0, 10)}.json`,
         types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }]
       });
-      autoBackupHandleRef.current = handle;
-      setAutoBackupHasHandle(true);
-      await writeAutoBackupNow(true);
+      autoBackupHandlesRef.current[activeProjectId] = handle;
+      await persistAutoBackupHandles();
+      await writeAutoBackupNow(activeProjectId);
     } catch (e) {
       if (e?.name !== 'AbortError') {
         console.warn('select auto backup destination failed', e);
         alert('バックアップ先の設定に失敗しました。');
       }
     }
-  }, [writeAutoBackupNow]);
+  }, [activeProjectId, projects, writeAutoBackupNow, persistAutoBackupHandles]);
 
   useEffect(() => {
-    if (autoBackupTimerRef.current) {
-      clearInterval(autoBackupTimerRef.current);
-      autoBackupTimerRef.current = null;
-    }
-    if (!autoBackupEnabled || !isProjectsLoaded || !autoBackupHasHandle) return;
-    autoBackupTimerRef.current = setInterval(() => {
-      writeAutoBackupNow(false);
-    }, Math.max(1, autoBackupIntervalMin) * 60 * 1000);
-    return () => {
-      if (autoBackupTimerRef.current) {
-        clearInterval(autoBackupTimerRef.current);
-        autoBackupTimerRef.current = null;
-      }
-    };
-  }, [autoBackupEnabled, autoBackupIntervalMin, autoBackupHasHandle, isProjectsLoaded, writeAutoBackupNow]);
+    if (!isProjectsLoaded || !activeProjectId) return;
+    if (!projectBackupEnabledMap[activeProjectId]) return;
+    if (!autoBackupHandlesRef.current[activeProjectId]) return;
+    writeAutoBackupNow(activeProjectId);
+  }, [projects, isProjectsLoaded, activeProjectId, projectBackupEnabledMap, writeAutoBackupNow]);
+
+  useEffect(() => {
+    const t = setInterval(() => setBackupStatusNow(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => { const key = localStorage.getItem('gemini_api_key'); if (key) setApiKeyInput(key); }, []);
   useEffect(() => { if (isGlobalExportOpen) setSelectedExportProjectIds(projects.map(p => p.id)); }, [isGlobalExportOpen, projects]);
@@ -877,7 +909,10 @@ export default function App() {
         for (const [i, imgData] of images.entries()) {
             const rect = imageRects[i];
             if (!rect || !imgData.baseImage) continue;
-            const normalizedImage = await normalizeImageForPptx(imgData.baseImage);
+            const imageSrcForSlide = (pptxSettings.annotationMode === 'flatten')
+              ? (imgData.image || imgData.baseImage)
+              : imgData.baseImage;
+            const normalizedImage = await normalizeImageForPptx(imageSrcForSlide);
             const baseW = imgData.baseWidth || normalizedImage.width || 1200;
             const baseH = imgData.baseHeight || normalizedImage.height || 800;
             const fitRatio = Math.min(rect.w / Math.max(1, baseW), rect.h / Math.max(1, baseH));
@@ -886,7 +921,9 @@ export default function App() {
             const drawX = rect.x + (rect.w - drawW) / 2;
             const drawY = rect.y + (rect.h - drawH) / 2;
             slide.addImage({ data: normalizedImage.data, x: drawX, y: drawY, w: drawW, h: drawH });
-            if (imgData.annotations && Array.isArray(imgData.annotations)) { drawAnnotationsOnSlide(slide, pptx, imgData.annotations, drawX, drawY, drawW, drawH, baseW, baseH); }
+            if (pptxSettings.annotationMode === 'pptx' && imgData.annotations && Array.isArray(imgData.annotations)) {
+              drawAnnotationsOnSlide(slide, pptx, imgData.annotations, drawX, drawY, drawW, drawH, baseW, baseH);
+            }
         }
       }
       await pptx.writeFile({ fileName: `${project.title}_export.pptx` });
@@ -1288,49 +1325,6 @@ export default function App() {
                 保存
               </button>
             </div>
-            <div className="mt-6 pt-5 border-t border-gray-100">
-              <h3 className="text-base font-bold text-gray-800 mb-2">バックアップ設定（ブラウザ外保存）</h3>
-              <p className="text-sm text-gray-500 mb-3">
-                指定したJSONファイルへ定期保存します。ブラウザのデータが消えた場合の保険として使えます（この機能は対応ブラウザでのみ動作）。
-              </p>
-              <div className="flex flex-col md:flex-row md:items-center gap-3">
-                <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
-                  <input
-                    type="checkbox"
-                    checked={autoBackupEnabled}
-                    onChange={(e) => setAutoBackupEnabled(e.target.checked)}
-                  />
-                  自動バックアップを有効化
-                </label>
-                <label className="inline-flex items-center gap-2 text-sm text-gray-700">
-                  間隔(分)
-                  <input
-                    type="number"
-                    min="1"
-                    max="120"
-                    value={autoBackupIntervalMin}
-                    onChange={(e) => setAutoBackupIntervalMin(Math.max(1, Math.min(120, parseInt(e.target.value, 10) || 1)))}
-                    className="w-20 px-2 py-1 border rounded-lg"
-                  />
-                </label>
-                <button
-                  onClick={selectAutoBackupDestination}
-                  className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-bold text-sm"
-                >
-                  保存先ファイルを選択
-                </button>
-                <button
-                  onClick={() => writeAutoBackupNow(true)}
-                  disabled={!autoBackupHasHandle}
-                  className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-bold text-sm disabled:opacity-40"
-                >
-                  今すぐバックアップ
-                </button>
-              </div>
-              <p className="text-xs text-gray-500 mt-2">
-                保存先: {autoBackupHasHandle ? '設定済み（このタブを開いている間有効）' : '未設定'}
-              </p>
-            </div>
             <p className="text-xs text-gray-500 mt-3">アプリバージョン: <span className="font-semibold text-gray-700">{APP_VERSION}</span></p>
           </section>
         )}
@@ -1410,7 +1404,22 @@ export default function App() {
 
   if (currentView === 'project') {
     const project = activeProject;
-    if (!project) return null;
+    if (!project) {
+      return (
+        <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+          <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm text-center">
+            <p className="text-gray-700 font-bold mb-3">プロジェクトが見つかりませんでした。</p>
+            <button onClick={() => setCurrentView('home')} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold">
+              ホームに戻る
+            </button>
+          </div>
+        </div>
+      );
+    }
+    const projectBackupEnabled = !!projectBackupEnabledMap[project.id];
+    const projectBackupHasHandle = !!projectBackupHasHandleMap[project.id];
+    const lastProjectBackupAtIso = projectLastBackupAtMap[project.id] || null;
+    const lastProjectBackupAt = lastProjectBackupAtIso ? new Date(lastProjectBackupAtIso) : null;
 
     return (
       <div className="min-h-screen bg-gray-50 font-sans print:bg-white select-none">
@@ -1461,6 +1470,41 @@ export default function App() {
             <h1 className="text-4xl font-bold text-black">{project.title}</h1>
             <p className="text-gray-500 mt-2">作成日: {new Date(project.createdAt).toLocaleDateString()}</p>
           </div>
+          <section className="mb-6 bg-white border border-gray-200 rounded-2xl p-5 shadow-sm print:hidden">
+            <h3 className="text-base font-bold text-gray-800 mb-2">このプロジェクトのバックアップ設定（ブラウザ外保存）</h3>
+            <p className="text-sm text-gray-500 mb-3">
+              このプロジェクトのページ内容が保存されるたびに、指定したJSONファイルへ最新版を書き出します。
+            </p>
+            <div className="flex flex-col md:flex-row md:items-center gap-3">
+              <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={projectBackupEnabled}
+                  onChange={(e) => setProjectBackupEnabledMap(prev => ({ ...prev, [project.id]: e.target.checked }))}
+                />
+                このプロジェクトの自動バックアップを有効化
+              </label>
+              <button
+                onClick={selectAutoBackupDestination}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-bold text-sm"
+              >
+                保存先ファイルを選択
+              </button>
+              <button
+                onClick={() => writeAutoBackupNow(project.id)}
+                disabled={!projectBackupHasHandle}
+                className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-bold text-sm disabled:opacity-40"
+              >
+                今すぐバックアップ
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mt-2">
+              保存先: {projectBackupHasHandle ? '設定済み（このタブを開いている間有効）' : '未設定'}
+            </p>
+            <p className="text-xs text-gray-500 mt-1">
+              最新版保存: {lastProjectBackupAt ? `${Math.max(0, Math.floor((backupStatusNow - lastProjectBackupAt.getTime()) / 60000))}分前` : 'まだ保存されていません'}
+            </p>
+          </section>
 
           <div className="relative space-y-4">
             {project.items.map((item, index) => {
@@ -1660,6 +1704,29 @@ export default function App() {
                   <span className="font-bold text-gray-700">スライド右上に「No.」を表示する</span>
                 </label>
                 <div className="bg-gray-50 p-3 rounded-xl border space-y-2">
+                  <div className="font-bold text-gray-700 mb-1">図形・文字の出力方式</div>
+                  <label className="flex items-start gap-2 text-sm cursor-pointer">
+                    <input
+                      type="radio"
+                      name="pptx-annotation-mode"
+                      checked={pptxSettings.annotationMode === 'pptx'}
+                      onChange={() => setPptxSettings({ ...pptxSettings, annotationMode: 'pptx' })}
+                      className="accent-orange-600 mt-0.5"
+                    />
+                    <span>PowerPoint方式（図形/文字を編集可能）</span>
+                  </label>
+                  <label className="flex items-start gap-2 text-sm cursor-pointer">
+                    <input
+                      type="radio"
+                      name="pptx-annotation-mode"
+                      checked={pptxSettings.annotationMode === 'flatten'}
+                      onChange={() => setPptxSettings({ ...pptxSettings, annotationMode: 'flatten' })}
+                      className="accent-orange-600 mt-0.5"
+                    />
+                    <span>1枚画像として出力（書き込み込み）</span>
+                  </label>
+                </div>
+                <div className="bg-gray-50 p-3 rounded-xl border space-y-2">
                   <div className="font-bold text-gray-700 mb-1">出力ページ</div>
                   <label className="flex items-center gap-2 text-sm cursor-pointer">
                     <input type="radio" name="pptx-pages" checked={pptxPageMode === 'all'} onChange={() => { setPptxPageMode('all'); setPptxSelectedItemIds(project.items.map(it => it.id)); }} className="accent-orange-600" />
@@ -1716,7 +1783,16 @@ export default function App() {
       />
     );
   }
-  return null;
+  return (
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+      <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm text-center">
+        <p className="text-gray-700 font-bold mb-3">表示に失敗しました。</p>
+        <button onClick={() => setCurrentView('home')} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold">
+          ホームに戻る
+        </button>
+      </div>
+    </div>
+  );
 }
 
 // --- Item Editor Component ---
@@ -2351,16 +2427,16 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   }, []);
 
   const handlePointerDown = (e) => {
-    if (e.target.closest('.text-overlay') || e.target.closest('.selection-menu')) return; if (e.target.tagName === 'CANVAS' || e.target.closest('.canvas-container')) e.preventDefault(); const isTouch = e.pointerType === 'touch'; const isCanvasArea = e.target.tagName === 'CANVAS' || !!e.target.closest('.canvas-container'); const keepTextInputForTouchPan = isTouch && isCanvasArea && currentToolRef.current === ToolType.TEXT && !fingerDrawMode; setActivePopover(null); if (textInput && !keepTextInputForTouchPan) handleTextSubmit(); historySnapshotRef.current = annotations; activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (e.target.closest('.text-overlay') || e.target.closest('.selection-menu')) return; if (e.target.tagName === 'CANVAS' || e.target.closest('.canvas-container')) e.preventDefault(); const isTouch = e.pointerType === 'touch'; const isMiddleMouse = e.pointerType === 'mouse' && e.button === 1; const isCanvasArea = e.target.tagName === 'CANVAS' || !!e.target.closest('.canvas-container'); const keepTextInputForNavPan = (isTouch || isMiddleMouse) && isCanvasArea && currentToolRef.current === ToolType.TEXT && !fingerDrawMode; setActivePopover(null); if (textInput && !keepTextInputForNavPan) handleTextSubmit(); historySnapshotRef.current = annotations; activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (activePointers.current.size >= 2) { isDrawingRef.current = false; setCurrentAnnotation(null); dragModeRef.current = null; const pts = Array.from(activePointers.current.values()); const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y); const center = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }; lastPinch.current = { dist, center, initialTransform: { ...transformRef.current } }; return; }
-    if (activePointers.current.size === 1) { const isPanHandle = !!e.target.closest('.page-pan-handle'); if (isPanHandle) { isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return; } if (e.target.tagName !== 'CANVAS') return; const pos = getCanvasPos(e.clientX, e.clientY); const isTouchNavigation = isTouch && !fingerDrawMode; const isUniversalNavigation = e.button === 1 || (e.button === 0 && e.altKey) || isTouchNavigation; const isTouchPan = isTouch && !fingerDrawMode && currentToolRef.current === ToolType.TEXT && !!textInput; if (isTouchPan) { isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return; } const effectiveShouldNavigate = isUniversalNavigation || currentToolRef.current === ToolType.SELECT;
+    if (activePointers.current.size === 1) { const isPanHandle = !!e.target.closest('.page-pan-handle'); if (isPanHandle) { isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return; } if (e.target.tagName !== 'CANVAS') return; const pos = getCanvasPos(e.clientX, e.clientY); const isTouchNavigation = isTouch && !fingerDrawMode; const isMiddleNavigation = isMiddleMouse; const isUniversalNavigation = isMiddleNavigation || (e.button === 0 && e.altKey) || isTouchNavigation; const isTouchPan = isTouch && !fingerDrawMode && currentToolRef.current === ToolType.TEXT && !!textInput; if (isTouchPan) { isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return; } const effectiveShouldNavigate = isUniversalNavigation || currentToolRef.current === ToolType.SELECT;
       if (effectiveShouldNavigate) { if (selectedIds.length === 1) { const selAnn = annotations.find(a => a.id === selectedIds[0]); const handle = checkHandleHit(pos.x, pos.y, selAnn); if (handle) { dragModeRef.current = handle; dragStartPointerRef.current = pos; dragStartAnnsRef.current = [JSON.parse(JSON.stringify(selAnn))]; if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = false; return; } }
         if (selectedIds.length > 0) { const mBox = getMultiBBox(annotations, selectedIds); if (mBox && pos.x >= mBox.x && pos.x <= mBox.x + mBox.w && pos.y >= mBox.y && pos.y <= mBox.y + mBox.h) { dragModeRef.current = 'move_multi'; dragStartPointerRef.current = pos; dragStartAnnsRef.current = annotations.filter(a => selectedIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; return; } }
         const hit = checkHit(pos.x, pos.y, annotations); if (hit) { let targetIds = [hit.id]; if (hit.groupId) targetIds = annotations.filter(a => a.groupId === hit.groupId).map(a => a.id); setSelectedIds(targetIds); if (hit.color) setStrokeColor(hit.color); if (hit.fillColor !== undefined) { setIsFillTransparent(hit.fillColor === 'transparent'); if (hit.fillColor !== 'transparent') setFillColor(hit.fillColor); } if (hit.width) setLineWidth(hit.width); if (hit.fontSize) setFontSize(hit.fontSize); if (hit.hasGlow !== undefined) setTextGlow(hit.hasGlow); dragModeRef.current = 'move'; dragStartPointerRef.current = pos; dragStartAnnsRef.current = annotations.filter(a => targetIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; return; }
         if (currentToolRef.current === ToolType.SELECT) setSelectedIds([]);
         isPotentialTapRef.current = true;
         dragStartClientPosRef.current = { x: e.clientX, y: e.clientY };
-        if (isTouchNavigation) {
+        if (isTouchNavigation || isMiddleNavigation) {
           dragModeRef.current = 'canvas_pan';
           panStartClientRef.current = { x: e.clientX, y: e.clientY };
           panStartTransformRef.current = { ...transformRef.current };
@@ -2403,11 +2479,11 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     <div className={`min-h-screen bg-gray-100 flex flex-col font-sans fixed inset-0 z-50 overflow-hidden select-none`}>
       {isAutoOcrLoading && <div className="absolute top-20 right-4 bg-white/95 border border-blue-200 text-blue-700 px-6 py-3 rounded-xl shadow-2xl z-[100] font-bold flex items-center gap-3"><Loader2 size={24} className="animate-spin" /><span>手書き文字を変換中...</span></div>}
       {errorMessage && <div className="absolute top-20 left-1/2 transform -translate-x-1/2 bg-red-600 text-white px-6 py-3 rounded-xl shadow-2xl z-[100] font-bold flex items-center gap-2"><span>{errorMessage}</span><button onClick={() => setErrorMessage('')} className="ml-4 opacity-70 hover:opacity-100 text-xl font-light">×</button></div>}
-      {!isFullscreen && ( <header className="bg-white border-b px-4 py-3 flex justify-between items-center shrink-0 shadow-sm relative z-20"> <button onClick={onCancel} className="text-gray-500 p-2 hover:bg-gray-100 rounded-lg font-medium transition">キャンセル</button> <div className="font-bold text-gray-800 text-lg flex items-center gap-2"> {initialItem && <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-sm">再編集</span>} 画像の編集 </div> <button onClick={() => { setSelectedIds([]); setTimeout(handleSave, 50); }} disabled={imagesData.length === 0 && !memo} className="bg-blue-600 text-white px-5 py-2 rounded-lg font-bold hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 transition shadow-md"> <Save size={18} /> 保存 </button> </header> )}
+      {!isFullscreen && ( <header className="bg-white border-b px-3 py-2 flex flex-wrap justify-between items-center gap-2 shrink-0 shadow-sm relative z-20"> <button onClick={onCancel} className="text-gray-500 p-2 hover:bg-gray-100 rounded-lg font-medium transition text-sm">キャンセル</button> <div className="font-bold text-gray-800 text-sm sm:text-lg flex items-center gap-2 min-w-0"> {initialItem && <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-xs sm:text-sm">再編集</span>} <span className="truncate">画像の編集</span> </div> <button onClick={() => { setSelectedIds([]); setTimeout(handleSave, 50); }} disabled={imagesData.length === 0 && !memo} className="bg-blue-600 text-white px-3 sm:px-5 py-2 rounded-lg font-bold hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 transition shadow-md text-sm"> <Save size={16} /> 保存 </button> </header> )}
       <div className={`flex-1 flex ${isFullscreen ? 'flex-col fixed inset-0 z-50 bg-gray-200' : 'flex-col lg:flex-row'} overflow-hidden`}>
         <div className="flex-1 flex flex-col bg-gray-200 overflow-hidden relative">
           {imagesData.length === 0 ? ( <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-6"> <div className="text-center mb-4"><h2 className="text-2xl font-bold text-gray-700 mb-2">写真を追加しますか？</h2><p className="text-gray-500">Ctrl+V (Cmd+V) で直接貼り付けることも可能です</p></div> <div className="flex flex-col sm:flex-row gap-4 w-full max-w-lg"> <label className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm cursor-pointer hover:shadow-md hover:bg-blue-50 transition text-blue-600"><Camera size={48} className="mb-4" /> <span className="font-bold text-lg">カメラで撮影</span><input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={handleImageUpload} /></label> <label className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm cursor-pointer hover:shadow-md hover:bg-blue-50 transition text-blue-600"><ImageIcon size={48} className="mb-4" /> <span className="font-bold text-lg">アルバムから</span><input type="file" multiple accept="image/*" className="hidden" onChange={handleImageUpload} /></label> </div> </div> ) : ( <>
-              <div className="bg-white border-b px-2 py-1.5 flex flex-wrap items-center gap-x-2 gap-y-2 shrink-0 shadow-sm z-10 relative">
+              <div className="bg-white border-b px-2 py-1.5 flex flex-nowrap sm:flex-wrap items-center gap-x-2 gap-y-2 shrink-0 shadow-sm z-10 relative overflow-x-auto">
                 <div className="flex items-center bg-gray-50 p-1 rounded-xl">
                   <ToolButton tool={ToolType.SELECT} icon={MousePointer2} label="選択" /> <ToolButton tool={ToolType.LASSO} icon={Lasso} label="投げ輪" /> <div className="w-px h-6 bg-gray-300 mx-1"></div> <ToolButton tool={ToolType.PEN} icon={PenTool} label="ペン" /> <ToolButton tool={ToolType.HANDWRITING_TEXT} icon={PenLine} label="手書き" /> <ToolButton tool={ToolType.TEXT} icon={Type} label="文字" />
                   <div className="hidden sm:flex items-center">
@@ -2431,15 +2507,15 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                   </div>
                   <div className="flex flex-col relative mx-1"> <ToolButton tool={currentTool === ToolType.ERASER_PIXEL ? ToolType.ERASER_PIXEL : ToolType.ERASER_OBJ} icon={Eraser} label="消す" onClick={() => handleToolChange(currentTool === ToolType.ERASER_OBJ ? ToolType.ERASER_PIXEL : ToolType.ERASER_OBJ)} /> {(currentTool === ToolType.ERASER_PIXEL || currentTool === ToolType.ERASER_OBJ) && ( <div className="absolute top-full mt-1 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[9px] px-1.5 py-0.5 rounded whitespace-nowrap z-50">{currentTool === ToolType.ERASER_PIXEL ? '部分' : '全体'}</div> )} </div>
                 </div>
-                <div className="flex-1 min-w-[8px]"></div>
+                <div className="hidden sm:block flex-1 min-w-[8px]"></div>
                 <div className="flex items-center gap-1 bg-gray-50 p-1 rounded-xl">
                   <button onClick={handleAutoCleanUp} disabled={isCleanUpLoading || isOcrLoading} className="p-2 rounded-lg flex flex-col items-center min-w-[48px] bg-gradient-to-br from-purple-100 to-blue-100 text-purple-700 hover:scale-105 active:scale-95 transition shadow-sm border border-purple-200 disabled:opacity-50"> {isCleanUpLoading ? <Loader2 size={20} className="animate-spin" /> : <Sparkles size={20} strokeWidth={2.5} />}<span className="text-[9px] font-bold mt-1">AI整頓</span> </button> <div className="w-px h-6 bg-gray-300 mx-1"></div> <div className="relative"> <button onClick={() => setActivePopover(activePopover === 'width' ? null : 'width')} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${activePopover === 'width' ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-200 text-gray-700'}`}> <Scaling size={20} /> <span className="text-[9px] font-bold mt-1">{(currentTool === ToolType.TEXT || currentTool === ToolType.HANDWRITING_TEXT) ? 'ｻｲｽﾞ/太さ' : '太さ'}</span> </button> {activePopover === 'width' && ( <div className="absolute top-full left-0 sm:left-auto sm:right-0 mt-2 bg-white p-4 rounded-xl shadow-xl border border-gray-200 z-50 w-[min(18rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] flex flex-col items-center"> {currentTool === ToolType.HANDWRITING_TEXT ? ( <><span className="text-xs font-bold text-gray-500 mb-2">線の太さ: {lineWidth}px</span><div className="flex gap-1 mb-2">{widthPresets.map((w,idx)=>(<button key={`wp-${idx}`} onClick={() => updateSettings({ lineWidth: w })} className={`px-2 py-1 text-xs rounded-md border ${lineWidth===w ? 'bg-blue-100 border-blue-400 text-blue-700' : 'bg-white border-gray-200 text-gray-600'}`}>{w}px</button>))}</div><div className="grid grid-cols-3 gap-1 mb-2 w-full">{widthPresets.map((w,idx)=>(<input key={`wps-${idx}`} type="range" min="1" max="40" value={w} onChange={(e) => setWidthPresets(prev => prev.map((pv,i)=> i===idx ? parseInt(e.target.value) : pv))} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" />))}</div><input type="range" min="1" max="40" value={lineWidth} onChange={(e) => updateSettings({ lineWidth: parseInt(e.target.value) })} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer mb-4" /><span className="text-xs font-bold text-gray-500 mb-2">変換後の文字サイズ: {fontSize}px</span><input type="range" min="16" max="120" value={fontSize} onChange={(e) => updateSettings({ fontSize: parseInt(e.target.value) })} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" /></> ) : currentTool === ToolType.TEXT ? ( <><span className="text-xs font-bold text-gray-500 mb-2">文字サイズ: {fontSize}px</span><input type="range" min="16" max="120" value={fontSize} onChange={(e) => updateSettings({ fontSize: parseInt(e.target.value) })} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" /></> ) : ( <><span className="text-xs font-bold text-gray-500 mb-2">線の太さ: {lineWidth}px</span><div className="flex gap-1 mb-2">{widthPresets.map((w,idx)=>(<button key={`wp-${idx}`} onClick={() => updateSettings({ lineWidth: w })} className={`px-2 py-1 text-xs rounded-md border ${lineWidth===w ? 'bg-blue-100 border-blue-400 text-blue-700' : 'bg-white border-gray-200 text-gray-600'}`}>{w}px</button>))}</div><div className="grid grid-cols-3 gap-1 mb-2 w-full">{widthPresets.map((w,idx)=>(<input key={`wps-${idx}`} type="range" min="1" max="40" value={w} onChange={(e) => setWidthPresets(prev => prev.map((pv,i)=> i===idx ? parseInt(e.target.value) : pv))} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" />))}</div><input type="range" min="1" max="40" value={lineWidth} onChange={(e) => updateSettings({ lineWidth: parseInt(e.target.value) })} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" /></> )} </div> )} </div> <div className="relative"> <button onClick={() => setActivePopover(activePopover === 'stroke' ? null : 'stroke')} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${activePopover === 'stroke' ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-200 text-gray-700'}`}> <div className="w-5 h-5 rounded-full border-2 border-gray-300 shadow-sm" style={{ backgroundColor: strokeColor }}></div> <span className="text-[10px] font-bold mt-1">線の色</span> </button> {activePopover === 'stroke' && ( <div className="absolute top-full left-1/2 -translate-x-1/2 sm:left-auto sm:right-0 sm:translate-x-0 mt-2 bg-white p-3 rounded-xl shadow-xl border border-gray-200 z-50 w-[min(18rem,calc(100vw-1rem))] grid grid-cols-4 gap-2">{COLORS.map(c => ( <button key={`stroke-${c}`} onClick={() => { updateSettings({ strokeColor: c }); setActivePopover(null); }} className={`w-8 h-8 rounded-full border-2 mx-auto ${strokeColor === c ? 'border-blue-500 scale-110 shadow-md' : 'border-gray-200'}`} style={{ backgroundColor: c }} /> ))}</div> )} </div> <div className="relative"> <button onClick={() => setActivePopover(activePopover === 'fill' ? null : 'fill')} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${activePopover === 'fill' ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-200 text-gray-700'}`}> <div className="w-5 h-5 rounded-full border-2 border-gray-300 shadow-sm flex items-center justify-center bg-gray-50" style={{ backgroundColor: isFillTransparent ? 'transparent' : fillColor }}>{isFillTransparent && <Droplet size={12} className="text-gray-400" />}</div><span className="text-[10px] font-bold mt-1">塗り</span> </button> {activePopover === 'fill' && ( <div className="absolute top-full left-1/2 -translate-x-1/2 sm:left-auto sm:right-0 sm:translate-x-0 mt-2 bg-white p-3 rounded-xl shadow-xl border border-gray-200 z-50 w-[min(18rem,calc(100vw-1rem))] grid grid-cols-4 gap-2"> <button onClick={() => { updateSettings({ isFillTransparent: true }); setActivePopover(null); }} className={`w-8 h-8 rounded-full border-2 mx-auto flex items-center justify-center bg-gray-50 ${isFillTransparent ? 'border-blue-500 scale-110 shadow-md text-blue-500' : 'border-gray-200 text-gray-400'}`}><Droplet size={14} /></button> {COLORS.map(c => ( <button key={`fill-${c}`} onClick={() => { updateSettings({ fillColor: c, isFillTransparent: false }); setActivePopover(null); }} className={`w-8 h-8 rounded-full border-2 mx-auto ${fillColor === c && !isFillTransparent ? 'border-blue-500 scale-110 shadow-md' : 'border-gray-200'}`} style={{ backgroundColor: c }} /> ))} </div> )} </div> <button onClick={() => updateSettings({ textGlow: !textGlow })} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${textGlow ? 'bg-amber-100 text-amber-600' : 'hover:bg-gray-200 text-gray-700'}`}> <Sparkles size={20} strokeWidth={textGlow ? 2.5 : 2} /> <span className="text-[10px] font-bold mt-1">光彩</span> </button> <button onClick={() => setFingerDrawMode(!fingerDrawMode)} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${fingerDrawMode ? 'bg-blue-100 text-blue-600 shadow-inner' : 'hover:bg-gray-200 text-gray-700'}`}> <Hand size={20} /> <span className="text-[9px] font-bold mt-1">指で描く</span> </button>
                 </div>
-                <div className="flex-1 min-w-[8px]"></div>
+                <div className="hidden sm:block flex-1 min-w-[8px]"></div>
                 <div className="flex items-center gap-1"> <button onClick={handlePaste} disabled={clipboard.length === 0} className="p-2 text-blue-600 hover:bg-blue-100 rounded-lg disabled:opacity-30 flex flex-col items-center min-w-[48px]" title="貼り付け (Ctrl+V)"><ClipboardPaste size={20} /><span className="text-[10px] font-bold mt-1">貼付</span></button> <div className="w-px h-6 bg-gray-300 mx-1"></div> <button onClick={() => { if (baseImage) fitImageToViewport(baseImage); }} className="p-2 text-gray-600 hover:bg-gray-200 rounded-lg flex flex-col items-center min-w-[48px]"><RefreshCw size={20} /><span className="text-[10px] font-bold mt-1">表示ﾘｾｯﾄ</span></button> <button onClick={handleUndo} disabled={history.length === 0} className="p-2 text-gray-600 hover:bg-gray-200 rounded-lg disabled:opacity-30 flex flex-col items-center min-w-[48px]" title="元に戻す (Ctrl/Cmd+Z)"><Undo size={20} /><span className="text-[10px] font-bold mt-1">戻す</span></button> <button onClick={handleRedo} disabled={redoStack.length === 0} className="p-2 text-gray-600 hover:bg-gray-200 rounded-lg disabled:opacity-30 flex flex-col items-center min-w-[48px]" title="やり直し (Ctrl/Cmd+Y)"><Redo2 size={20} /><span className="text-[10px] font-bold mt-1">進む</span></button> <button onClick={() => setIsClearConfirmOpen(true)} disabled={annotations.length === 0} className="p-2 text-red-500 hover:bg-red-50 rounded-lg disabled:opacity-30 flex flex-col items-center min-w-[48px]"><Trash2 size={20} /><span className="text-[10px] font-bold mt-1">クリア</span></button> <button onClick={() => { setSelectedIds([]); setTimeout(handleSave, 50); }} disabled={imagesData.length === 0 && !memo} className="p-2 text-blue-700 hover:bg-blue-100 rounded-lg disabled:opacity-30 flex flex-col items-center min-w-[52px] border border-blue-200 bg-blue-50" title="保存"><Save size={20} /><span className="text-[10px] font-bold mt-1">保存</span></button> </div>
               </div>
               {activeImageId && (
-                <div ref={wrapperRef} className="flex-1 overflow-hidden relative flex items-center justify-center p-4 touch-none canvas-container" onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp} onPointerLeave={handlePointerUp} onWheel={handleWheel}>
+                <div ref={wrapperRef} className="flex-1 overflow-hidden relative flex items-center justify-center p-4 touch-none canvas-container" onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp} onPointerLeave={handlePointerUp} onWheel={handleWheel} onAuxClick={(e) => e.preventDefault()}>
                   <button onClick={() => setIsFullscreen(!isFullscreen)} className="absolute top-2 right-2 sm:top-3 sm:right-3 z-40 p-2.5 bg-white/90 backdrop-blur rounded-full shadow-lg text-gray-700 hover:bg-white transition-transform hover:scale-110" title={isFullscreen ? "全画面解除" : "全画面表示"}> {isFullscreen ? <Minimize size={22} /> : <Maximize size={22} />} </button>
                   <div className="absolute top-2 left-2 sm:top-3 sm:left-3 z-40 page-pan-handle px-2 py-1.5 rounded-lg bg-white/90 text-gray-700 border border-gray-200 shadow-md text-xs font-bold cursor-grab active:cursor-grabbing">ページ移動</div>
                   <div className="relative flex items-center justify-center shadow-lg bg-white actual-canvas-wrapper shrink-0" style={{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`, transformOrigin: 'center', width: baseImage ? baseImage.width : 1200, height: baseImage ? baseImage.height : 800 }}>
@@ -2447,14 +2523,14 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                     <canvas ref={canvasRef} className={`absolute inset-0 w-full h-full ${currentTool === ToolType.SELECT || currentTool === ToolType.LASSO ? 'cursor-default' : 'cursor-crosshair'}`} />
                     {textInput && (
                       <div className="absolute z-50 transform -translate-x-1/2 -translate-y-1/2 text-overlay pointer-events-auto" style={{ left: `${(textInput.canvasX / canvasRef.current.width) * 100}%`, top: `${(textInput.canvasY / canvasRef.current.height) * 100}%`, transform: `translate(-50%, -50%) rotate(${textInput.rotation || 0}rad)` }}>
-                        <div className="absolute left-1/2 bottom-full mb-2 bg-white/95 backdrop-blur-sm px-3 py-2 rounded-xl shadow-2xl flex items-center gap-2 border border-gray-200 whitespace-nowrap" style={{ transform: `translateX(-50%) scale(${1 / Math.max(transform.scale, 0.1)})`, transformOrigin: 'bottom center' }} onPointerDown={e => e.stopPropagation()}>
+                        <div className="absolute left-1/2 bottom-full mb-2 bg-white/95 backdrop-blur-sm px-3 py-2 rounded-xl shadow-2xl flex items-center gap-2 border border-gray-200 whitespace-nowrap max-w-[calc(100vw-1rem)] overflow-x-auto" style={{ transform: `translateX(-50%) scale(${1 / Math.max(transform.scale, 0.1)})`, transformOrigin: 'bottom center' }} onPointerDown={e => e.stopPropagation()}>
                           <div className="flex gap-1"> {COLORS.slice(0, 4).map(c => <button key={`ti-${c}`} onClick={() => setStrokeColor(c)} className={`w-6 h-6 rounded-full border shadow-sm ${strokeColor === c ? 'border-blue-500 scale-110' : 'border-gray-200'}`} style={{ backgroundColor: c }} />)} </div> <div className="w-px h-5 bg-gray-300 mx-1" /> <div className="flex flex-col gap-1"> <div className="flex items-center gap-2"><span className="text-xs font-bold text-gray-600">ｻｲｽﾞ</span><input type="range" min="16" max="120" value={fontSize} onChange={e => setFontSize(parseInt(e.target.value))} className="w-20 accent-blue-500" /></div><div className="flex gap-1">{fontPresets.map((fs,idx)=>(<button key={`fp-${idx}`} onClick={() => setFontSize(fs)} className={`px-1.5 py-0.5 text-[10px] rounded border ${fontSize===fs ? 'bg-blue-100 border-blue-400 text-blue-700' : 'bg-white border-gray-200 text-gray-600'}`}>{fs}</button>))}</div><div className="grid grid-cols-3 gap-1">{fontPresets.map((fs,idx)=>(<input key={`fps-${idx}`} type="range" min="16" max="120" value={fs} onChange={(e) => setFontPresets(prev => prev.map((pv,i)=> i===idx ? parseInt(e.target.value) : pv))} className="w-full accent-blue-500 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer" />))}</div></div> <div className="w-px h-5 bg-gray-300 mx-1" /> <button onClick={() => setTextGlow(!textGlow)} className={`p-1.5 rounded-lg flex items-center gap-1 ${textGlow ? 'bg-amber-100 text-amber-600' : 'text-gray-400 hover:bg-gray-100'}`} title="光彩"> <Sparkles size={16} strokeWidth={textGlow ? 2.5 : 2} /> <span className="text-[10px] font-bold">光彩</span> </button> <div className="w-px h-5 bg-gray-300 mx-1" /> <button onClick={handleTextSubmit} className="bg-blue-600 text-white px-4 py-1.5 rounded-lg font-bold text-sm hover:bg-blue-700 shadow-md">確定</button>
                         </div>
-                        <textarea ref={textAreaRef} autoFocus value={textInput.value} onChange={(e) => setTextInput({...textInput, value: e.target.value})} onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleTextSubmit(); } }} onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()} className="p-2 font-bold border-4 border-blue-500 rounded-lg shadow-2xl focus:outline-none bg-transparent text-center resize-none overflow-hidden select-text touch-auto" style={{ color: strokeColor, textShadow: textGlow ? '0 0 10px white, 0 0 10px white, 0 0 10px white' : 'none', minWidth: '200px', width: `${Math.max(200, textInput.value.split('\n').reduce((a,b)=>a.length>b.length?a:b, '').length * fontSize * 1.2 + 40)}px`, fontSize: `${fontSize}px`, lineHeight: 1.2, height: `${Math.max(1, textInput.value.split('\n').length) * fontSize * 1.2 + 32}px`, transformOrigin: 'center center' }} placeholder="文字を入力 (Shift+Enterで改行)" />
+                        <textarea ref={textAreaRef} autoFocus value={textInput.value} onChange={(e) => setTextInput({...textInput, value: e.target.value})} onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleTextSubmit(); } }} onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()} className="p-2 font-bold border-4 border-blue-500 rounded-lg shadow-2xl focus:outline-none bg-transparent text-center resize-none overflow-hidden select-text touch-auto max-w-[calc(100vw-1rem)]" style={{ color: strokeColor, textShadow: textGlow ? '0 0 10px white, 0 0 10px white, 0 0 10px white' : 'none', minWidth: 'min(200px, calc(100vw - 1rem))', width: `${Math.min(Math.max(200, textInput.value.split('\n').reduce((a,b)=>a.length>b.length?a:b, '').length * fontSize * 1.2 + 40), (typeof window !== 'undefined' ? window.innerWidth - 16 : 420))}px`, fontSize: `${fontSize}px`, lineHeight: 1.2, height: `${Math.max(1, textInput.value.split('\n').length) * fontSize * 1.2 + 32}px`, transformOrigin: 'center center' }} placeholder="文字を入力 (Shift+Enterで改行)" />
                       </div>
                     )}
                     {shouldShowSelectionMenu && boundingBoxForMenu && canvasRef.current && (
-                      <div className="absolute z-50 selection-menu flex items-center gap-1 p-1.5 bg-white rounded-xl shadow-2xl border border-gray-200 pointer-events-auto" style={{ left: `${((boundingBoxForMenu.x + boundingBoxForMenu.w/2) / canvasRef.current.width) * 100}%`, top: `${((boundingBoxForMenu.y + boundingBoxForMenu.h + 20) / canvasRef.current.height) * 100}%`, transform: `translateX(-50%) scale(${1 / Math.max(transform.scale, 0.1)})`, transformOrigin: 'top center' }} onPointerDown={(e) => e.stopPropagation()}>
+                      <div className="absolute z-50 selection-menu flex items-center gap-1 p-1.5 bg-white rounded-xl shadow-2xl border border-gray-200 pointer-events-auto max-w-[calc(100vw-1rem)] overflow-x-auto" style={{ left: `${((boundingBoxForMenu.x + boundingBoxForMenu.w/2) / canvasRef.current.width) * 100}%`, top: `${((boundingBoxForMenu.y + boundingBoxForMenu.h + 20) / canvasRef.current.height) * 100}%`, transform: `translateX(-50%) scale(${1 / Math.max(transform.scale, 0.1)})`, transformOrigin: 'top center' }} onPointerDown={(e) => e.stopPropagation()}>
                         {isSingleTextSelected && (() => { const ann = annotations.find(a => a.id === selectedIds[0]); return (<button onClick={(e) => { e.stopPropagation(); setTextInput({ id: ann.id, canvasX: ann.x + (ann.tx || 0), canvasY: ann.y + (ann.ty || 0), value: ann.text, scale: ann.scaleX || ann.scale || 1, rotation: ann.rotation || 0 }); setFontSize(ann.fontSize || 48); setStrokeColor(ann.color || '#000000'); setTextGlow(ann.hasGlow !== undefined ? ann.hasGlow : true); }} className="flex items-center gap-1.5 px-3 py-2 bg-blue-50 text-blue-600 font-bold rounded-lg hover:bg-blue-100 transition whitespace-nowrap"><PenTool size={18} /> 編集</button>); })()}
                         {hasInkSelected && ( <> <button onClick={(e) => { e.stopPropagation(); handleAutoCleanUp(); }} disabled={isCleanUpLoading || isOcrLoading} className={`flex items-center gap-1.5 px-3 py-2 ${isCleanUpLoading ? 'bg-gray-100 text-gray-400' : 'bg-purple-50 text-purple-700 hover:bg-purple-100'} font-bold rounded-lg transition whitespace-nowrap`}>{isCleanUpLoading ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}<span className="hidden sm:inline">{isCleanUpLoading ? (ocrProgress || '処理中...') : 'AI整頓'}</span></button> <button onClick={(e) => { e.stopPropagation(); runOCR(); }} disabled={isCleanUpLoading || isOcrLoading} className={`flex items-center gap-1.5 px-3 py-2 ${isOcrLoading ? 'bg-gray-100 text-gray-400' : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'} font-bold rounded-lg transition whitespace-nowrap`}>{isOcrLoading ? <Loader2 size={18} className="animate-spin" /> : <ScanText size={18} />}<span className="hidden sm:inline">{isOcrLoading ? (ocrProgress || '処理中...') : '自動文字認識'}</span></button> </> )}
                         {isGroupable && <button onClick={(e) => { e.stopPropagation(); handleGroup(); }} className="flex items-center gap-1.5 px-3 py-2 bg-emerald-50 text-emerald-700 font-bold rounded-lg hover:bg-emerald-100 transition whitespace-nowrap" title="グループ化"><Link size={18} /> <span className="hidden sm:inline">グループ</span></button>}
