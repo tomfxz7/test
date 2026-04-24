@@ -25,6 +25,7 @@ const APP_DB_VERSION = 1;
 const APP_DB_STORE = 'app_data';
 const PROJECTS_KEY = 'eval_report_projects';
 const AUTO_BACKUP_CONFIG_KEY = 'eval_report_auto_backup_cfg_v3';
+const AUTO_BACKUP_HANDLES_KEY = 'eval_report_auto_backup_handles_v1';
 const normalizeProjects = (rawProjects) => {
   if (!Array.isArray(rawProjects)) return [];
   return rawProjects.map(p => ({
@@ -631,6 +632,7 @@ export default function App() {
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(true);
   const [projectBackupEnabledMap, setProjectBackupEnabledMap] = useState({});
+  const [projectBackupHasHandleMap, setProjectBackupHasHandleMap] = useState({});
   const [projectLastBackupAtMap, setProjectLastBackupAtMap] = useState({});
   const [backupStatusNow, setBackupStatusNow] = useState(Date.now());
   const autoBackupHandlesRef = useRef({});
@@ -730,6 +732,36 @@ export default function App() {
     }));
   }, [projectBackupEnabledMap]);
 
+  const persistAutoBackupHandles = useCallback(async () => {
+    try {
+      await idbSet(AUTO_BACKUP_HANDLES_KEY, autoBackupHandlesRef.current);
+      setProjectBackupHasHandleMap(Object.keys(autoBackupHandlesRef.current).reduce((acc, projectId) => {
+        acc[projectId] = !!autoBackupHandlesRef.current[projectId];
+        return acc;
+      }, {}));
+    } catch (e) {
+      console.warn('persist auto backup handles failed', e);
+    }
+  }, []);
+
+  useEffect(() => {
+    const loadBackupHandles = async () => {
+      try {
+        const savedHandles = await idbGet(AUTO_BACKUP_HANDLES_KEY);
+        if (savedHandles && typeof savedHandles === 'object') {
+          autoBackupHandlesRef.current = savedHandles;
+          setProjectBackupHasHandleMap(Object.keys(savedHandles).reduce((acc, projectId) => {
+            acc[projectId] = !!savedHandles[projectId];
+            return acc;
+          }, {}));
+        }
+      } catch (e) {
+        console.warn('load auto backup handles failed', e);
+      }
+    };
+    loadBackupHandles();
+  }, []);
+
   const writeAutoBackupNow = useCallback(async (projectId = activeProjectId) => {
     const targetProject = projects.find(p => p.id === projectId);
     if (!targetProject) return false;
@@ -768,6 +800,7 @@ export default function App() {
         types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }]
       });
       autoBackupHandlesRef.current[activeProjectId] = handle;
+      await persistAutoBackupHandles();
       await writeAutoBackupNow(activeProjectId);
     } catch (e) {
       if (e?.name !== 'AbortError') {
@@ -775,7 +808,7 @@ export default function App() {
         alert('バックアップ先の設定に失敗しました。');
       }
     }
-  }, [activeProjectId, projects, writeAutoBackupNow]);
+  }, [activeProjectId, projects, writeAutoBackupNow, persistAutoBackupHandles]);
 
   useEffect(() => {
     if (!isProjectsLoaded || !activeProjectId) return;
@@ -1374,7 +1407,7 @@ export default function App() {
       );
     }
     const projectBackupEnabled = !!projectBackupEnabledMap[project.id];
-    const projectBackupHasHandle = !!autoBackupHandlesRef.current[project.id];
+    const projectBackupHasHandle = !!projectBackupHasHandleMap[project.id];
     const lastProjectBackupAtIso = projectLastBackupAtMap[project.id] || null;
     const lastProjectBackupAt = lastProjectBackupAtIso ? new Date(lastProjectBackupAtIso) : null;
 
