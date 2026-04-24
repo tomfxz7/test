@@ -783,6 +783,9 @@ export default function App() {
     if (!autoBackupHandlesRef.current[activeProjectId]) return;
     writeAutoBackupNow(activeProjectId);
   }, [projects, isProjectsLoaded, activeProjectId, projectBackupEnabledMap, writeAutoBackupNow]);
+    if (!autoBackupEnabled || !isProjectsLoaded || !autoBackupHasHandle) return;
+    writeAutoBackupNow();
+  }, [projects, autoBackupEnabled, autoBackupHasHandle, isProjectsLoaded, writeAutoBackupNow]);
 
   useEffect(() => {
     const t = setInterval(() => setBackupStatusNow(Date.now()), 30000);
