@@ -783,9 +783,6 @@ export default function App() {
     if (!autoBackupHandlesRef.current[activeProjectId]) return;
     writeAutoBackupNow(activeProjectId);
   }, [projects, isProjectsLoaded, activeProjectId, projectBackupEnabledMap, writeAutoBackupNow]);
-    if (!autoBackupEnabled || !isProjectsLoaded || !autoBackupHasHandle) return;
-    writeAutoBackupNow();
-  }, [projects, autoBackupEnabled, autoBackupHasHandle, isProjectsLoaded, writeAutoBackupNow]);
 
   useEffect(() => {
     const t = setInterval(() => setBackupStatusNow(Date.now()), 30000);
@@ -1364,7 +1361,18 @@ export default function App() {
 
   if (currentView === 'project') {
     const project = activeProject;
-    if (!project) return null;
+    if (!project) {
+      return (
+        <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+          <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm text-center">
+            <p className="text-gray-700 font-bold mb-3">プロジェクトが見つかりませんでした。</p>
+            <button onClick={() => setCurrentView('home')} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold">
+              ホームに戻る
+            </button>
+          </div>
+        </div>
+      );
+    }
     const projectBackupEnabled = !!projectBackupEnabledMap[project.id];
     const projectBackupHasHandle = !!autoBackupHandlesRef.current[project.id];
     const lastProjectBackupAtIso = projectLastBackupAtMap[project.id] || null;
@@ -1709,7 +1717,16 @@ export default function App() {
       />
     );
   }
-  return null;
+  return (
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+      <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm text-center">
+        <p className="text-gray-700 font-bold mb-3">表示に失敗しました。</p>
+        <button onClick={() => setCurrentView('home')} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold">
+          ホームに戻る
+        </button>
+      </div>
+    </div>
+  );
 }
 
 // --- Item Editor Component ---
