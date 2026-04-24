@@ -646,7 +646,7 @@ export default function App() {
   const [transferTargetProjectId, setTransferTargetProjectId] = useState('');
   const [transferMode, setTransferMode] = useState('copy');
   const [isExportSettingsOpen, setIsExportSettingsOpen] = useState(false);
-  const [pptxSettings, setPptxSettings] = useState({ showPageNumber: true });
+  const [pptxSettings, setPptxSettings] = useState({ showPageNumber: true, annotationMode: 'pptx' });
   const [pptxPageMode, setPptxPageMode] = useState('all');
   const [pptxSelectedItemIds, setPptxSelectedItemIds] = useState([]);
   const [isExportingPPTX, setIsExportingPPTX] = useState(false);
@@ -904,7 +904,10 @@ export default function App() {
         for (const [i, imgData] of images.entries()) {
             const rect = imageRects[i];
             if (!rect || !imgData.baseImage) continue;
-            const normalizedImage = await normalizeImageForPptx(imgData.baseImage);
+            const imageSrcForSlide = (pptxSettings.annotationMode === 'flatten')
+              ? (imgData.image || imgData.baseImage)
+              : imgData.baseImage;
+            const normalizedImage = await normalizeImageForPptx(imageSrcForSlide);
             const baseW = imgData.baseWidth || normalizedImage.width || 1200;
             const baseH = imgData.baseHeight || normalizedImage.height || 800;
             const fitRatio = Math.min(rect.w / Math.max(1, baseW), rect.h / Math.max(1, baseH));
@@ -913,7 +916,9 @@ export default function App() {
             const drawX = rect.x + (rect.w - drawW) / 2;
             const drawY = rect.y + (rect.h - drawH) / 2;
             slide.addImage({ data: normalizedImage.data, x: drawX, y: drawY, w: drawW, h: drawH });
-            if (imgData.annotations && Array.isArray(imgData.annotations)) { drawAnnotationsOnSlide(slide, pptx, imgData.annotations, drawX, drawY, drawW, drawH, baseW, baseH); }
+            if (pptxSettings.annotationMode === 'pptx' && imgData.annotations && Array.isArray(imgData.annotations)) {
+              drawAnnotationsOnSlide(slide, pptx, imgData.annotations, drawX, drawY, drawW, drawH, baseW, baseH);
+            }
         }
       }
       await pptx.writeFile({ fileName: `${project.title}_export.pptx` });
@@ -1693,6 +1698,29 @@ export default function App() {
                   <input type="checkbox" checked={pptxSettings.showPageNumber} onChange={(e) => setPptxSettings({...pptxSettings, showPageNumber: e.target.checked})} className="w-5 h-5 accent-orange-600 cursor-pointer" />
                   <span className="font-bold text-gray-700">スライド右上に「No.」を表示する</span>
                 </label>
+                <div className="bg-gray-50 p-3 rounded-xl border space-y-2">
+                  <div className="font-bold text-gray-700 mb-1">図形・文字の出力方式</div>
+                  <label className="flex items-start gap-2 text-sm cursor-pointer">
+                    <input
+                      type="radio"
+                      name="pptx-annotation-mode"
+                      checked={pptxSettings.annotationMode === 'pptx'}
+                      onChange={() => setPptxSettings({ ...pptxSettings, annotationMode: 'pptx' })}
+                      className="accent-orange-600 mt-0.5"
+                    />
+                    <span>PowerPoint方式（図形/文字を編集可能）</span>
+                  </label>
+                  <label className="flex items-start gap-2 text-sm cursor-pointer">
+                    <input
+                      type="radio"
+                      name="pptx-annotation-mode"
+                      checked={pptxSettings.annotationMode === 'flatten'}
+                      onChange={() => setPptxSettings({ ...pptxSettings, annotationMode: 'flatten' })}
+                      className="accent-orange-600 mt-0.5"
+                    />
+                    <span>1枚画像として出力（書き込み込み）</span>
+                  </label>
+                </div>
                 <div className="bg-gray-50 p-3 rounded-xl border space-y-2">
                   <div className="font-bold text-gray-700 mb-1">出力ページ</div>
                   <label className="flex items-center gap-2 text-sm cursor-pointer">
