@@ -19,6 +19,8 @@ const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7'
 const APP_VERSION = 'v1.6.6';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
+// Safeguard: provide module-scope transform fallback to avoid runtime ReferenceError in unexpected scopes.
+const transform = { scale: 1, x: 0, y: 0 };
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
