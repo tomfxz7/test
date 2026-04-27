@@ -713,7 +713,7 @@ export default function App() {
     };
 
     loadProjects();
-  }, []);
+  }, [transform.scale]);
 
   useEffect(() => {
     if (!isProjectsLoaded) return;
@@ -736,7 +736,7 @@ export default function App() {
     } catch {
       // ignore invalid config
     }
-  }, []);
+  }, [transform.scale]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -856,7 +856,7 @@ export default function App() {
     });
     map.forEach((item) => ordered.push(item));
     return ordered;
-  }, []);
+  }, [transform.scale]);
 
   const pushReorderUndo = useCallback(() => {
     const currentProject = projects.find(p => p.id === activeProjectId);
@@ -1237,7 +1237,7 @@ export default function App() {
       window.removeEventListener('pointerdown', closeListImageMenu);
       if (listLongPressTimerRef.current) clearTimeout(listLongPressTimerRef.current);
     };
-  }, []);
+  }, [transform.scale]);
 
   const copyListImage = async (src) => {
     try {
@@ -1813,7 +1813,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     if (typeof imgObj.image === 'string' && imgObj.image.trim()) return imgObj.image;
     if (imgObj.image && typeof imgObj.image === 'object' && typeof imgObj.image.src === 'string' && imgObj.image.src.trim()) return imgObj.image.src;
     return '';
-  }, []);
+  }, [transform.scale]);
 
   const [memo, setMemo] = useState(initialItem ? initialItem.memo : '');
   const [imagesData, setImagesData] = useState([]);
@@ -1848,7 +1848,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const transformRef = useRef({ scale: 1, x: 0, y: 0 });
   const setTransform = useCallback((val) => {
     _setTransform(prev => { const next = typeof val === 'function' ? val(prev) : val; transformRef.current = next; return next; });
-  }, []);
+  }, [transform.scale]);
   const fitImageToViewport = useCallback((imgObj) => {
     if (!wrapperRef.current || !imgObj) return;
     const pad = 24;
@@ -1908,7 +1908,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     if (tool === ToolType.TEXT) return 'text';
     if ([ToolType.PEN, ToolType.HANDWRITING_TEXT].includes(tool)) return 'freehand';
     return null;
-  }, []);
+  }, [transform.scale]);
   const [activePopover, setActivePopover] = useState(null); const [textInput, setTextInput] = useState(null); 
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false); const [fingerDrawMode, setFingerDrawMode] = useState(false);
   const [mobileKeyboardInset, setMobileKeyboardInset] = useState(0);
@@ -2066,7 +2066,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     } else {
       thumbDropCentersRef.current = [];
     }
-  }, []);
+  }, [transform.scale]);
 
   const handleThumbDragEnd = useCallback(() => {
     if (thumbDraggedIndex !== null && thumbDropIndex !== null && hasThumbDragMovement && thumbDraggedIndex !== thumbDropIndex) {
@@ -2251,7 +2251,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       window.removeEventListener('pointerdown', closeMenu);
       if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
     };
-  }, []);
+  }, [transform.scale]);
 
   const copyThumbnailImage = async (img) => {
     try {
@@ -2293,7 +2293,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       return newHistory;
     });
     setRedoStack([]);
-  }, []);
+  }, [transform.scale]);
   const handleUndo = useCallback(() => {
     if (history.length > 0) {
       const previous = history[history.length - 1];
