@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.5.6';
+const APP_VERSION = 'v1.6.6';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
@@ -24,7 +24,8 @@ const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
 const APP_DB_STORE = 'app_data';
 const PROJECTS_KEY = 'eval_report_projects';
-const AUTO_BACKUP_CONFIG_KEY = 'eval_report_auto_backup_cfg_v1';
+const AUTO_BACKUP_CONFIG_KEY = 'eval_report_auto_backup_cfg_v3';
+const AUTO_BACKUP_HANDLES_KEY = 'eval_report_auto_backup_handles_v1';
 const normalizeProjects = (rawProjects) => {
   if (!Array.isArray(rawProjects)) return [];
   return rawProjects.map(p => ({
@@ -43,9 +44,9 @@ const normalizeProjects = (rawProjects) => {
   }));
 };
 const DEFAULT_EDITOR_PREFS = {
-  shape: { lineWidth: 4, textGlow: false },
-  text: { fontSize: 48, textGlow: false },
-  freehand: { lineWidth: 4, textGlow: false }
+  shape: { lineWidth: 4, strokeColor: COLORS[0], textGlow: false },
+  text: { fontSize: 48, strokeColor: COLORS[0], textGlow: false, menuScale: 1 },
+  freehand: { lineWidth: 4, strokeColor: COLORS[0], textGlow: false }
 };
 const mergeEditorPrefs = (prefs) => ({
   shape: { ...DEFAULT_EDITOR_PREFS.shape, ...(prefs?.shape || {}) },
@@ -112,6 +113,14 @@ const distToSegment = (p, v, w) => {
   let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
   t = Math.max(0, Math.min(1, t));
   return Math.sqrt(dist2(p, { x: v.x + t * (w.x - v.x), y: v.y + t * (w.y - v.y) }));
+};
+const constrainMoveDelta = (dx, dy) => (Math.abs(dx) >= Math.abs(dy) ? { dx, dy: 0 } : { dx: 0, dy });
+const snapPointByStepAngle = (movingPoint, fixedPoint, stepDeg = 5) => {
+  const angle = Math.atan2(movingPoint.y - fixedPoint.y, movingPoint.x - fixedPoint.x);
+  const step = (Math.PI / 180) * stepDeg;
+  const snapped = Math.round(angle / step) * step;
+  const len = Math.hypot(movingPoint.x - fixedPoint.x, movingPoint.y - fixedPoint.y);
+  return { x: fixedPoint.x + Math.cos(snapped) * len, y: fixedPoint.y + Math.sin(snapped) * len };
 };
 
 const simplifyLine = (points, tolerance) => {
@@ -587,11 +596,15 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
 const LayoutRect = ({ rect, onChange, onDragStart, label, bgImg, isMemo, containerRef }) => {
   const handlePointerDown = (e, mode) => {
     e.stopPropagation(); e.preventDefault(); onDragStart();
+    if (e.currentTarget?.setPointerCapture) {
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
+    }
     const startX = e.clientX, startY = e.clientY, startRect = { ...rect };
     const container = containerRef.current; if (!container) return;
     const cWidth = container.clientWidth, cHeight = container.clientHeight;
 
     const handlePointerMove = (eMove) => {
+      eMove.preventDefault();
       let dx = ((eMove.clientX - startX) / cWidth) * 10, dy = ((eMove.clientY - startY) / cHeight) * 5.625;
       let newRect = { ...startRect };
       if (mode === 'move') { newRect.x += dx; newRect.y += dy; }
@@ -602,24 +615,53 @@ const LayoutRect = ({ rect, onChange, onDragStart, label, bgImg, isMemo, contain
       onChange(newRect);
     };
     const handlePointerUp = () => { document.removeEventListener('pointermove', handlePointerMove); document.removeEventListener('pointerup', handlePointerUp); };
-    document.addEventListener('pointermove', handlePointerMove); document.addEventListener('pointerup', handlePointerUp);
+    document.addEventListener('pointermove', handlePointerMove, { passive: false });
+    document.addEventListener('pointerup', handlePointerUp);
   };
   if (!rect) return null;
   return (
     <div className={`absolute border-2 ${isMemo ? 'border-gray-500 bg-gray-100/80' : 'border-blue-500 bg-blue-100/80'} flex flex-col items-center justify-center cursor-move select-none shadow-sm group backdrop-blur-sm hover:z-10`}
-      style={{ left: `${(rect.x / 10) * 100}%`, top: `${(rect.y / 5.625) * 100}%`, width: `${(rect.w / 10) * 100}%`, height: `${(rect.h / 5.625) * 100}%`, backgroundImage: bgImg ? `url(${bgImg})` : 'none', backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundBlendMode: 'overlay' }}
+      style={{ left: `${(rect.x / 10) * 100}%`, top: `${(rect.y / 5.625) * 100}%`, width: `${(rect.w / 10) * 100}%`, height: `${(rect.h / 5.625) * 100}%`, backgroundImage: bgImg ? `url(${bgImg})` : 'none', backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundBlendMode: 'overlay', touchAction: 'none' }}
       onPointerDown={(e) => handlePointerDown(e, 'move')}>
       <div className={`px-2 py-0.5 text-[10px] font-bold rounded shadow-sm opacity-90 whitespace-nowrap ${isMemo ? 'bg-gray-800 text-white' : 'bg-blue-600 text-white'}`}>{label}</div>
-      <div className="absolute right-[-6px] bottom-[-6px] w-4 h-4 bg-white border-2 border-blue-600 rounded-full cursor-nwse-resize z-10 opacity-0 group-hover:opacity-100 transition-opacity" onPointerDown={(e) => handlePointerDown(e, 'resize-br')} />
-      <div className="absolute right-[-6px] top-1/2 -translate-y-1/2 w-4 h-4 bg-white border-2 border-blue-600 rounded-full cursor-ew-resize z-10 opacity-0 group-hover:opacity-100 transition-opacity" onPointerDown={(e) => handlePointerDown(e, 'resize-r')} />
-      <div className="absolute left-1/2 bottom-[-6px] -translate-x-1/2 w-4 h-4 bg-white border-2 border-blue-600 rounded-full cursor-ns-resize z-10 opacity-0 group-hover:opacity-100 transition-opacity" onPointerDown={(e) => handlePointerDown(e, 'resize-b')} />
+      <div className="absolute right-[-6px] bottom-[-6px] w-4 h-4 bg-white border-2 border-blue-600 rounded-full cursor-nwse-resize z-10 opacity-0 group-hover:opacity-100 transition-opacity" style={{ touchAction: 'none' }} onPointerDown={(e) => handlePointerDown(e, 'resize-br')} />
+      <div className="absolute right-[-6px] top-1/2 -translate-y-1/2 w-4 h-4 bg-white border-2 border-blue-600 rounded-full cursor-ew-resize z-10 opacity-0 group-hover:opacity-100 transition-opacity" style={{ touchAction: 'none' }} onPointerDown={(e) => handlePointerDown(e, 'resize-r')} />
+      <div className="absolute left-1/2 bottom-[-6px] -translate-x-1/2 w-4 h-4 bg-white border-2 border-blue-600 rounded-full cursor-ns-resize z-10 opacity-0 group-hover:opacity-100 transition-opacity" style={{ touchAction: 'none' }} onPointerDown={(e) => handlePointerDown(e, 'resize-b')} />
     </div>
   );
 };
 
 
 // --- Main App Component ---
-export default function App() {
+
+class AppErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, message: '' };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, message: error?.message || 'Unknown error' };
+  }
+  componentDidCatch(error) {
+    console.error('AppErrorBoundary caught:', error);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+          <div className="bg-white border border-red-200 rounded-2xl p-6 shadow-sm text-center max-w-lg">
+            <h1 className="text-xl font-bold text-red-600 mb-2">アプリの表示中にエラーが発生しました</h1>
+            <p className="text-sm text-gray-600 mb-4 break-all">{this.state.message}</p>
+            <button onClick={() => window.location.reload()} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold">再読み込み</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function AppInner() {
   const [projects, setProjects] = useState([]);
   const [isProjectsLoaded, setIsProjectsLoaded] = useState(false);
 
@@ -630,12 +672,12 @@ export default function App() {
   const [newProjectTitle, setNewProjectTitle] = useState('');
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(true);
-  const [autoBackupEnabled, setAutoBackupEnabled] = useState(false);
-  const [autoBackupIntervalMin, setAutoBackupIntervalMin] = useState(10);
-  const [autoBackupHasHandle, setAutoBackupHasHandle] = useState(false);
-  const autoBackupHandleRef = useRef(null);
-  const autoBackupTimerRef = useRef(null);
-  const autoBackupInFlightRef = useRef(false);
+  const [projectBackupEnabledMap, setProjectBackupEnabledMap] = useState({});
+  const [projectBackupHasHandleMap, setProjectBackupHasHandleMap] = useState({});
+  const [projectLastBackupAtMap, setProjectLastBackupAtMap] = useState({});
+  const [backupStatusNow, setBackupStatusNow] = useState(Date.now());
+  const autoBackupHandlesRef = useRef({});
+  const autoBackupInFlightRef = useRef({});
   
   const [reorderUndoHistory, setReorderUndoHistory] = useState([]); // Project page order undo history
   const [reorderRedoHistory, setReorderRedoHistory] = useState([]); // Project page order redo history
@@ -645,7 +687,7 @@ export default function App() {
   const [transferTargetProjectId, setTransferTargetProjectId] = useState('');
   const [transferMode, setTransferMode] = useState('copy');
   const [isExportSettingsOpen, setIsExportSettingsOpen] = useState(false);
-  const [pptxSettings, setPptxSettings] = useState({ showPageNumber: true });
+  const [pptxSettings, setPptxSettings] = useState({ showPageNumber: true, annotationMode: 'pptx' });
   const [pptxPageMode, setPptxPageMode] = useState('all');
   const [pptxSelectedItemIds, setPptxSelectedItemIds] = useState([]);
   const [isExportingPPTX, setIsExportingPPTX] = useState(false);
@@ -718,9 +760,7 @@ export default function App() {
     if (typeof window === 'undefined') return;
     try {
       const raw = JSON.parse(localStorage.getItem(AUTO_BACKUP_CONFIG_KEY) || '{}');
-      setAutoBackupEnabled(!!raw.enabled);
-      const parsedInterval = parseInt(raw.intervalMin, 10);
-      if (Number.isFinite(parsedInterval)) setAutoBackupIntervalMin(Math.max(1, Math.min(120, parsedInterval)));
+      setProjectBackupEnabledMap(raw?.enabledByProject && typeof raw.enabledByProject === 'object' ? raw.enabledByProject : {});
     } catch {
       // ignore invalid config
     }
@@ -729,71 +769,99 @@ export default function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     localStorage.setItem(AUTO_BACKUP_CONFIG_KEY, JSON.stringify({
-      enabled: autoBackupEnabled,
-      intervalMin: autoBackupIntervalMin
+      enabledByProject: projectBackupEnabledMap
     }));
-  }, [autoBackupEnabled, autoBackupIntervalMin]);
+  }, [projectBackupEnabledMap]);
 
-  const writeAutoBackupNow = useCallback(async (notifyOnSuccess = false) => {
-    if (!autoBackupHandleRef.current || autoBackupInFlightRef.current) return false;
-    autoBackupInFlightRef.current = true;
+  const persistAutoBackupHandles = useCallback(async () => {
+    try {
+      await idbSet(AUTO_BACKUP_HANDLES_KEY, autoBackupHandlesRef.current);
+      setProjectBackupHasHandleMap(Object.keys(autoBackupHandlesRef.current).reduce((acc, projectId) => {
+        acc[projectId] = !!autoBackupHandlesRef.current[projectId];
+        return acc;
+      }, {}));
+    } catch (e) {
+      console.warn('persist auto backup handles failed', e);
+    }
+  }, []);
+
+  useEffect(() => {
+    const loadBackupHandles = async () => {
+      try {
+        const savedHandles = await idbGet(AUTO_BACKUP_HANDLES_KEY);
+        if (savedHandles && typeof savedHandles === 'object') {
+          autoBackupHandlesRef.current = savedHandles;
+          setProjectBackupHasHandleMap(Object.keys(savedHandles).reduce((acc, projectId) => {
+            acc[projectId] = !!savedHandles[projectId];
+            return acc;
+          }, {}));
+        }
+      } catch (e) {
+        console.warn('load auto backup handles failed', e);
+      }
+    };
+    loadBackupHandles();
+  }, []);
+
+  const writeAutoBackupNow = useCallback(async (projectId = activeProjectId) => {
+    const targetProject = projects.find(p => p.id === projectId);
+    if (!targetProject) return false;
+    if (!autoBackupHandlesRef.current[projectId] || autoBackupInFlightRef.current[projectId]) return false;
+    autoBackupInFlightRef.current[projectId] = true;
     try {
       const payload = {
-        type: 'project-bundle',
+        type: 'single-project',
         exportedAt: new Date().toISOString(),
-        projects
+        project: targetProject
       };
-      const writable = await autoBackupHandleRef.current.createWritable();
+      const writable = await autoBackupHandlesRef.current[projectId].createWritable();
       await writable.write(JSON.stringify(payload, null, 2));
       await writable.close();
-      if (notifyOnSuccess) alert('自動バックアップ先に保存しました。');
+      setProjectLastBackupAtMap(prev => ({ ...prev, [projectId]: new Date().toISOString() }));
       return true;
     } catch (e) {
       console.warn('auto backup write failed', e);
-      if (notifyOnSuccess) alert('バックアップ保存に失敗しました。保存先を再選択してください。');
       return false;
     } finally {
-      autoBackupInFlightRef.current = false;
+      autoBackupInFlightRef.current[projectId] = false;
     }
-  }, [projects]);
+  }, [projects, activeProjectId]);
 
   const selectAutoBackupDestination = useCallback(async () => {
+    if (!activeProjectId) return;
+    const targetProject = projects.find(p => p.id === activeProjectId);
+    if (!targetProject) return;
     if (typeof window === 'undefined' || !window.showSaveFilePicker) {
       alert('このブラウザは自動バックアップ先のファイル指定に対応していません。');
       return;
     }
     try {
       const handle = await window.showSaveFilePicker({
-        suggestedName: `report_auto_backup_${new Date().toISOString().slice(0, 10)}.json`,
+        suggestedName: `${sanitizeFileName(targetProject.title || 'project')}_auto_backup_${new Date().toISOString().slice(0, 10)}.json`,
         types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }]
       });
-      autoBackupHandleRef.current = handle;
-      setAutoBackupHasHandle(true);
-      await writeAutoBackupNow(true);
+      autoBackupHandlesRef.current[activeProjectId] = handle;
+      await persistAutoBackupHandles();
+      await writeAutoBackupNow(activeProjectId);
     } catch (e) {
       if (e?.name !== 'AbortError') {
         console.warn('select auto backup destination failed', e);
         alert('バックアップ先の設定に失敗しました。');
       }
     }
-  }, [writeAutoBackupNow]);
+  }, [activeProjectId, projects, writeAutoBackupNow, persistAutoBackupHandles]);
 
   useEffect(() => {
-    if (autoBackupTimerRef.current) {
-      clearInterval(autoBackupTimerRef.current);
-      autoBackupTimerRef.current = null;
-    }
-    if (!autoBackupEnabled || !isProjectsLoaded || !autoBackupHasHandle) return;
-    autoBackupTimerRef.current = setInterval(() => {
-      writeAutoBackupNow(false);
-    }, Math.max(1, autoBackupIntervalMin) * 60 * 1000);
-    return () => {
-      if (autoBackupTimerRef.current) {
-        clearInterval(autoBackupTimerRef.current);
-        autoBackupTimerRef.current = null;
-      }
-    };
-  }, [autoBackupEnabled, autoBackupIntervalMin, autoBackupHasHandle, isProjectsLoaded, writeAutoBackupNow]);
+    if (!isProjectsLoaded || !activeProjectId) return;
+    if (!projectBackupEnabledMap[activeProjectId]) return;
+    if (!autoBackupHandlesRef.current[activeProjectId]) return;
+    writeAutoBackupNow(activeProjectId);
+  }, [projects, isProjectsLoaded, activeProjectId, projectBackupEnabledMap, writeAutoBackupNow]);
+
+  useEffect(() => {
+    const t = setInterval(() => setBackupStatusNow(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => { const key = localStorage.getItem('gemini_api_key'); if (key) setApiKeyInput(key); }, []);
   useEffect(() => { if (isGlobalExportOpen) setSelectedExportProjectIds(projects.map(p => p.id)); }, [isGlobalExportOpen, projects]);
@@ -877,7 +945,10 @@ export default function App() {
         for (const [i, imgData] of images.entries()) {
             const rect = imageRects[i];
             if (!rect || !imgData.baseImage) continue;
-            const normalizedImage = await normalizeImageForPptx(imgData.baseImage);
+            const imageSrcForSlide = (pptxSettings.annotationMode === 'flatten')
+              ? (imgData.image || imgData.baseImage)
+              : imgData.baseImage;
+            const normalizedImage = await normalizeImageForPptx(imageSrcForSlide);
             const baseW = imgData.baseWidth || normalizedImage.width || 1200;
             const baseH = imgData.baseHeight || normalizedImage.height || 800;
             const fitRatio = Math.min(rect.w / Math.max(1, baseW), rect.h / Math.max(1, baseH));
@@ -886,7 +957,9 @@ export default function App() {
             const drawX = rect.x + (rect.w - drawW) / 2;
             const drawY = rect.y + (rect.h - drawH) / 2;
             slide.addImage({ data: normalizedImage.data, x: drawX, y: drawY, w: drawW, h: drawH });
-            if (imgData.annotations && Array.isArray(imgData.annotations)) { drawAnnotationsOnSlide(slide, pptx, imgData.annotations, drawX, drawY, drawW, drawH, baseW, baseH); }
+            if (pptxSettings.annotationMode === 'pptx' && imgData.annotations && Array.isArray(imgData.annotations)) {
+              drawAnnotationsOnSlide(slide, pptx, imgData.annotations, drawX, drawY, drawW, drawH, baseW, baseH);
+            }
         }
       }
       await pptx.writeFile({ fileName: `${project.title}_export.pptx` });
@@ -1288,49 +1361,6 @@ export default function App() {
                 保存
               </button>
             </div>
-            <div className="mt-6 pt-5 border-t border-gray-100">
-              <h3 className="text-base font-bold text-gray-800 mb-2">バックアップ設定（ブラウザ外保存）</h3>
-              <p className="text-sm text-gray-500 mb-3">
-                指定したJSONファイルへ定期保存します。ブラウザのデータが消えた場合の保険として使えます（この機能は対応ブラウザでのみ動作）。
-              </p>
-              <div className="flex flex-col md:flex-row md:items-center gap-3">
-                <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
-                  <input
-                    type="checkbox"
-                    checked={autoBackupEnabled}
-                    onChange={(e) => setAutoBackupEnabled(e.target.checked)}
-                  />
-                  自動バックアップを有効化
-                </label>
-                <label className="inline-flex items-center gap-2 text-sm text-gray-700">
-                  間隔(分)
-                  <input
-                    type="number"
-                    min="1"
-                    max="120"
-                    value={autoBackupIntervalMin}
-                    onChange={(e) => setAutoBackupIntervalMin(Math.max(1, Math.min(120, parseInt(e.target.value, 10) || 1)))}
-                    className="w-20 px-2 py-1 border rounded-lg"
-                  />
-                </label>
-                <button
-                  onClick={selectAutoBackupDestination}
-                  className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-bold text-sm"
-                >
-                  保存先ファイルを選択
-                </button>
-                <button
-                  onClick={() => writeAutoBackupNow(true)}
-                  disabled={!autoBackupHasHandle}
-                  className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-bold text-sm disabled:opacity-40"
-                >
-                  今すぐバックアップ
-                </button>
-              </div>
-              <p className="text-xs text-gray-500 mt-2">
-                保存先: {autoBackupHasHandle ? '設定済み（このタブを開いている間有効）' : '未設定'}
-              </p>
-            </div>
             <p className="text-xs text-gray-500 mt-3">アプリバージョン: <span className="font-semibold text-gray-700">{APP_VERSION}</span></p>
           </section>
         )}
@@ -1410,7 +1440,22 @@ export default function App() {
 
   if (currentView === 'project') {
     const project = activeProject;
-    if (!project) return null;
+    if (!project) {
+      return (
+        <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+          <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm text-center">
+            <p className="text-gray-700 font-bold mb-3">プロジェクトが見つかりませんでした。</p>
+            <button onClick={() => setCurrentView('home')} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold">
+              ホームに戻る
+            </button>
+          </div>
+        </div>
+      );
+    }
+    const projectBackupEnabled = !!projectBackupEnabledMap[project.id];
+    const projectBackupHasHandle = !!projectBackupHasHandleMap[project.id];
+    const lastProjectBackupAtIso = projectLastBackupAtMap[project.id] || null;
+    const lastProjectBackupAt = lastProjectBackupAtIso ? new Date(lastProjectBackupAtIso) : null;
 
     return (
       <div className="min-h-screen bg-gray-50 font-sans print:bg-white select-none">
@@ -1461,6 +1506,41 @@ export default function App() {
             <h1 className="text-4xl font-bold text-black">{project.title}</h1>
             <p className="text-gray-500 mt-2">作成日: {new Date(project.createdAt).toLocaleDateString()}</p>
           </div>
+          <section className="mb-6 bg-white border border-gray-200 rounded-2xl p-5 shadow-sm print:hidden">
+            <h3 className="text-base font-bold text-gray-800 mb-2">このプロジェクトのバックアップ設定（ブラウザ外保存）</h3>
+            <p className="text-sm text-gray-500 mb-3">
+              このプロジェクトのページ内容が保存されるたびに、指定したJSONファイルへ最新版を書き出します。
+            </p>
+            <div className="flex flex-col md:flex-row md:items-center gap-3">
+              <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={projectBackupEnabled}
+                  onChange={(e) => setProjectBackupEnabledMap(prev => ({ ...prev, [project.id]: e.target.checked }))}
+                />
+                このプロジェクトの自動バックアップを有効化
+              </label>
+              <button
+                onClick={selectAutoBackupDestination}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-bold text-sm"
+              >
+                保存先ファイルを選択
+              </button>
+              <button
+                onClick={() => writeAutoBackupNow(project.id)}
+                disabled={!projectBackupHasHandle}
+                className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-bold text-sm disabled:opacity-40"
+              >
+                今すぐバックアップ
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mt-2">
+              保存先: {projectBackupHasHandle ? '設定済み（このタブを開いている間有効）' : '未設定'}
+            </p>
+            <p className="text-xs text-gray-500 mt-1">
+              最新版保存: {lastProjectBackupAt ? `${Math.max(0, Math.floor((backupStatusNow - lastProjectBackupAt.getTime()) / 60000))}分前` : 'まだ保存されていません'}
+            </p>
+          </section>
 
           <div className="relative space-y-4">
             {project.items.map((item, index) => {
@@ -1660,6 +1740,29 @@ export default function App() {
                   <span className="font-bold text-gray-700">スライド右上に「No.」を表示する</span>
                 </label>
                 <div className="bg-gray-50 p-3 rounded-xl border space-y-2">
+                  <div className="font-bold text-gray-700 mb-1">図形・文字の出力方式</div>
+                  <label className="flex items-start gap-2 text-sm cursor-pointer">
+                    <input
+                      type="radio"
+                      name="pptx-annotation-mode"
+                      checked={pptxSettings.annotationMode === 'pptx'}
+                      onChange={() => setPptxSettings({ ...pptxSettings, annotationMode: 'pptx' })}
+                      className="accent-orange-600 mt-0.5"
+                    />
+                    <span>PowerPoint方式（図形/文字を編集可能）</span>
+                  </label>
+                  <label className="flex items-start gap-2 text-sm cursor-pointer">
+                    <input
+                      type="radio"
+                      name="pptx-annotation-mode"
+                      checked={pptxSettings.annotationMode === 'flatten'}
+                      onChange={() => setPptxSettings({ ...pptxSettings, annotationMode: 'flatten' })}
+                      className="accent-orange-600 mt-0.5"
+                    />
+                    <span>1枚画像として出力（書き込み込み）</span>
+                  </label>
+                </div>
+                <div className="bg-gray-50 p-3 rounded-xl border space-y-2">
                   <div className="font-bold text-gray-700 mb-1">出力ページ</div>
                   <label className="flex items-center gap-2 text-sm cursor-pointer">
                     <input type="radio" name="pptx-pages" checked={pptxPageMode === 'all'} onChange={() => { setPptxPageMode('all'); setPptxSelectedItemIds(project.items.map(it => it.id)); }} className="accent-orange-600" />
@@ -1716,7 +1819,16 @@ export default function App() {
       />
     );
   }
-  return null;
+  return (
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+      <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm text-center">
+        <p className="text-gray-700 font-bold mb-3">表示に失敗しました。</p>
+        <button onClick={() => setCurrentView('home')} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold">
+          ホームに戻る
+        </button>
+      </div>
+    </div>
+  );
 }
 
 // --- Item Editor Component ---
@@ -1786,6 +1898,11 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     return Number.isFinite(cached) ? Math.max(1, Math.min(40, cached)) : mergedPrefs.freehand.lineWidth;
   });
   const [fontSize, setFontSize] = useState(mergedPrefs.text.fontSize);
+  const [textMenuScale, setTextMenuScale] = useState(() => {
+    const raw = Number(mergedPrefs?.text?.menuScale);
+    if (!Number.isFinite(raw)) return 1;
+    return Math.max(0.7, Math.min(1.8, raw));
+  });
   const [widthPresets, setWidthPresets] = useState(() => {
     if (typeof window === 'undefined') return [2, 6, 12];
     try {
@@ -1802,13 +1919,16 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       return arr.length === 3 ? arr : [24, 48, 72];
     } catch { return [24, 48, 72]; }
   });
-  const [strokeColor, setStrokeColor] = useState(COLORS[0]); const [fillColor, setFillColor] = useState(COLORS[1]);
+  const [widthPresetDrafts, setWidthPresetDrafts] = useState(() => widthPresets.map(v => String(v)));
+  const [fontPresetDrafts, setFontPresetDrafts] = useState(() => fontPresets.map(v => String(v)));
+  const [textFontSizeDraft, setTextFontSizeDraft] = useState(() => String(mergedPrefs.text.fontSize));
+  const [strokeColor, setStrokeColor] = useState(mergedPrefs.freehand.strokeColor || COLORS[0]); const [fillColor, setFillColor] = useState(COLORS[1]);
   const [isFillTransparent, setIsFillTransparent] = useState(true); const [textGlow, setTextGlow] = useState(mergedPrefs.freehand.textGlow);
   const toolSettingsRef = useRef({
-    [ToolType.PEN]: { lineWidth: mergedPrefs.freehand.lineWidth, strokeColor: COLORS[0], textGlow: mergedPrefs.freehand.textGlow }, [ToolType.HANDWRITING_TEXT]: { lineWidth: mergedPrefs.freehand.lineWidth, fontSize: mergedPrefs.text.fontSize, strokeColor: COLORS[0], textGlow: mergedPrefs.freehand.textGlow },
-    [ToolType.TEXT]: { fontSize: mergedPrefs.text.fontSize, strokeColor: COLORS[0], textGlow: mergedPrefs.text.textGlow }, [ToolType.LINE]: { lineWidth: mergedPrefs.shape.lineWidth, strokeColor: COLORS[0], textGlow: mergedPrefs.shape.textGlow },
-    [ToolType.ARROW]: { lineWidth: mergedPrefs.shape.lineWidth, strokeColor: COLORS[0], textGlow: mergedPrefs.shape.textGlow }, [ToolType.RECT]: { lineWidth: mergedPrefs.shape.lineWidth, strokeColor: COLORS[0], fillColor: COLORS[1], isFillTransparent: true, textGlow: mergedPrefs.shape.textGlow },
-    [ToolType.CIRCLE]: { lineWidth: mergedPrefs.shape.lineWidth, strokeColor: COLORS[0], fillColor: COLORS[1], isFillTransparent: true, textGlow: mergedPrefs.shape.textGlow }, [ToolType.ERASER_PIXEL]: { lineWidth: 20 },
+    [ToolType.PEN]: { lineWidth: mergedPrefs.freehand.lineWidth, strokeColor: mergedPrefs.freehand.strokeColor || COLORS[0], textGlow: mergedPrefs.freehand.textGlow }, [ToolType.HANDWRITING_TEXT]: { lineWidth: mergedPrefs.freehand.lineWidth, fontSize: mergedPrefs.text.fontSize, strokeColor: mergedPrefs.freehand.strokeColor || COLORS[0], textGlow: mergedPrefs.freehand.textGlow },
+    [ToolType.TEXT]: { fontSize: mergedPrefs.text.fontSize, strokeColor: mergedPrefs.text.strokeColor || COLORS[0], textGlow: mergedPrefs.text.textGlow }, [ToolType.LINE]: { lineWidth: mergedPrefs.shape.lineWidth, strokeColor: mergedPrefs.shape.strokeColor || COLORS[0], textGlow: mergedPrefs.shape.textGlow },
+    [ToolType.ARROW]: { lineWidth: mergedPrefs.shape.lineWidth, strokeColor: mergedPrefs.shape.strokeColor || COLORS[0], textGlow: mergedPrefs.shape.textGlow }, [ToolType.RECT]: { lineWidth: mergedPrefs.shape.lineWidth, strokeColor: mergedPrefs.shape.strokeColor || COLORS[0], fillColor: COLORS[1], isFillTransparent: true, textGlow: mergedPrefs.shape.textGlow },
+    [ToolType.CIRCLE]: { lineWidth: mergedPrefs.shape.lineWidth, strokeColor: mergedPrefs.shape.strokeColor || COLORS[0], fillColor: COLORS[1], isFillTransparent: true, textGlow: mergedPrefs.shape.textGlow }, [ToolType.ERASER_PIXEL]: { lineWidth: 20 },
   });
   const projectPrefsRef = useRef(mergedPrefs);
   const getPrefsGroup = useCallback((tool) => {
@@ -1819,6 +1939,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   }, []);
   const [activePopover, setActivePopover] = useState(null); const [textInput, setTextInput] = useState(null); 
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false); const [fingerDrawMode, setFingerDrawMode] = useState(false);
+  const [mobileKeyboardInset, setMobileKeyboardInset] = useState(0);
   const [selectedIds, setSelectedIds] = useState([]); const [lassoPoints, setLassoPoints] = useState([]); 
   const [isOcrLoading, setIsOcrLoading] = useState(false); const [isCleanUpLoading, setIsCleanUpLoading] = useState(false);
   const [ocrProgress, setOcrProgress] = useState(''); const [errorMessage, setErrorMessage] = useState('');
@@ -1828,9 +1949,27 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const annotationsRef = useRef(annotations); useEffect(() => { annotationsRef.current = annotations; }, [annotations]);
   const textInputRef = useRef(textInput); useEffect(() => { textInputRef.current = textInput; }, [textInput]);
   const textAreaRef = useRef(null);
+  const typingScrollYRef = useRef(0);
   const handwritingTimerRef = useRef(null); const handwritingStrokesRef = useRef([]); const [isAutoOcrLoading, setIsAutoOcrLoading] = useState(false);
   const clipboardReadInFlightRef = useRef(false);
   const lastPasteEventAtRef = useRef(0);
+  const lastImageInsertAtRef = useRef(0);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.visualViewport) return;
+    const vv = window.visualViewport;
+    const updateInset = () => {
+      const inset = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+      setMobileKeyboardInset(inset);
+    };
+    updateInset();
+    vv.addEventListener('resize', updateInset);
+    vv.addEventListener('scroll', updateInset);
+    return () => {
+      vv.removeEventListener('resize', updateInset);
+      vv.removeEventListener('scroll', updateInset);
+    };
+  }, []);
 
   useEffect(() => {
     if (initialItem && initialItem.images) {
@@ -1854,7 +1993,8 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                 },
                 annotations: img.annotations || [],
                 history: [],
-                redoHistory: []
+                redoHistory: [],
+                finalImage: img.finalImage || baseSrc
               });
             };
             imageElement.src = baseSrc;
@@ -2013,8 +2153,8 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       reader.onload = (event) => {
         const img = new Image();
         img.onload = () => {
-          let { width, height } = img; const MAX_SIZE = 1600;
-          if (width > MAX_SIZE || height > MAX_SIZE) { if (width > height) { height = Math.round((height * MAX_SIZE) / width); width = MAX_SIZE; } else { width = Math.round((width * MAX_SIZE) / height); height = MAX_SIZE; } }
+          const width = img.naturalWidth || img.width;
+          const height = img.naturalHeight || img.height;
           const newImgData = { id: 'img_' + Date.now() + Math.random(), baseImage: { src: event.target.result, element: img, width, height }, annotations: [], history: [], redoHistory: [] };
           setImagesData(prev => { const next = [...prev, newImgData]; if (next.length === 1 && !activeImageId) { setTimeout(() => { setBaseImage(newImgData.baseImage); setAnnotations([]); setHistory([]); setRedoStack([]); setActiveImageId(newImgData.id); setSelectedIds([]); fitImageToViewport(newImgData.baseImage); }, 0); } return next; });
         }; img.src = event.target.result;
@@ -2039,7 +2179,10 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
           files.push(new File([blob], `clipboard-${Date.now()}.png`, { type: imageType }));
         }
         if (files.length > 0) {
+          const now = Date.now();
+          if (now - lastImageInsertAtRef.current < 500) return true;
           addImagesFromFiles(files);
+          lastImageInsertAtRef.current = now;
           return true;
         }
         if (attempt < maxAttempts - 1) await new Promise(r => setTimeout(r, waitMs));
@@ -2060,13 +2203,49 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       const imageFiles = [];
       if (items) {
         for (let i = 0; i < items.length; i++) {
-          if (items[i].type.indexOf('image') !== -1) imageFiles.push(items[i].getAsFile());
+          if (items[i].type.indexOf('image') !== -1) {
+            const file = items[i].getAsFile();
+            if (file) imageFiles.push(file);
+          }
         }
       }
+      const fallbackFiles = e.clipboardData?.files ? Array.from(e.clipboardData.files).filter(f => f && f.type?.startsWith('image/')) : [];
+      if (fallbackFiles.length > 0) imageFiles.push(...fallbackFiles);
       if (imageFiles.length > 0) {
         e.preventDefault();
         addImagesFromFiles(imageFiles);
+        lastImageInsertAtRef.current = Date.now();
         return;
+      }
+      const html = e.clipboardData?.getData?.('text/html') || '';
+      const dataUriMatches = html.match(/src=(['"])(data:image\/[^'"]+)\1/gi) || [];
+      if (dataUriMatches.length > 0) {
+        const dataUriFiles = [];
+        for (let matchIndex = 0; matchIndex < dataUriMatches.length; matchIndex++) {
+          const match = dataUriMatches[matchIndex];
+          const src = match.replace(/^src=(['"])/i, '').replace(/['"]$/i, '');
+          const commaIdx = src.indexOf(',');
+          if (commaIdx < 0) continue;
+          const meta = src.slice(0, commaIdx);
+          const b64 = src.slice(commaIdx + 1);
+          const mimeMatch = meta.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64$/i);
+          if (!mimeMatch) continue;
+          try {
+            const mime = mimeMatch[1].toLowerCase();
+            const binary = atob(b64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            dataUriFiles.push(new File([bytes], `clipboard-html-${Date.now()}-${matchIndex}.${mime.includes('png') ? 'png' : 'jpg'}`, { type: mime }));
+          } catch (_err) {
+            // ignore broken/unsupported data URLs
+          }
+        }
+        if (dataUriFiles.length > 0) {
+          e.preventDefault();
+          addImagesFromFiles(dataUriFiles);
+          lastImageInsertAtRef.current = Date.now();
+          return;
+        }
       }
       const readViaAPI = await readImagesFromClipboardAPI();
       if (readViaAPI) e.preventDefault();
@@ -2081,7 +2260,9 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       if (document.activeElement.tagName === 'TEXTAREA' || document.activeElement.tagName === 'INPUT') return;
       // iPadでpasteイベントが来ないケースのみフォールバック読み取り
       setTimeout(() => {
-        if (Date.now() - lastPasteEventAtRef.current > 160) readImagesFromClipboardAPI({ waitForPermission: true });
+        if (Date.now() - lastPasteEventAtRef.current > 450 && Date.now() - lastImageInsertAtRef.current > 500) {
+          readImagesFromClipboardAPI({ waitForPermission: true });
+        }
       }, 180);
     };
     window.addEventListener('keydown', handlePasteShortcut);
@@ -2176,26 +2357,38 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     if (typeof window === 'undefined') return;
     localStorage.setItem(PRESET_CACHE_KEY, JSON.stringify({ widthPresets, fontPresets }));
   }, [widthPresets, fontPresets]);
+  useEffect(() => {
+    setWidthPresetDrafts(widthPresets.map(v => String(v)));
+  }, [widthPresets]);
+  useEffect(() => {
+    setFontPresetDrafts(fontPresets.map(v => String(v)));
+  }, [fontPresets]);
+  useEffect(() => {
+    setTextFontSizeDraft(String(fontSize));
+  }, [fontSize]);
   const updateSettings = useCallback((updatesObj) => {
-    if (updatesObj.lineWidth !== undefined) setLineWidth(updatesObj.lineWidth); if (updatesObj.fontSize !== undefined) setFontSize(updatesObj.fontSize); if (updatesObj.strokeColor !== undefined) setStrokeColor(updatesObj.strokeColor); if (updatesObj.fillColor !== undefined) setFillColor(updatesObj.fillColor); if (updatesObj.isFillTransparent !== undefined) setIsFillTransparent(updatesObj.isFillTransparent); if (updatesObj.textGlow !== undefined) setTextGlow(updatesObj.textGlow); if (currentTool !== ToolType.SELECT && currentTool !== ToolType.LASSO && toolSettingsRef.current[currentTool]) Object.assign(toolSettingsRef.current[currentTool], updatesObj);
+    if (updatesObj.lineWidth !== undefined) setLineWidth(updatesObj.lineWidth); if (updatesObj.fontSize !== undefined) setFontSize(updatesObj.fontSize); if (updatesObj.strokeColor !== undefined) setStrokeColor(updatesObj.strokeColor); if (updatesObj.fillColor !== undefined) setFillColor(updatesObj.fillColor); if (updatesObj.isFillTransparent !== undefined) setIsFillTransparent(updatesObj.isFillTransparent); if (updatesObj.textGlow !== undefined) setTextGlow(updatesObj.textGlow); if (updatesObj.menuScale !== undefined) setTextMenuScale(Math.max(0.7, Math.min(1.8, updatesObj.menuScale))); if (currentTool !== ToolType.SELECT && currentTool !== ToolType.LASSO && toolSettingsRef.current[currentTool]) Object.assign(toolSettingsRef.current[currentTool], updatesObj);
     const group = getPrefsGroup(currentTool);
     if (group) {
-      projectPrefsRef.current[group] = { ...projectPrefsRef.current[group], ...(updatesObj.lineWidth !== undefined ? { lineWidth: updatesObj.lineWidth } : {}), ...(updatesObj.textGlow !== undefined ? { textGlow: updatesObj.textGlow } : {}), ...(updatesObj.fontSize !== undefined ? { fontSize: updatesObj.fontSize } : {}) };
+      projectPrefsRef.current[group] = { ...projectPrefsRef.current[group], ...(updatesObj.lineWidth !== undefined ? { lineWidth: updatesObj.lineWidth } : {}), ...(updatesObj.strokeColor !== undefined ? { strokeColor: updatesObj.strokeColor } : {}), ...(updatesObj.textGlow !== undefined ? { textGlow: updatesObj.textGlow } : {}), ...(updatesObj.fontSize !== undefined ? { fontSize: updatesObj.fontSize } : {}), ...(updatesObj.menuScale !== undefined ? { menuScale: Math.max(0.7, Math.min(1.8, updatesObj.menuScale)) } : {}) };
       if (group === 'shape') {
         [ToolType.LINE, ToolType.ARROW, ToolType.RECT, ToolType.CIRCLE].forEach(t => {
           if (!toolSettingsRef.current[t]) return;
           if (updatesObj.lineWidth !== undefined) toolSettingsRef.current[t].lineWidth = updatesObj.lineWidth;
+          if (updatesObj.strokeColor !== undefined) toolSettingsRef.current[t].strokeColor = updatesObj.strokeColor;
           if (updatesObj.textGlow !== undefined) toolSettingsRef.current[t].textGlow = updatesObj.textGlow;
         });
       } else if (group === 'text') {
         if (toolSettingsRef.current[ToolType.TEXT]) {
           if (updatesObj.fontSize !== undefined) toolSettingsRef.current[ToolType.TEXT].fontSize = updatesObj.fontSize;
+          if (updatesObj.strokeColor !== undefined) toolSettingsRef.current[ToolType.TEXT].strokeColor = updatesObj.strokeColor;
           if (updatesObj.textGlow !== undefined) toolSettingsRef.current[ToolType.TEXT].textGlow = updatesObj.textGlow;
         }
       } else if (group === 'freehand') {
         [ToolType.PEN, ToolType.HANDWRITING_TEXT].forEach(t => {
           if (!toolSettingsRef.current[t]) return;
           if (updatesObj.lineWidth !== undefined) toolSettingsRef.current[t].lineWidth = updatesObj.lineWidth;
+          if (updatesObj.strokeColor !== undefined) toolSettingsRef.current[t].strokeColor = updatesObj.strokeColor;
           if (updatesObj.textGlow !== undefined) toolSettingsRef.current[t].textGlow = updatesObj.textGlow;
         });
       }
@@ -2210,6 +2403,20 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     const pasted = clipboard.map(ann => { const newId = Date.now().toString() + Math.random().toString(36).substring(2, 9); newIds.push(newId); const offset = 30; const newAnn = JSON.parse(JSON.stringify(ann)); newAnn.id = newId; if (newAnn.groupId) { if (!newGroupIdMapping[newAnn.groupId]) newGroupIdMapping[newAnn.groupId] = 'grp_' + Date.now() + Math.random().toString(36).substring(2, 9); newAnn.groupId = newGroupIdMapping[newAnn.groupId]; } if (['pen', 'handwriting_text', 'eraser_pixel', 'polyline', 'polygon'].includes(newAnn.type)) { if (newAnn.points) newAnn.points = newAnn.points.map(p => ({ x: p.x + offset, y: p.y + offset })); } else if (newAnn.type === 'text') { newAnn.x += offset; newAnn.y += offset; } else { if (newAnn.startX !== undefined) newAnn.startX += offset; if (newAnn.startY !== undefined) newAnn.startY += offset; if (newAnn.endX !== undefined) newAnn.endX += offset; if (newAnn.endY !== undefined) newAnn.endY += offset; if (newAnn.midX !== undefined) newAnn.midX += offset; if (newAnn.midY !== undefined) newAnn.midY += offset; } if(newAnn.tx !== undefined) newAnn.tx += offset; if(newAnn.ty !== undefined) newAnn.ty += offset; return newAnn; });
     setAnnotations(prev => [...prev, ...pasted]); setSelectedIds(newIds); setClipboard(pasted); if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true);
   }, [clipboard, pushHistory, handleToolChange]);
+  const duplicateAnnotationsForDrag = useCallback((targetIds) => {
+    const source = annotationsRef.current.filter(a => targetIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a)));
+    const newGroupIdMapping = {};
+    const duplicated = source.map((ann) => {
+      const newAnn = JSON.parse(JSON.stringify(ann));
+      newAnn.id = Date.now().toString() + Math.random().toString(36).substring(2, 9);
+      if (newAnn.groupId) {
+        if (!newGroupIdMapping[newAnn.groupId]) newGroupIdMapping[newAnn.groupId] = 'grp_' + Date.now() + Math.random().toString(36).substring(2, 9);
+        newAnn.groupId = newGroupIdMapping[newAnn.groupId];
+      }
+      return newAnn;
+    });
+    return { duplicated, ids: duplicated.map(a => a.id) };
+  }, []);
 
   const handleGroup = () => { const newGroupId = 'grp_' + Date.now() + Math.random().toString(36).substring(2, 9); pushHistory(annotationsRef.current); setAnnotations(prev => prev.map(a => selectedIds.includes(a.id) ? { ...a, groupId: newGroupId } : a)); };
   const handleUngroup = () => { pushHistory(annotationsRef.current); setAnnotations(prev => prev.map(a => selectedIds.includes(a.id) ? { ...a, groupId: undefined } : a)); };
@@ -2343,31 +2550,31 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
 
   const getCanvasPos = (clientX, clientY) => { const canvas = canvasRef.current; const rect = canvas.getBoundingClientRect(); return { x: (clientX - rect.left) * (canvas.width / rect.width), y: (clientY - rect.top) * (canvas.height / rect.height) }; };
   const checkHandleHit = (px, py, ann) => {
-    const hs = 20; if (['arrow', 'line', 'curve', 'curve_arrow', 'polyline', 'double_arrow', 'double_curve_arrow', 'polygon'].includes(ann.type)) { if (['polyline', 'polygon'].includes(ann.type)) { for (let i = 0; i < ann.points.length; i++) if (Math.hypot(px - ann.points[i].x, py - ann.points[i].y) < hs) return `poly_${i}`; const threshold = Math.max((ann.width || 4) / 2 + 10, 15); for (let i = 0; i < ann.points.length - 1; i++) if (distToSegment({x: px, y: py}, ann.points[i], ann.points[i+1]) < threshold) return 'move'; return null; } if (Math.hypot(px - ann.startX, py - ann.startY) < hs) return 'start'; if (Math.hypot(px - ann.endX, py - ann.endY) < hs) return 'end'; if (ann.midX !== undefined && Math.hypot(px - ann.midX, py - ann.midY) < hs) return 'mid'; const threshold = Math.max((ann.width || 4) / 2 + 10, 15); if (ann.midX !== undefined) { if (distToSegment({x: px, y: py}, {x: ann.startX, y: ann.startY}, {x: ann.midX, y: ann.midY}) < threshold || distToSegment({x: px, y: py}, {x: ann.midX, y: ann.midY}, {x: ann.endX, y: ann.endY}) < threshold) return 'move'; } else { if (distToSegment({x: px, y: py}, {x: ann.startX, y: ann.startY}, {x: ann.endX, y: ann.endY}) < threshold) return 'move'; } return null; }
-    const bbox = getBBox(ann); if (!bbox) return null; const check = (hx, hy, type) => { const p = transformPoint(hx, hy, ann); if (Math.hypot(px - p.x, py - p.y) < hs) return type; return null; }; let hit = null; const pt = transformPoint(bbox.x + bbox.w/2, bbox.y, ann); const rotAngle = (ann.rotation || 0) - Math.PI/2; if (Math.hypot(px - (pt.x + 30 * Math.cos(rotAngle)), py - (pt.y + 30 * Math.sin(rotAngle))) < hs) return 'rotate'; hit = check(bbox.x, bbox.y, 'tl'); if (hit) return hit; hit = check(bbox.x + bbox.w, bbox.y, 'tr'); if (hit) return hit; hit = check(bbox.x, bbox.y + bbox.h, 'bl'); if (hit) return hit; hit = check(bbox.x + bbox.w, bbox.y + bbox.h, 'br'); if (hit) return hit; hit = check(bbox.x + bbox.w/2, bbox.y, 't'); if (hit) return hit; hit = check(bbox.x + bbox.w/2, bbox.y + bbox.h, 'b'); if (hit) return hit; hit = check(bbox.x, bbox.y + bbox.h/2, 'l'); if (hit) return hit; hit = check(bbox.x + bbox.w, bbox.y + bbox.h/2, 'r'); if (hit) return hit; const lp = inverseTransformPoint(px, py, ann); if (lp.x >= bbox.x - 10 && lp.x <= bbox.x + bbox.w + 10 && lp.y >= bbox.y - 10 && lp.y <= bbox.y + bbox.h + 10) return 'move'; return null;
+    const hs = 30; if (['arrow', 'line', 'curve', 'curve_arrow', 'polyline', 'double_arrow', 'double_curve_arrow', 'polygon'].includes(ann.type)) { if (['polyline', 'polygon'].includes(ann.type)) { for (let i = 0; i < ann.points.length; i++) if (Math.hypot(px - ann.points[i].x, py - ann.points[i].y) < hs) return `poly_${i}`; const threshold = Math.max((ann.width || 4) / 2 + 18, 24); for (let i = 0; i < ann.points.length - 1; i++) if (distToSegment({x: px, y: py}, ann.points[i], ann.points[i+1]) < threshold) return 'move'; return null; } if (Math.hypot(px - ann.startX, py - ann.startY) < hs) return 'start'; if (Math.hypot(px - ann.endX, py - ann.endY) < hs) return 'end'; if (ann.midX !== undefined && Math.hypot(px - ann.midX, py - ann.midY) < hs) return 'mid'; const threshold = Math.max((ann.width || 4) / 2 + 18, 24); if (ann.midX !== undefined) { if (distToSegment({x: px, y: py}, {x: ann.startX, y: ann.startY}, {x: ann.midX, y: ann.midY}) < threshold || distToSegment({x: px, y: py}, {x: ann.midX, y: ann.midY}, {x: ann.endX, y: ann.endY}) < threshold) return 'move'; } else { if (distToSegment({x: px, y: py}, {x: ann.startX, y: ann.startY}, {x: ann.endX, y: ann.endY}) < threshold) return 'move'; } return null; }
+    const bbox = getBBox(ann); if (!bbox) return null; const check = (hx, hy, type) => { const p = transformPoint(hx, hy, ann); if (Math.hypot(px - p.x, py - p.y) < hs) return type; return null; }; let hit = null; const pt = transformPoint(bbox.x + bbox.w/2, bbox.y, ann); const rotAngle = (ann.rotation || 0) - Math.PI/2; if (Math.hypot(px - (pt.x + 36 * Math.cos(rotAngle)), py - (pt.y + 36 * Math.sin(rotAngle))) < hs * 1.25) return 'rotate'; hit = check(bbox.x, bbox.y, 'tl'); if (hit) return hit; hit = check(bbox.x + bbox.w, bbox.y, 'tr'); if (hit) return hit; hit = check(bbox.x, bbox.y + bbox.h, 'bl'); if (hit) return hit; hit = check(bbox.x + bbox.w, bbox.y + bbox.h, 'br'); if (hit) return hit; hit = check(bbox.x + bbox.w/2, bbox.y, 't'); if (hit) return hit; hit = check(bbox.x + bbox.w/2, bbox.y + bbox.h, 'b'); if (hit) return hit; hit = check(bbox.x, bbox.y + bbox.h/2, 'l'); if (hit) return hit; hit = check(bbox.x + bbox.w, bbox.y + bbox.h/2, 'r'); if (hit) return hit; const lp = inverseTransformPoint(px, py, ann); if (lp.x >= bbox.x - 10 && lp.x <= bbox.x + bbox.w + 10 && lp.y >= bbox.y - 10 && lp.y <= bbox.y + bbox.h + 10) return 'move'; return null;
   };
   const checkHit = useCallback((x, y, anns) => {
-    for (let i = anns.length - 1; i >= 0; i--) { const a = anns[i]; const lp = inverseTransformPoint(x, y, a); const threshold = Math.max(a.width / 2 + 10, 15); let hit = false; if (a.type === 'pen' || a.type === 'handwriting_text' || a.type === 'eraser_pixel') { for (let j = 0; j < a.points.length - 1; j++) if (distToSegment(lp, a.points[j], a.points[j+1]) < threshold) { hit = true; break; } } else if (a.type === 'rect' || a.type === 'triangle' || a.type === 'star') { const rx = Math.min(a.startX, a.endX), ry = Math.min(a.startY, a.endY), rw = Math.abs(a.endX - a.startX), rh = Math.abs(a.endY - a.startY); if (a.fillColor && a.fillColor !== 'transparent') { if (lp.x >= rx && lp.x <= rx + rw && lp.y >= ry && lp.y <= ry + rh) hit = true; } else { if ((lp.x >= rx - 10 && lp.x <= rx + rw + 10 && Math.abs(lp.y - ry) < 15) || (lp.x >= rx - 10 && lp.x <= rx + rw + 10 && Math.abs(lp.y - (ry + rh)) < 15) || (lp.y >= ry - 10 && lp.y <= ry + rh + 10 && Math.abs(lp.x - rx) < 15) || (lp.y >= ry - 10 && lp.y <= ry + rh + 10 && Math.abs(lp.x - (rx + rw)) < 15)) hit = true; } } else if (a.type === 'polygon') { if (a.fillColor && a.fillColor !== 'transparent') { if (pointInPolygon(lp, a.points)) hit = true; } else { for (let j = 0; j < a.points.length; j++) if (distToSegment({x: lp.x, y: lp.y}, a.points[j], a.points[(j + 1) % a.points.length]) < threshold) { hit = true; break; } } } else if (a.type === 'circle') { const cx = (a.startX + a.endX) / 2, cy = (a.startY + a.endY) / 2, rx = Math.abs(a.endX - a.startX) / 2, ry = Math.abs(a.endY - a.startY) / 2; if (rx > 0 && ry > 0) { const d = Math.pow(lp.x - cx, 2) / Math.pow(rx, 2) + Math.pow(lp.y - cy, 2) / Math.pow(ry, 2); if ((a.fillColor && a.fillColor !== 'transparent') ? d <= 1 : Math.abs(d - 1) < 0.3) hit = true; } } else if (['arrow', 'line', 'curve', 'curve_arrow', 'polyline', 'double_arrow', 'double_curve_arrow'].includes(a.type)) { if (a.type === 'polyline') { for (let j = 0; j < a.points.length - 1; j++) if (distToSegment({x: lp.x, y: lp.y}, a.points[j], a.points[j+1]) < threshold) { hit = true; break; } } else if (a.midX !== undefined) { if (distToSegment({x: lp.x, y: lp.y}, {x: a.startX, y: a.startY}, {x: a.midX, y: a.midY}) < threshold) hit = true; if (distToSegment({x: lp.x, y: lp.y}, {x: a.midX, y: a.midY}, {x: a.endX, y: a.endY}) < threshold) hit = true; } else { if (distToSegment({x: lp.x, y: lp.y}, {x: a.startX, y: a.startY}, {x: a.endX, y: a.endY}) < threshold) hit = true; } } else if (a.type === 'text') { if (lp.x >= a.x - (a._w || 100)/2 - 10 && lp.x <= a.x + (a._w || 100)/2 + 10 && lp.y >= a.y - (a._h || 48)/2 - 10 && lp.y <= a.y + (a._h || 48)/2 + 10) hit = true; } if (hit) return a; } return null;
+    for (let i = anns.length - 1; i >= 0; i--) { const a = anns[i]; const lp = inverseTransformPoint(x, y, a); const threshold = Math.max(a.width / 2 + 18, 24); let hit = false; if (a.type === 'pen' || a.type === 'handwriting_text' || a.type === 'eraser_pixel') { for (let j = 0; j < a.points.length - 1; j++) if (distToSegment(lp, a.points[j], a.points[j+1]) < threshold) { hit = true; break; } } else if (a.type === 'rect' || a.type === 'triangle' || a.type === 'star') { const rx = Math.min(a.startX, a.endX), ry = Math.min(a.startY, a.endY), rw = Math.abs(a.endX - a.startX), rh = Math.abs(a.endY - a.startY); if (a.fillColor && a.fillColor !== 'transparent') { if (lp.x >= rx && lp.x <= rx + rw && lp.y >= ry && lp.y <= ry + rh) hit = true; } else { if ((lp.x >= rx - 10 && lp.x <= rx + rw + 10 && Math.abs(lp.y - ry) < 15) || (lp.x >= rx - 10 && lp.x <= rx + rw + 10 && Math.abs(lp.y - (ry + rh)) < 15) || (lp.y >= ry - 10 && lp.y <= ry + rh + 10 && Math.abs(lp.x - rx) < 15) || (lp.y >= ry - 10 && lp.y <= ry + rh + 10 && Math.abs(lp.x - (rx + rw)) < 15)) hit = true; } } else if (a.type === 'polygon') { if (a.fillColor && a.fillColor !== 'transparent') { if (pointInPolygon(lp, a.points)) hit = true; } else { for (let j = 0; j < a.points.length; j++) if (distToSegment({x: lp.x, y: lp.y}, a.points[j], a.points[(j + 1) % a.points.length]) < threshold) { hit = true; break; } } } else if (a.type === 'circle') { const cx = (a.startX + a.endX) / 2, cy = (a.startY + a.endY) / 2, rx = Math.abs(a.endX - a.startX) / 2, ry = Math.abs(a.endY - a.startY) / 2; if (rx > 0 && ry > 0) { const d = Math.pow(lp.x - cx, 2) / Math.pow(rx, 2) + Math.pow(lp.y - cy, 2) / Math.pow(ry, 2); if ((a.fillColor && a.fillColor !== 'transparent') ? d <= 1 : Math.abs(d - 1) < 0.3) hit = true; } } else if (['arrow', 'line', 'curve', 'curve_arrow', 'polyline', 'double_arrow', 'double_curve_arrow'].includes(a.type)) { if (a.type === 'polyline') { for (let j = 0; j < a.points.length - 1; j++) if (distToSegment({x: lp.x, y: lp.y}, a.points[j], a.points[j+1]) < threshold) { hit = true; break; } } else if (a.midX !== undefined) { if (distToSegment({x: lp.x, y: lp.y}, {x: a.startX, y: a.startY}, {x: a.midX, y: a.midY}) < threshold) hit = true; if (distToSegment({x: lp.x, y: lp.y}, {x: a.midX, y: a.midY}, {x: a.endX, y: a.endY}) < threshold) hit = true; } else { if (distToSegment({x: lp.x, y: lp.y}, {x: a.startX, y: a.startY}, {x: a.endX, y: a.endY}) < threshold) hit = true; } } else if (a.type === 'text') { if (lp.x >= a.x - (a._w || 100)/2 - 10 && lp.x <= a.x + (a._w || 100)/2 + 10 && lp.y >= a.y - (a._h || 48)/2 - 10 && lp.y <= a.y + (a._h || 48)/2 + 10) hit = true; } if (hit) return a; } return null;
   }, []);
 
   const handlePointerDown = (e) => {
-    if (e.target.closest('.text-overlay') || e.target.closest('.selection-menu')) return; if (e.target.tagName === 'CANVAS' || e.target.closest('.canvas-container')) e.preventDefault(); const isTouch = e.pointerType === 'touch'; const isCanvasArea = e.target.tagName === 'CANVAS' || !!e.target.closest('.canvas-container'); const keepTextInputForTouchPan = isTouch && isCanvasArea && currentToolRef.current === ToolType.TEXT && !fingerDrawMode; setActivePopover(null); if (textInput && !keepTextInputForTouchPan) handleTextSubmit(); historySnapshotRef.current = annotations; activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (e.target.closest('.text-overlay') || e.target.closest('.selection-menu')) return; if (e.target.tagName === 'CANVAS' || e.target.closest('.canvas-container')) e.preventDefault(); const isTouch = e.pointerType === 'touch'; const isMiddleMouse = e.pointerType === 'mouse' && e.button === 1; const isCanvasArea = e.target.tagName === 'CANVAS' || !!e.target.closest('.canvas-container'); const keepTextInputForNavPan = (isTouch || isMiddleMouse) && isCanvasArea && !!textInputRef.current && !fingerDrawMode; setActivePopover(null); if (textInput && !keepTextInputForNavPan) handleTextSubmit(); historySnapshotRef.current = annotations; activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (activePointers.current.size >= 2) { isDrawingRef.current = false; setCurrentAnnotation(null); dragModeRef.current = null; const pts = Array.from(activePointers.current.values()); const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y); const center = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }; lastPinch.current = { dist, center, initialTransform: { ...transformRef.current } }; return; }
-    if (activePointers.current.size === 1) { const isPanHandle = !!e.target.closest('.page-pan-handle'); if (isPanHandle) { isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return; } if (e.target.tagName !== 'CANVAS') return; const pos = getCanvasPos(e.clientX, e.clientY); const isTouchNavigation = isTouch && !fingerDrawMode; const isUniversalNavigation = e.button === 1 || (e.button === 0 && e.altKey) || isTouchNavigation; const isTouchPan = isTouch && !fingerDrawMode && currentToolRef.current === ToolType.TEXT && !!textInput; if (isTouchPan) { isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return; } const effectiveShouldNavigate = isUniversalNavigation || currentToolRef.current === ToolType.SELECT;
+    if (activePointers.current.size === 1) { const isPanHandle = !!e.target.closest('.page-pan-handle'); if (isPanHandle) { isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return; } if (e.target.tagName !== 'CANVAS') return; const pos = getCanvasPos(e.clientX, e.clientY); const isTouchNavigation = isTouch && !fingerDrawMode; const isMiddleNavigation = isMiddleMouse; const isUniversalNavigation = isMiddleNavigation || (e.button === 0 && e.altKey) || isTouchNavigation; const isTouchPan = isTouch && !fingerDrawMode && !!textInputRef.current; if (isTouchPan) { isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return; } const effectiveShouldNavigate = isUniversalNavigation || currentToolRef.current === ToolType.SELECT;
       if (effectiveShouldNavigate) { if (selectedIds.length === 1) { const selAnn = annotations.find(a => a.id === selectedIds[0]); const handle = checkHandleHit(pos.x, pos.y, selAnn); if (handle) { dragModeRef.current = handle; dragStartPointerRef.current = pos; dragStartAnnsRef.current = [JSON.parse(JSON.stringify(selAnn))]; if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = false; return; } }
-        if (selectedIds.length > 0) { const mBox = getMultiBBox(annotations, selectedIds); if (mBox && pos.x >= mBox.x && pos.x <= mBox.x + mBox.w && pos.y >= mBox.y && pos.y <= mBox.y + mBox.h) { dragModeRef.current = 'move_multi'; dragStartPointerRef.current = pos; dragStartAnnsRef.current = annotations.filter(a => selectedIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; return; } }
-        const hit = checkHit(pos.x, pos.y, annotations); if (hit) { let targetIds = [hit.id]; if (hit.groupId) targetIds = annotations.filter(a => a.groupId === hit.groupId).map(a => a.id); setSelectedIds(targetIds); if (hit.color) setStrokeColor(hit.color); if (hit.fillColor !== undefined) { setIsFillTransparent(hit.fillColor === 'transparent'); if (hit.fillColor !== 'transparent') setFillColor(hit.fillColor); } if (hit.width) setLineWidth(hit.width); if (hit.fontSize) setFontSize(hit.fontSize); if (hit.hasGlow !== undefined) setTextGlow(hit.hasGlow); dragModeRef.current = 'move'; dragStartPointerRef.current = pos; dragStartAnnsRef.current = annotations.filter(a => targetIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; return; }
+        if (selectedIds.length > 0) { const mBox = getMultiBBox(annotations, selectedIds); if (mBox && pos.x >= mBox.x && pos.x <= mBox.x + mBox.w && pos.y >= mBox.y && pos.y <= mBox.y + mBox.h) { dragModeRef.current = 'move_multi'; dragStartPointerRef.current = pos; let dragIds = [...selectedIds]; if (e.ctrlKey || e.metaKey) { const { duplicated, ids } = duplicateAnnotationsForDrag(selectedIds); if (duplicated.length > 0) { setAnnotations(prev => [...prev, ...duplicated]); setSelectedIds(ids); dragIds = ids; dragStartAnnsRef.current = duplicated.map(a => JSON.parse(JSON.stringify(a))); } else dragStartAnnsRef.current = annotations.filter(a => selectedIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); } else dragStartAnnsRef.current = annotations.filter(a => selectedIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; if (dragIds.length > 0) setSelectedIds(dragIds); return; } }
+        const hit = checkHit(pos.x, pos.y, annotations); if (hit) { let targetIds = [hit.id]; if (hit.groupId) targetIds = annotations.filter(a => a.groupId === hit.groupId).map(a => a.id); if (e.ctrlKey || e.metaKey) { const { duplicated, ids } = duplicateAnnotationsForDrag(targetIds); if (duplicated.length > 0) { setAnnotations(prev => [...prev, ...duplicated]); targetIds = ids; dragStartAnnsRef.current = duplicated.map(a => JSON.parse(JSON.stringify(a))); } else dragStartAnnsRef.current = annotations.filter(a => targetIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); } else dragStartAnnsRef.current = annotations.filter(a => targetIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); setSelectedIds(targetIds); if (hit.color) setStrokeColor(hit.color); if (hit.fillColor !== undefined) { setIsFillTransparent(hit.fillColor === 'transparent'); if (hit.fillColor !== 'transparent') setFillColor(hit.fillColor); } if (hit.width) setLineWidth(hit.width); if (hit.fontSize) setFontSize(hit.fontSize); if (hit.hasGlow !== undefined) setTextGlow(hit.hasGlow); dragModeRef.current = 'move'; dragStartPointerRef.current = pos; if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; return; }
         if (currentToolRef.current === ToolType.SELECT) setSelectedIds([]);
         isPotentialTapRef.current = true;
         dragStartClientPosRef.current = { x: e.clientX, y: e.clientY };
-        if (isTouchNavigation) {
+        if (isTouchNavigation || isMiddleNavigation) {
           dragModeRef.current = 'canvas_pan';
           panStartClientRef.current = { x: e.clientX, y: e.clientY };
           panStartTransformRef.current = { ...transformRef.current };
         }
         return;
       }
-      if (currentToolRef.current === ToolType.LASSO) { setSelectedIds([]); setLassoPoints([pos]); isDrawingRef.current = true; return; } if (currentToolRef.current === ToolType.ERASER_OBJ) { if (isTouch && !fingerDrawMode) return; isDrawingRef.current = true; const hit = checkHit(pos.x, pos.y, annotations); if (hit) { pushHistory(annotations); setAnnotations(prev => prev.filter(a => a.id !== hit.id && (!hit.groupId || a.groupId !== hit.groupId))); } return; } if (currentToolRef.current === ToolType.TEXT) { setSelectedIds([]); setTextInput({ canvasX: pos.x, canvasY: pos.y, value: '' }); return; } if (currentToolRef.current === ToolType.HANDWRITING_TEXT) { if (handwritingTimerRef.current) clearTimeout(handwritingTimerRef.current); }
+      if (currentToolRef.current === ToolType.LASSO) { setSelectedIds([]); setLassoPoints([pos]); isDrawingRef.current = true; return; } if (currentToolRef.current === ToolType.ERASER_OBJ) { if (isTouch && !fingerDrawMode) return; isDrawingRef.current = true; const hit = checkHit(pos.x, pos.y, annotations); if (hit) { pushHistory(annotations); setAnnotations(prev => prev.filter(a => a.id !== hit.id && (!hit.groupId || a.groupId !== hit.groupId))); } return; } if (currentToolRef.current === ToolType.TEXT) { if (isTouch && !fingerDrawMode) return; setSelectedIds([]); setTextInput({ canvasX: pos.x, canvasY: pos.y, value: '' }); return; } if (currentToolRef.current === ToolType.HANDWRITING_TEXT) { if (handwritingTimerRef.current) clearTimeout(handwritingTimerRef.current); }
       if (isTouch && !fingerDrawMode) return;
       setSelectedIds([]); isDrawingRef.current = true; const baseAnn = { id: Date.now().toString(), type: currentToolRef.current, color: strokeColor, fillColor: isFillTransparent ? 'transparent' : fillColor, width: lineWidth, fontSize: fontSize, scaleX: 1, scaleY: 1, rotation: 0, tx: 0, ty: 0, hasGlow: textGlow }; if (currentToolRef.current === ToolType.PEN || currentToolRef.current === ToolType.ERASER_PIXEL || currentToolRef.current === ToolType.HANDWRITING_TEXT) setCurrentAnnotation({ ...baseAnn, points: [{ x: pos.x, y: pos.y }] }); else setCurrentAnnotation({ ...baseAnn, startX: pos.x, startY: pos.y, endX: pos.x, endY: pos.y });
     }
@@ -2377,41 +2584,47 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     if (e.target.closest('.text-overlay') || e.target.closest('.selection-menu')) return; if (e.target.tagName === 'CANVAS' || e.target.closest('.canvas-container')) e.preventDefault(); if (activePointers.current.has(e.pointerId)) activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (activePointers.current.size >= 2) { const pts = Array.from(activePointers.current.values()); const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y); const center = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }; if (lastPinch.current && wrapperRef.current) { const { dist: startDist, center: startCenter, initialTransform } = lastPinch.current; const scaleRatio = dist / startDist; let newScale = Math.min(Math.max(0.1, initialTransform.scale * scaleRatio), 10); const dx = center.x - startCenter.x; const dy = center.y - startCenter.y; const wrapperRect = wrapperRef.current.getBoundingClientRect(); const pinchOffsetX = startCenter.x - (wrapperRect.left + wrapperRect.width / 2); const pinchOffsetY = startCenter.y - (wrapperRect.top + wrapperRect.height / 2); const actualRatio = newScale / initialTransform.scale; setTransform({ scale: newScale, x: initialTransform.x + dx + (pinchOffsetX - pinchOffsetX * actualRatio), y: initialTransform.y + dy + (pinchOffsetY - pinchOffsetY * actualRatio) }); } return; }
     if (activePointers.current.size === 1) { if (isPotentialTapRef.current && dragStartClientPosRef.current) { if (Math.hypot(e.clientX - dragStartClientPosRef.current.x, e.clientY - dragStartClientPosRef.current.y) > 10) isPotentialTapRef.current = false; } if (dragModeRef.current === 'canvas_pan') { if (panStartClientRef.current && panStartTransformRef.current) { const dx = e.clientX - panStartClientRef.current.x; const dy = e.clientY - panStartClientRef.current.y; setTransform({ ...panStartTransformRef.current, x: panStartTransformRef.current.x + dx, y: panStartTransformRef.current.y + dy }); const edge = 90; const maxSpeed = 12; let scrollDelta = 0; if (e.clientY < edge) { const ratio = (edge - e.clientY) / edge; scrollDelta = -Math.max(1, Math.round(maxSpeed * ratio)); } else if (e.clientY > window.innerHeight - edge) { const ratio = (e.clientY - (window.innerHeight - edge)) / edge; scrollDelta = Math.max(1, Math.round(maxSpeed * ratio)); } if (scrollDelta !== 0) window.scrollBy({ top: scrollDelta, behavior: 'auto' }); } return; } const pos = getCanvasPos(e.clientX, e.clientY); if (currentToolRef.current === ToolType.LASSO && isDrawingRef.current) { setLassoPoints(prev => [...prev, pos]); return; } const dragMode = dragModeRef.current;
-      if (dragMode && dragMode !== 'canvas_pan') { const startPos = dragStartPointerRef.current; const dx = pos.x - startPos.x; const dy = pos.y - startPos.y; if (dragMode === 'move_multi' || (dragMode === 'move' && selectedIds.length > 1)) { if (dragStartAnnsRef.current.length > 0) { setAnnotations(prev => prev.map(a => { if (selectedIds.includes(a.id)) { const startAnn = dragStartAnnsRef.current.find(sa => sa.id === a.id); if (!startAnn) return a; if (['arrow', 'line', 'curve', 'curve_arrow', 'polyline', 'double_arrow', 'double_curve_arrow', 'polygon'].includes(startAnn.type)) { if (['polyline', 'polygon'].includes(startAnn.type)) return { ...a, points: startAnn.points.map(p => ({ x: p.x + dx, y: p.y + dy })) }; return { ...a, startX: startAnn.startX + dx, startY: startAnn.startY + dy, endX: startAnn.endX + dx, endY: startAnn.endY + dy, midX: startAnn.midX !== undefined ? startAnn.midX + dx : undefined, midY: startAnn.midY !== undefined ? startAnn.midY + dy : undefined }; } else return { ...a, tx: (startAnn.tx || 0) + dx, ty: (startAnn.ty || 0) + dy }; } return a; })); } return; } if (selectedIds.length === 1 && dragStartAnnsRef.current[0]) { const startAnn = dragStartAnnsRef.current[0]; const selectedId = selectedIds[0]; if (['arrow', 'line', 'curve', 'curve_arrow', 'polyline', 'double_arrow', 'double_curve_arrow', 'polygon'].includes(startAnn.type)) { if (dragMode.startsWith('poly_')) { const idx = parseInt(dragMode.split('_')[1], 10); setAnnotations(prev => prev.map(a => { if (a.id === selectedId) { const newPoints = [...a.points]; newPoints[idx] = { x: startAnn.points[idx].x + dx, y: startAnn.points[idx].y + dy }; if (startAnn.type === 'polygon') { if (idx === 0) newPoints[newPoints.length - 1] = newPoints[0]; if (idx === startAnn.points.length - 1) newPoints[0] = newPoints[newPoints.length - 1]; } return { ...a, points: newPoints }; } return a; })); } else if (dragMode === 'start') setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, startX: startAnn.startX + dx, startY: startAnn.startY + dy } : a)); else if (dragMode === 'end') setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, endX: startAnn.endX + dx, endY: startAnn.endY + dy } : a)); else if (dragMode === 'mid') setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, midX: startAnn.midX + dx, midY: startAnn.midY + dy } : a)); else if (dragMode === 'move') { if (['polyline', 'polygon'].includes(startAnn.type)) setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, points: startAnn.points.map(p => ({ x: p.x + dx, y: p.y + dy })) } : a)); else setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, startX: startAnn.startX + dx, startY: startAnn.startY + dy, endX: startAnn.endX + dx, endY: startAnn.endY + dy, midX: startAnn.midX !== undefined ? startAnn.midX + dx : undefined, midY: startAnn.midY !== undefined ? startAnn.midY + dy : undefined } : a)); } return; } const r = startAnn.rotation || 0; const cosR = Math.cos(r), sinR = Math.sin(r); const ldx = dx * cosR + dy * sinR; const ldy = -dx * sinR + dy * cosR; const bbox = getBBox(startAnn); const w = bbox.w || 1; const h = bbox.h || 1; const oldSx = startAnn.scaleX || startAnn.scale || 1; const oldSy = startAnn.scaleY || startAnn.scale || 1; let newSx = oldSx, newSy = oldSy; let dcx = 0, dcy = 0; if (['l', 'r', 't', 'b'].includes(dragMode)) { if (dragMode === 'l') { newSx = oldSx - ldx / w; dcx = ldx / 2; } if (dragMode === 'r') { newSx = oldSx + ldx / w; dcx = ldx / 2; } if (dragMode === 't') { newSy = oldSy - ldy / h; dcy = ldy / 2; } if (dragMode === 'b') { newSy = oldSy + ldy / h; dcy = ldy / 2; } newSx = Math.max(0.05, newSx); newSy = Math.max(0.05, newSy); if (dragMode === 'l' || dragMode === 'r') dcx = (dragMode === 'r' ? (newSx - oldSx) : -(newSx - oldSx)) * w / 2; if (dragMode === 't' || dragMode === 'b') dcy = (dragMode === 'b' ? (newSy - oldSy) : -(newSy - oldSy)) * h / 2; } else if (['tl', 'tr', 'bl', 'br'].includes(dragMode)) { let fixLx = dragMode.includes('l') ? (w/2) * oldSx : -(w/2) * oldSx; let fixLy = dragMode.includes('t') ? (h/2) * oldSy : -(h/2) * oldSy; let currentLx = -fixLx + ldx, currentLy = -fixLy + ldy; let ratio = Math.hypot(currentLx - fixLx, currentLy - fixLy) / Math.max(1, Math.hypot(-fixLx - fixLx, -fixLy - fixLy)); newSx = Math.max(0.05, oldSx * ratio); newSy = Math.max(0.05, oldSy * ratio); const actualRatio = newSx / oldSx; dcx = fixLx * (1 - actualRatio); dcy = fixLy * (1 - actualRatio); } else if (dragMode === 'rotate') { const center = transformPoint(bbox.x + bbox.w/2, bbox.y + bbox.h/2, startAnn); setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, rotation: (startAnn.rotation || 0) + (Math.atan2(pos.y - center.y, pos.x - center.x) - Math.atan2(startPos.y - center.y, startPos.x - center.x)) } : a)); return; } else if (dragMode === 'move') { setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, tx: (startAnn.tx || 0) + dx, ty: (startAnn.ty || 0) + dy } : a)); return; } if (['l', 'r', 't', 'b', 'tl', 'tr', 'bl', 'br'].includes(dragMode)) { const dtx = dcx * cosR - dcy * sinR; const dty = dcx * sinR + dcy * cosR; setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, scaleX: newSx, scaleY: newSy, tx: (startAnn.tx || 0) + dtx, ty: (startAnn.ty || 0) + dty } : a)); } return; } } if (currentToolRef.current === ToolType.ERASER_OBJ && isDrawingRef.current) { const hit = checkHit(pos.x, pos.y, annotations); if (hit) { pushHistory(annotationsRef.current); setAnnotations(prev => prev.filter(a => a.id !== hit.id && (!hit.groupId || a.groupId !== hit.groupId))); } return; } if (isDrawingRef.current && currentAnnotation) { if (currentAnnotation.type === ToolType.PEN || currentAnnotation.type === ToolType.ERASER_PIXEL || currentAnnotation.type === ToolType.HANDWRITING_TEXT) setCurrentAnnotation(prev => ({ ...prev, points: [...prev.points, { x: pos.x, y: pos.y }] })); else setCurrentAnnotation(prev => ({ ...prev, endX: pos.x, endY: pos.y })); }
+      if (dragMode && dragMode !== 'canvas_pan') { const startPos = dragStartPointerRef.current; let dx = pos.x - startPos.x; let dy = pos.y - startPos.y; if (e.shiftKey && ['move', 'move_multi'].includes(dragMode)) { const constrained = constrainMoveDelta(dx, dy); dx = constrained.dx; dy = constrained.dy; } if (dragMode === 'move_multi' || (dragMode === 'move' && selectedIds.length > 1)) { if (dragStartAnnsRef.current.length > 0) { setAnnotations(prev => prev.map(a => { if (selectedIds.includes(a.id)) { const startAnn = dragStartAnnsRef.current.find(sa => sa.id === a.id); if (!startAnn) return a; if (['arrow', 'line', 'curve', 'curve_arrow', 'polyline', 'double_arrow', 'double_curve_arrow', 'polygon'].includes(startAnn.type)) { if (['polyline', 'polygon'].includes(startAnn.type)) return { ...a, points: startAnn.points.map(p => ({ x: p.x + dx, y: p.y + dy })) }; return { ...a, startX: startAnn.startX + dx, startY: startAnn.startY + dy, endX: startAnn.endX + dx, endY: startAnn.endY + dy, midX: startAnn.midX !== undefined ? startAnn.midX + dx : undefined, midY: startAnn.midY !== undefined ? startAnn.midY + dy : undefined }; } else return { ...a, tx: (startAnn.tx || 0) + dx, ty: (startAnn.ty || 0) + dy }; } return a; })); } return; } if (selectedIds.length === 1 && dragStartAnnsRef.current[0]) { const startAnn = dragStartAnnsRef.current[0]; const selectedId = selectedIds[0]; if (['arrow', 'line', 'curve', 'curve_arrow', 'polyline', 'double_arrow', 'double_curve_arrow', 'polygon'].includes(startAnn.type)) { if (dragMode.startsWith('poly_')) { const idx = parseInt(dragMode.split('_')[1], 10); setAnnotations(prev => prev.map(a => { if (a.id === selectedId) { const newPoints = [...a.points]; newPoints[idx] = { x: startAnn.points[idx].x + dx, y: startAnn.points[idx].y + dy }; if (startAnn.type === 'polygon') { if (idx === 0) newPoints[newPoints.length - 1] = newPoints[0]; if (idx === startAnn.points.length - 1) newPoints[0] = newPoints[newPoints.length - 1]; } return { ...a, points: newPoints }; } return a; })); } else if (dragMode === 'start') { if (e.shiftKey && ['line', 'arrow', 'double_arrow'].includes(startAnn.type)) { const snapped = snapPointByStepAngle({ x: startAnn.startX + dx, y: startAnn.startY + dy }, { x: startAnn.endX, y: startAnn.endY }, 5); setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, startX: snapped.x, startY: snapped.y } : a)); } else setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, startX: startAnn.startX + dx, startY: startAnn.startY + dy } : a)); } else if (dragMode === 'end') { if (e.shiftKey && ['line', 'arrow', 'double_arrow'].includes(startAnn.type)) { const snapped = snapPointByStepAngle({ x: startAnn.endX + dx, y: startAnn.endY + dy }, { x: startAnn.startX, y: startAnn.startY }, 5); setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, endX: snapped.x, endY: snapped.y } : a)); } else setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, endX: startAnn.endX + dx, endY: startAnn.endY + dy } : a)); } else if (dragMode === 'mid') setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, midX: startAnn.midX + dx, midY: startAnn.midY + dy } : a)); else if (dragMode === 'move') { if (['polyline', 'polygon'].includes(startAnn.type)) setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, points: startAnn.points.map(p => ({ x: p.x + dx, y: p.y + dy })) } : a)); else setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, startX: startAnn.startX + dx, startY: startAnn.startY + dy, endX: startAnn.endX + dx, endY: startAnn.endY + dy, midX: startAnn.midX !== undefined ? startAnn.midX + dx : undefined, midY: startAnn.midY !== undefined ? startAnn.midY + dy : undefined } : a)); } return; } const r = startAnn.rotation || 0; const cosR = Math.cos(r), sinR = Math.sin(r); const ldx = dx * cosR + dy * sinR; const ldy = -dx * sinR + dy * cosR; const bbox = getBBox(startAnn); const w = bbox.w || 1; const h = bbox.h || 1; const oldSx = startAnn.scaleX || startAnn.scale || 1; const oldSy = startAnn.scaleY || startAnn.scale || 1; let newSx = oldSx, newSy = oldSy; let dcx = 0, dcy = 0; if (['l', 'r', 't', 'b'].includes(dragMode)) { if (dragMode === 'l') { newSx = oldSx - ldx / w; dcx = ldx / 2; } if (dragMode === 'r') { newSx = oldSx + ldx / w; dcx = ldx / 2; } if (dragMode === 't') { newSy = oldSy - ldy / h; dcy = ldy / 2; } if (dragMode === 'b') { newSy = oldSy + ldy / h; dcy = ldy / 2; } newSx = Math.max(0.05, newSx); newSy = Math.max(0.05, newSy); if (dragMode === 'l' || dragMode === 'r') dcx = (dragMode === 'r' ? (newSx - oldSx) : -(newSx - oldSx)) * w / 2; if (dragMode === 't' || dragMode === 'b') dcy = (dragMode === 'b' ? (newSy - oldSy) : -(newSy - oldSy)) * h / 2; } else if (['tl', 'tr', 'bl', 'br'].includes(dragMode)) { let fixLx = dragMode.includes('l') ? (w/2) * oldSx : -(w/2) * oldSx; let fixLy = dragMode.includes('t') ? (h/2) * oldSy : -(h/2) * oldSy; let currentLx = -fixLx + ldx, currentLy = -fixLy + ldy; let ratio = Math.hypot(currentLx - fixLx, currentLy - fixLy) / Math.max(1, Math.hypot(-fixLx - fixLx, -fixLy - fixLy)); newSx = Math.max(0.05, oldSx * ratio); newSy = Math.max(0.05, oldSy * ratio); const actualRatio = newSx / oldSx; dcx = fixLx * (1 - actualRatio); dcy = fixLy * (1 - actualRatio); } else if (dragMode === 'rotate') { const center = transformPoint(bbox.x + bbox.w/2, bbox.y + bbox.h/2, startAnn); setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, rotation: (startAnn.rotation || 0) + (Math.atan2(pos.y - center.y, pos.x - center.x) - Math.atan2(startPos.y - center.y, startPos.x - center.x)) } : a)); return; } else if (dragMode === 'move') { setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, tx: (startAnn.tx || 0) + dx, ty: (startAnn.ty || 0) + dy } : a)); return; } if (['l', 'r', 't', 'b', 'tl', 'tr', 'bl', 'br'].includes(dragMode)) { const dtx = dcx * cosR - dcy * sinR; const dty = dcx * sinR + dcy * cosR; setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, scaleX: newSx, scaleY: newSy, tx: (startAnn.tx || 0) + dtx, ty: (startAnn.ty || 0) + dty } : a)); } return; } } if (currentToolRef.current === ToolType.ERASER_OBJ && isDrawingRef.current) { const hit = checkHit(pos.x, pos.y, annotations); if (hit) { pushHistory(annotationsRef.current); setAnnotations(prev => prev.filter(a => a.id !== hit.id && (!hit.groupId || a.groupId !== hit.groupId))); } return; } if (isDrawingRef.current && currentAnnotation) { if (currentAnnotation.type === ToolType.PEN || currentAnnotation.type === ToolType.ERASER_PIXEL || currentAnnotation.type === ToolType.HANDWRITING_TEXT) setCurrentAnnotation(prev => ({ ...prev, points: [...prev.points, { x: pos.x, y: pos.y }] })); else if (e.shiftKey && [ToolType.LINE, ToolType.ARROW, 'double_arrow'].includes(currentAnnotation.type)) { const snapped = snapPointByStepAngle({ x: pos.x, y: pos.y }, { x: currentAnnotation.startX, y: currentAnnotation.startY }, 5); setCurrentAnnotation(prev => ({ ...prev, endX: snapped.x, endY: snapped.y })); } else setCurrentAnnotation(prev => ({ ...prev, endX: pos.x, endY: pos.y })); }
     }
   };
 
   const handlePointerUp = (e) => {
     if (e.target.closest('.text-overlay') || e.target.closest('.selection-menu')) return; let isTap = isPotentialTapRef.current; let hasDragged = !!dragModeRef.current && dragModeRef.current !== 'canvas_pan'; activePointers.current.delete(e.pointerId); if (activePointers.current.size < 2) { lastPinch.current = null; } if (activePointers.current.size === 1 && dragModeRef.current === 'canvas_pan') { const remainingPointer = Array.from(activePointers.current.values())[0]; panStartClientRef.current = { x: remainingPointer.x, y: remainingPointer.y }; panStartTransformRef.current = { ...transformRef.current }; } else if (activePointers.current.size === 0) { panStartClientRef.current = null; panStartTransformRef.current = null; }
-    if (isTap && !isDrawingRef.current) { const pos = getCanvasPos(e.clientX, e.clientY); const hit = checkHit(pos.x, pos.y, annotations); if (hit) { if (hit.type === 'text' && selectedIds.length === 1 && selectedIds[0] === hit.id) { setTextInput({ id: hit.id, canvasX: hit.x + (hit.tx || 0), canvasY: hit.y + (hit.ty || 0), value: hit.text || '', scale: hit.scaleX || hit.scale || 1, rotation: hit.rotation || 0 }); setFontSize(hit.fontSize || 48); setStrokeColor(hit.color || '#000000'); setTextGlow(hit.hasGlow !== undefined ? hit.hasGlow : true); } if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); let targetIds = [hit.id]; if (hit.groupId) targetIds = annotations.filter(a => a.groupId === hit.groupId).map(a => a.id); setSelectedIds(targetIds); if (hit.color) setStrokeColor(hit.color); if (hit.fillColor !== undefined) { setIsFillTransparent(hit.fillColor === 'transparent'); if (hit.fillColor !== 'transparent') setFillColor(hit.fillColor); } if (hit.width) setLineWidth(hit.width); if (hit.fontSize) setFontSize(hit.fontSize); if (hit.hasGlow !== undefined) setTextGlow(hit.hasGlow); } else { setSelectedIds([]); } }
+    if (isTap && !isDrawingRef.current) { const pos = getCanvasPos(e.clientX, e.clientY); const hit = checkHit(pos.x, pos.y, annotations); if (hit) { let targetIds = [hit.id]; if (hit.groupId) targetIds = annotations.filter(a => a.groupId === hit.groupId).map(a => a.id); if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); setSelectedIds(targetIds); if (hit.color) setStrokeColor(hit.color); if (hit.fillColor !== undefined) { setIsFillTransparent(hit.fillColor === 'transparent'); if (hit.fillColor !== 'transparent') setFillColor(hit.fillColor); } if (hit.width) setLineWidth(hit.width); if (hit.fontSize) setFontSize(hit.fontSize); if (hit.hasGlow !== undefined) setTextGlow(hit.hasGlow); } else { setSelectedIds([]); } }
     isPotentialTapRef.current = false; if (activePointers.current.size === 0) dragModeRef.current = null; dragStartAnnsRef.current = [];
     if (currentToolRef.current === ToolType.LASSO && isDrawingRef.current) { isDrawingRef.current = false; if (lassoPoints.length > 2) { const hits = annotations.filter(ann => { const bbox = getBBox(ann); if (!bbox) return false; return pointInPolygon(transformPoint(bbox.x + bbox.w/2, bbox.y + bbox.h/2, ann), lassoPoints); }); let selectedSet = new Set(hits.map(a => a.id)); hits.forEach(hit => { if (hit.groupId) annotations.filter(a => a.groupId === hit.groupId).forEach(a => selectedSet.add(a.id)); }); setSelectedIds(Array.from(selectedSet)); } else setSelectedIds([]); setLassoPoints([]); return; }
     if (isDrawingRef.current) { isDrawingRef.current = false; if (currentAnnotation) { if (currentAnnotation.type === ToolType.ERASER_PIXEL) { pushHistory(historySnapshotRef.current); setAnnotations(prev => { const eraserPoints = currentAnnotation.points; if (!eraserPoints || eraserPoints.length === 0) return prev; let newAnns = []; for (const a of prev) { let hit = false; for (let i = 0; i < eraserPoints.length; i += 3) { if (checkHit(eraserPoints[i].x, eraserPoints[i].y, [a])) { hit = true; break; } } if (!hit && checkHit(eraserPoints[eraserPoints.length-1].x, eraserPoints[eraserPoints.length-1].y, [a])) hit = true; if (hit) { const splitResult = splitAnnotationByEraser(a, eraserPoints, currentAnnotation.width); newAnns.push(...splitResult); } else { newAnns.push(a); } } return newAnns; }); } else if (currentAnnotation.type === ToolType.HANDWRITING_TEXT) { pushHistory(historySnapshotRef.current); setAnnotations(prev => [...prev, currentAnnotation]); handwritingStrokesRef.current.push(currentAnnotation.id); } else { pushHistory(historySnapshotRef.current); setAnnotations(prev => [...prev, currentAnnotation]); } setCurrentAnnotation(null); } } else if (hasDragged && historySnapshotRef.current) pushHistory(historySnapshotRef.current);
   };
 
   const handleWheel = (e) => { if (!wrapperRef.current) return; const wrapperRect = wrapperRef.current.getBoundingClientRect(); const scaleRatio = e.deltaY < 0 ? 1.1 : 0.9; setTransform(prev => { let newScale = Math.min(Math.max(0.1, prev.scale * scaleRatio), 10); const actualRatio = newScale / prev.scale; const pinchOffsetX = e.clientX - (wrapperRect.left + wrapperRect.width / 2); const pinchOffsetY = e.clientY - (wrapperRect.top + wrapperRect.height / 2); return { scale: newScale, x: prev.x + (pinchOffsetX - pinchOffsetX * actualRatio), y: prev.y + (pinchOffsetY - pinchOffsetY * actualRatio) }; }); };
-  const handleTextSubmit = () => { if (textInput) { pushHistory(annotationsRef.current); if (textInput.value.trim() !== '') { if (textInput.id) setAnnotations(prev => prev.map(a => a.id === textInput.id ? { ...a, text: textInput.value.trim(), color: strokeColor, fontSize: fontSize, hasGlow: textGlow } : a)); else setAnnotations(prev => [...prev, { id: Date.now().toString(), type: 'text', x: textInput.canvasX, y: textInput.canvasY, text: textInput.value.trim(), color: strokeColor, fontSize: fontSize, scaleX: 1, scaleY: 1, rotation: 0, tx: 0, ty: 0, hasGlow: textGlow }]); } else if (textInput.id) setAnnotations(prev => prev.filter(a => a.id !== textInput.id)); } setTextInput(null); };
+  const handleTextInputChange = (e) => { const nextValue = e.target.value; if (typeof window !== 'undefined') typingScrollYRef.current = window.scrollY; setTextInput(prev => ({ ...prev, value: nextValue })); if (typeof window !== 'undefined') { requestAnimationFrame(() => { if (window.scrollY !== typingScrollYRef.current) window.scrollTo({ top: typingScrollYRef.current, left: 0, behavior: 'auto' }); }); } };
+  const handleTextSubmit = () => { const parsedDraft = parseInt(textFontSizeDraft, 10); const submitFontSize = Number.isFinite(parsedDraft) ? Math.max(1, parsedDraft) : fontSize; if (submitFontSize !== fontSize) updateSettings({ fontSize: submitFontSize }); if (textInput) { pushHistory(annotationsRef.current); if (textInput.value.trim() !== '') { if (textInput.id) setAnnotations(prev => prev.map(a => a.id === textInput.id ? { ...a, text: textInput.value.trim(), color: strokeColor, fontSize: submitFontSize, hasGlow: textGlow } : a)); else setAnnotations(prev => [...prev, { id: Date.now().toString(), type: 'text', x: textInput.canvasX, y: textInput.canvasY, text: textInput.value.trim(), color: strokeColor, fontSize: submitFontSize, scaleX: 1, scaleY: 1, rotation: 0, tx: 0, ty: 0, hasGlow: textGlow }]); } else if (textInput.id) setAnnotations(prev => prev.filter(a => a.id !== textInput.id)); } setTextInput(null); };
   const ToolButton = ({ tool, icon: Icon, label, onClick }) => { const isActive = currentTool === tool; return ( <button onClick={onClick || (() => handleToolChange(tool))} className={`p-2 rounded-lg flex flex-col items-center gap-1 transition-colors min-w-[44px] ${isActive ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-100 text-gray-600'}`}> <Icon size={22} strokeWidth={isActive ? 2.5 : 2} /> <span className="text-[9px] font-bold">{label}</span> </button> ); };
   const isSelectionMode = currentTool === ToolType.SELECT || currentTool === ToolType.LASSO; const shouldShowSelectionMenu = selectedIds.length > 0 && isSelectionMode; const boundingBoxForMenu = shouldShowSelectionMenu ? getMultiBBox(annotations, selectedIds) : null; const hasInkSelected = selectedIds.some(id => ['pen', 'handwriting_text'].includes(annotations.find(a => a.id === id)?.type)); const isSingleTextSelected = selectedIds.length === 1 && annotations.find(a => a.id === selectedIds[0])?.type === 'text'; const isGroupable = selectedIds.length > 1; const isUngroupable = selectedIds.length > 0 && selectedIds.every(id => { const ann = annotations.find(a => a.id === id); return ann?.groupId && annotations.filter(a => a.groupId === ann.groupId).every(a => selectedIds.includes(a.id)); });
+  const handleArrowToolToggle = () => {
+    if (currentTool === ToolType.ARROW) handleToolChange('double_arrow');
+    else if (currentTool === 'double_arrow') handleToolChange(ToolType.ARROW);
+    else handleToolChange(ToolType.ARROW);
+  };
   const shapeTools = [{ tool: ToolType.LINE, icon: Minus, label: '直線' }, { tool: ToolType.ARROW, icon: ArrowUpRight, label: '矢印' }, { tool: ToolType.RECT, icon: Square, label: '四角' }, { tool: ToolType.CIRCLE, icon: Circle, label: '丸' }];
-  const currentShapeMeta = shapeTools.find(s => s.tool === currentTool) || shapeTools[0];
+  const currentShapeMeta = shapeTools.find(s => s.tool === currentTool || (s.tool === ToolType.ARROW && currentTool === 'double_arrow')) || shapeTools[0];
   const CurrentShapeIcon = currentShapeMeta.icon;
   const viewportW = typeof window !== 'undefined' ? window.innerWidth : 1024;
   const viewportH = typeof window !== 'undefined' ? window.innerHeight : 768;
 
   return (
-    <div className={`min-h-screen bg-gray-100 flex flex-col font-sans fixed inset-0 z-50 overflow-hidden select-none`}>
+    <div className={`min-h-screen bg-gray-100 flex flex-col font-sans fixed inset-0 z-50 overflow-hidden select-none`} style={{ paddingBottom: mobileKeyboardInset > 0 ? `${mobileKeyboardInset}px` : 0 }}>
       {isAutoOcrLoading && <div className="absolute top-20 right-4 bg-white/95 border border-blue-200 text-blue-700 px-6 py-3 rounded-xl shadow-2xl z-[100] font-bold flex items-center gap-3"><Loader2 size={24} className="animate-spin" /><span>手書き文字を変換中...</span></div>}
       {errorMessage && <div className="absolute top-20 left-1/2 transform -translate-x-1/2 bg-red-600 text-white px-6 py-3 rounded-xl shadow-2xl z-[100] font-bold flex items-center gap-2"><span>{errorMessage}</span><button onClick={() => setErrorMessage('')} className="ml-4 opacity-70 hover:opacity-100 text-xl font-light">×</button></div>}
-      {!isFullscreen && ( <header className="bg-white border-b px-4 py-3 flex justify-between items-center shrink-0 shadow-sm relative z-20"> <button onClick={onCancel} className="text-gray-500 p-2 hover:bg-gray-100 rounded-lg font-medium transition">キャンセル</button> <div className="font-bold text-gray-800 text-lg flex items-center gap-2"> {initialItem && <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-sm">再編集</span>} 画像の編集 </div> <button onClick={() => { setSelectedIds([]); setTimeout(handleSave, 50); }} disabled={imagesData.length === 0 && !memo} className="bg-blue-600 text-white px-5 py-2 rounded-lg font-bold hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 transition shadow-md"> <Save size={18} /> 保存 </button> </header> )}
+      {!isFullscreen && ( <header className="bg-white border-b px-3 py-2 flex flex-wrap justify-between items-center gap-2 shrink-0 shadow-sm relative z-20"> <button onClick={onCancel} className="text-gray-500 p-2 hover:bg-gray-100 rounded-lg font-medium transition text-sm">キャンセル</button> <div className="font-bold text-gray-800 text-sm sm:text-lg flex items-center gap-2 min-w-0"> {initialItem && <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-xs sm:text-sm">再編集</span>} <span className="truncate">画像の編集</span> </div> <button onClick={() => { setSelectedIds([]); setTimeout(handleSave, 50); }} disabled={imagesData.length === 0 && !memo} className="bg-blue-600 text-white px-3 sm:px-5 py-2 rounded-lg font-bold hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 transition shadow-md text-sm"> <Save size={16} /> 保存 </button> </header> )}
       <div className={`flex-1 flex ${isFullscreen ? 'flex-col fixed inset-0 z-50 bg-gray-200' : 'flex-col lg:flex-row'} overflow-hidden`}>
         <div className="flex-1 flex flex-col bg-gray-200 overflow-hidden relative">
           {imagesData.length === 0 ? ( <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-6"> <div className="text-center mb-4"><h2 className="text-2xl font-bold text-gray-700 mb-2">写真を追加しますか？</h2><p className="text-gray-500">Ctrl+V (Cmd+V) で直接貼り付けることも可能です</p></div> <div className="flex flex-col sm:flex-row gap-4 w-full max-w-lg"> <label className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm cursor-pointer hover:shadow-md hover:bg-blue-50 transition text-blue-600"><Camera size={48} className="mb-4" /> <span className="font-bold text-lg">カメラで撮影</span><input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={handleImageUpload} /></label> <label className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm cursor-pointer hover:shadow-md hover:bg-blue-50 transition text-blue-600"><ImageIcon size={48} className="mb-4" /> <span className="font-bold text-lg">アルバムから</span><input type="file" multiple accept="image/*" className="hidden" onChange={handleImageUpload} /></label> </div> </div> ) : ( <>
-              <div className="bg-white border-b px-2 py-1.5 flex flex-wrap items-center gap-x-2 gap-y-2 shrink-0 shadow-sm z-10 relative">
+              <div className="bg-white border-b px-2 py-1.5 flex flex-wrap items-center gap-x-2 gap-y-2 shrink-0 shadow-sm z-10 relative overflow-visible">
                 <div className="flex items-center bg-gray-50 p-1 rounded-xl">
                   <ToolButton tool={ToolType.SELECT} icon={MousePointer2} label="選択" /> <ToolButton tool={ToolType.LASSO} icon={Lasso} label="投げ輪" /> <div className="w-px h-6 bg-gray-300 mx-1"></div> <ToolButton tool={ToolType.PEN} icon={PenTool} label="ペン" /> <ToolButton tool={ToolType.HANDWRITING_TEXT} icon={PenLine} label="手書き" /> <ToolButton tool={ToolType.TEXT} icon={Type} label="文字" />
                   <div className="hidden sm:flex items-center">
-                    <ToolButton tool={ToolType.LINE} icon={Minus} label="直線" /> <ToolButton tool={ToolType.ARROW} icon={ArrowUpRight} label="矢印" /> <ToolButton tool={ToolType.RECT} icon={Square} label="四角" /> <ToolButton tool={ToolType.CIRCLE} icon={Circle} label="丸" />
+                    <ToolButton tool={ToolType.LINE} icon={Minus} label="直線" /> <ToolButton tool={currentTool === 'double_arrow' ? 'double_arrow' : ToolType.ARROW} icon={ArrowUpRight} label={currentTool === 'double_arrow' ? '両矢印' : '矢印'} onClick={handleArrowToolToggle} /> <ToolButton tool={ToolType.RECT} icon={Square} label="四角" /> <ToolButton tool={ToolType.CIRCLE} icon={Circle} label="丸" />
                   </div>
                   <div className="relative sm:hidden mx-1">
                     <button onClick={() => setActivePopover(activePopover === 'shape' ? null : 'shape')} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${activePopover === 'shape' ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-100 text-gray-600'}`}>
@@ -2421,7 +2634,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                     {activePopover === 'shape' && (
                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 bg-white p-2 rounded-xl shadow-xl border border-gray-200 z-50 grid grid-cols-2 gap-1 w-36">
                         {shapeTools.map(({ tool, icon: Icon, label }) => (
-                          <button key={tool} onClick={() => { handleToolChange(tool); setActivePopover(null); }} className={`p-2 rounded-lg flex flex-col items-center ${currentTool === tool ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-100 text-gray-600'}`}>
+                          <button key={tool} onClick={() => { if (tool === ToolType.ARROW) handleArrowToolToggle(); else handleToolChange(tool); setActivePopover(null); }} className={`p-2 rounded-lg flex flex-col items-center ${currentTool === tool || (tool === ToolType.ARROW && currentTool === 'double_arrow') ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-100 text-gray-600'}`}>
                             <Icon size={18} />
                             <span className="text-[10px] font-bold mt-1">{label}</span>
                           </button>
@@ -2431,15 +2644,15 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                   </div>
                   <div className="flex flex-col relative mx-1"> <ToolButton tool={currentTool === ToolType.ERASER_PIXEL ? ToolType.ERASER_PIXEL : ToolType.ERASER_OBJ} icon={Eraser} label="消す" onClick={() => handleToolChange(currentTool === ToolType.ERASER_OBJ ? ToolType.ERASER_PIXEL : ToolType.ERASER_OBJ)} /> {(currentTool === ToolType.ERASER_PIXEL || currentTool === ToolType.ERASER_OBJ) && ( <div className="absolute top-full mt-1 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[9px] px-1.5 py-0.5 rounded whitespace-nowrap z-50">{currentTool === ToolType.ERASER_PIXEL ? '部分' : '全体'}</div> )} </div>
                 </div>
-                <div className="flex-1 min-w-[8px]"></div>
+                <div className="hidden sm:block flex-1 min-w-[8px]"></div>
                 <div className="flex items-center gap-1 bg-gray-50 p-1 rounded-xl">
-                  <button onClick={handleAutoCleanUp} disabled={isCleanUpLoading || isOcrLoading} className="p-2 rounded-lg flex flex-col items-center min-w-[48px] bg-gradient-to-br from-purple-100 to-blue-100 text-purple-700 hover:scale-105 active:scale-95 transition shadow-sm border border-purple-200 disabled:opacity-50"> {isCleanUpLoading ? <Loader2 size={20} className="animate-spin" /> : <Sparkles size={20} strokeWidth={2.5} />}<span className="text-[9px] font-bold mt-1">AI整頓</span> </button> <div className="w-px h-6 bg-gray-300 mx-1"></div> <div className="relative"> <button onClick={() => setActivePopover(activePopover === 'width' ? null : 'width')} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${activePopover === 'width' ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-200 text-gray-700'}`}> <Scaling size={20} /> <span className="text-[9px] font-bold mt-1">{(currentTool === ToolType.TEXT || currentTool === ToolType.HANDWRITING_TEXT) ? 'ｻｲｽﾞ/太さ' : '太さ'}</span> </button> {activePopover === 'width' && ( <div className="absolute top-full left-0 sm:left-auto sm:right-0 mt-2 bg-white p-4 rounded-xl shadow-xl border border-gray-200 z-50 w-[min(18rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] flex flex-col items-center"> {currentTool === ToolType.HANDWRITING_TEXT ? ( <><span className="text-xs font-bold text-gray-500 mb-2">線の太さ: {lineWidth}px</span><div className="flex gap-1 mb-2">{widthPresets.map((w,idx)=>(<button key={`wp-${idx}`} onClick={() => updateSettings({ lineWidth: w })} className={`px-2 py-1 text-xs rounded-md border ${lineWidth===w ? 'bg-blue-100 border-blue-400 text-blue-700' : 'bg-white border-gray-200 text-gray-600'}`}>{w}px</button>))}</div><div className="grid grid-cols-3 gap-1 mb-2 w-full">{widthPresets.map((w,idx)=>(<input key={`wps-${idx}`} type="range" min="1" max="40" value={w} onChange={(e) => setWidthPresets(prev => prev.map((pv,i)=> i===idx ? parseInt(e.target.value) : pv))} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" />))}</div><input type="range" min="1" max="40" value={lineWidth} onChange={(e) => updateSettings({ lineWidth: parseInt(e.target.value) })} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer mb-4" /><span className="text-xs font-bold text-gray-500 mb-2">変換後の文字サイズ: {fontSize}px</span><input type="range" min="16" max="120" value={fontSize} onChange={(e) => updateSettings({ fontSize: parseInt(e.target.value) })} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" /></> ) : currentTool === ToolType.TEXT ? ( <><span className="text-xs font-bold text-gray-500 mb-2">文字サイズ: {fontSize}px</span><input type="range" min="16" max="120" value={fontSize} onChange={(e) => updateSettings({ fontSize: parseInt(e.target.value) })} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" /></> ) : ( <><span className="text-xs font-bold text-gray-500 mb-2">線の太さ: {lineWidth}px</span><div className="flex gap-1 mb-2">{widthPresets.map((w,idx)=>(<button key={`wp-${idx}`} onClick={() => updateSettings({ lineWidth: w })} className={`px-2 py-1 text-xs rounded-md border ${lineWidth===w ? 'bg-blue-100 border-blue-400 text-blue-700' : 'bg-white border-gray-200 text-gray-600'}`}>{w}px</button>))}</div><div className="grid grid-cols-3 gap-1 mb-2 w-full">{widthPresets.map((w,idx)=>(<input key={`wps-${idx}`} type="range" min="1" max="40" value={w} onChange={(e) => setWidthPresets(prev => prev.map((pv,i)=> i===idx ? parseInt(e.target.value) : pv))} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" />))}</div><input type="range" min="1" max="40" value={lineWidth} onChange={(e) => updateSettings({ lineWidth: parseInt(e.target.value) })} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" /></> )} </div> )} </div> <div className="relative"> <button onClick={() => setActivePopover(activePopover === 'stroke' ? null : 'stroke')} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${activePopover === 'stroke' ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-200 text-gray-700'}`}> <div className="w-5 h-5 rounded-full border-2 border-gray-300 shadow-sm" style={{ backgroundColor: strokeColor }}></div> <span className="text-[10px] font-bold mt-1">線の色</span> </button> {activePopover === 'stroke' && ( <div className="absolute top-full left-1/2 -translate-x-1/2 sm:left-auto sm:right-0 sm:translate-x-0 mt-2 bg-white p-3 rounded-xl shadow-xl border border-gray-200 z-50 w-[min(18rem,calc(100vw-1rem))] grid grid-cols-4 gap-2">{COLORS.map(c => ( <button key={`stroke-${c}`} onClick={() => { updateSettings({ strokeColor: c }); setActivePopover(null); }} className={`w-8 h-8 rounded-full border-2 mx-auto ${strokeColor === c ? 'border-blue-500 scale-110 shadow-md' : 'border-gray-200'}`} style={{ backgroundColor: c }} /> ))}</div> )} </div> <div className="relative"> <button onClick={() => setActivePopover(activePopover === 'fill' ? null : 'fill')} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${activePopover === 'fill' ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-200 text-gray-700'}`}> <div className="w-5 h-5 rounded-full border-2 border-gray-300 shadow-sm flex items-center justify-center bg-gray-50" style={{ backgroundColor: isFillTransparent ? 'transparent' : fillColor }}>{isFillTransparent && <Droplet size={12} className="text-gray-400" />}</div><span className="text-[10px] font-bold mt-1">塗り</span> </button> {activePopover === 'fill' && ( <div className="absolute top-full left-1/2 -translate-x-1/2 sm:left-auto sm:right-0 sm:translate-x-0 mt-2 bg-white p-3 rounded-xl shadow-xl border border-gray-200 z-50 w-[min(18rem,calc(100vw-1rem))] grid grid-cols-4 gap-2"> <button onClick={() => { updateSettings({ isFillTransparent: true }); setActivePopover(null); }} className={`w-8 h-8 rounded-full border-2 mx-auto flex items-center justify-center bg-gray-50 ${isFillTransparent ? 'border-blue-500 scale-110 shadow-md text-blue-500' : 'border-gray-200 text-gray-400'}`}><Droplet size={14} /></button> {COLORS.map(c => ( <button key={`fill-${c}`} onClick={() => { updateSettings({ fillColor: c, isFillTransparent: false }); setActivePopover(null); }} className={`w-8 h-8 rounded-full border-2 mx-auto ${fillColor === c && !isFillTransparent ? 'border-blue-500 scale-110 shadow-md' : 'border-gray-200'}`} style={{ backgroundColor: c }} /> ))} </div> )} </div> <button onClick={() => updateSettings({ textGlow: !textGlow })} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${textGlow ? 'bg-amber-100 text-amber-600' : 'hover:bg-gray-200 text-gray-700'}`}> <Sparkles size={20} strokeWidth={textGlow ? 2.5 : 2} /> <span className="text-[10px] font-bold mt-1">光彩</span> </button> <button onClick={() => setFingerDrawMode(!fingerDrawMode)} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${fingerDrawMode ? 'bg-blue-100 text-blue-600 shadow-inner' : 'hover:bg-gray-200 text-gray-700'}`}> <Hand size={20} /> <span className="text-[9px] font-bold mt-1">指で描く</span> </button>
+                  <button onClick={handleAutoCleanUp} disabled={isCleanUpLoading || isOcrLoading} className="p-2 rounded-lg flex flex-col items-center min-w-[48px] bg-gradient-to-br from-purple-100 to-blue-100 text-purple-700 hover:scale-105 active:scale-95 transition shadow-sm border border-purple-200 disabled:opacity-50"> {isCleanUpLoading ? <Loader2 size={20} className="animate-spin" /> : <Sparkles size={20} strokeWidth={2.5} />}<span className="text-[9px] font-bold mt-1">AI整頓</span> </button> <div className="w-px h-6 bg-gray-300 mx-1"></div> <div className="relative"> <button onClick={() => setActivePopover(activePopover === 'width' ? null : 'width')} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${activePopover === 'width' ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-200 text-gray-700'}`}> <Scaling size={20} /> <span className="text-[9px] font-bold mt-1">{(currentTool === ToolType.TEXT || currentTool === ToolType.HANDWRITING_TEXT) ? 'ｻｲｽﾞ/太さ' : '太さ'}</span> </button> {activePopover === 'width' && ( <div className="absolute top-full left-1/2 -translate-x-1/2 sm:left-auto sm:right-0 sm:translate-x-0 mt-2 bg-white p-4 rounded-xl shadow-xl border border-gray-200 z-50 w-[min(18rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] max-h-[min(65vh,28rem)] overflow-y-auto flex flex-col items-center"> {currentTool === ToolType.HANDWRITING_TEXT ? ( <><span className="text-xs font-bold text-gray-500 mb-2">線の太さ: {lineWidth}px</span><div className="flex gap-1 mb-2">{widthPresets.map((w,idx)=>(<button key={`wp-${idx}`} onClick={() => updateSettings({ lineWidth: w })} className={`px-2 py-1 text-xs rounded-md border ${lineWidth===w ? 'bg-blue-100 border-blue-400 text-blue-700' : 'bg-white border-gray-200 text-gray-600'}`}>{w}px</button>))}</div><div className="grid grid-cols-3 gap-1 mb-2 w-full">{widthPresets.map((w,idx)=>(<input key={`wps-${idx}`} type="text" inputMode="numeric" value={widthPresetDrafts[idx] ?? String(w)} onChange={(e) => setWidthPresetDrafts(prev => prev.map((pv, i) => i === idx ? e.target.value : pv))} onBlur={() => setWidthPresets(prev => prev.map((pv, i) => i === idx ? Math.max(1, Math.min(40, parseInt(widthPresetDrafts[idx], 10) || pv)) : pv))} onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }} className="w-full px-1 py-0.5 text-xs border border-gray-300 rounded" />))}</div><input type="range" min="1" max="40" value={lineWidth} onChange={(e) => updateSettings({ lineWidth: parseInt(e.target.value) })} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer mb-4" /><span className="text-xs font-bold text-gray-500 mb-2">変換後の文字サイズ: {fontSize}px</span><input type="range" min="16" max="120" value={fontSize} onChange={(e) => updateSettings({ fontSize: parseInt(e.target.value) })} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" /></> ) : currentTool === ToolType.TEXT ? ( <><span className="text-xs font-bold text-gray-500 mb-2">文字サイズ: {fontSize}px</span><input type="range" min="16" max="120" value={fontSize} onChange={(e) => updateSettings({ fontSize: parseInt(e.target.value) })} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" /><span className="text-xs font-bold text-gray-500 mt-3 mb-2">テキストメニュー倍率: {textMenuScale.toFixed(1)}x</span><input type="range" min="0.7" max="1.8" step="0.1" value={textMenuScale} onChange={(e) => updateSettings({ menuScale: parseFloat(e.target.value) || 1 })} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" /></> ) : ( <><span className="text-xs font-bold text-gray-500 mb-2">線の太さ: {lineWidth}px</span><div className="flex gap-1 mb-2">{widthPresets.map((w,idx)=>(<button key={`wp-${idx}`} onClick={() => updateSettings({ lineWidth: w })} className={`px-2 py-1 text-xs rounded-md border ${lineWidth===w ? 'bg-blue-100 border-blue-400 text-blue-700' : 'bg-white border-gray-200 text-gray-600'}`}>{w}px</button>))}</div><div className="grid grid-cols-3 gap-1 mb-2 w-full">{widthPresets.map((w,idx)=>(<input key={`wps-${idx}`} type="text" inputMode="numeric" value={widthPresetDrafts[idx] ?? String(w)} onChange={(e) => setWidthPresetDrafts(prev => prev.map((pv, i) => i === idx ? e.target.value : pv))} onBlur={() => setWidthPresets(prev => prev.map((pv, i) => i === idx ? Math.max(1, Math.min(40, parseInt(widthPresetDrafts[idx], 10) || pv)) : pv))} onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }} className="w-full px-1 py-0.5 text-xs border border-gray-300 rounded" />))}</div><input type="range" min="1" max="40" value={lineWidth} onChange={(e) => updateSettings({ lineWidth: parseInt(e.target.value) })} className="w-full accent-blue-500 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" /></> )} </div> )} </div> <div className="relative"> <button onClick={() => setActivePopover(activePopover === 'stroke' ? null : 'stroke')} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${activePopover === 'stroke' ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-200 text-gray-700'}`}> <div className="w-5 h-5 rounded-full border-2 border-gray-300 shadow-sm" style={{ backgroundColor: strokeColor }}></div> <span className="text-[10px] font-bold mt-1">線の色</span> </button> {activePopover === 'stroke' && ( <div className="absolute top-full left-1/2 -translate-x-1/2 sm:left-auto sm:right-0 sm:translate-x-0 mt-2 bg-white p-3 rounded-xl shadow-xl border border-gray-200 z-50 w-[min(18rem,calc(100vw-1rem))] max-h-[min(60vh,22rem)] overflow-y-auto grid grid-cols-5 gap-2">{COLORS.map(c => ( <button key={`stroke-${c}`} onClick={() => { updateSettings({ strokeColor: c }); setActivePopover(null); }} className={`w-8 h-8 rounded-full border-2 mx-auto ${strokeColor === c ? 'border-blue-500 scale-110 shadow-md' : 'border-gray-200'}`} style={{ backgroundColor: c }} /> ))}</div> )} </div> <div className="relative"> <button onClick={() => setActivePopover(activePopover === 'fill' ? null : 'fill')} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${activePopover === 'fill' ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-200 text-gray-700'}`}> <div className="w-5 h-5 rounded-full border-2 border-gray-300 shadow-sm flex items-center justify-center bg-gray-50" style={{ backgroundColor: isFillTransparent ? 'transparent' : fillColor }}>{isFillTransparent && <Droplet size={12} className="text-gray-400" />}</div><span className="text-[10px] font-bold mt-1">塗り</span> </button> {activePopover === 'fill' && ( <div className="absolute top-full left-1/2 -translate-x-1/2 sm:left-auto sm:right-0 sm:translate-x-0 mt-2 bg-white p-3 rounded-xl shadow-xl border border-gray-200 z-50 w-[min(18rem,calc(100vw-1rem))] max-h-[min(60vh,22rem)] overflow-y-auto grid grid-cols-5 gap-2"> <button onClick={() => { updateSettings({ isFillTransparent: true }); setActivePopover(null); }} className={`w-8 h-8 rounded-full border-2 mx-auto flex items-center justify-center bg-gray-50 ${isFillTransparent ? 'border-blue-500 scale-110 shadow-md text-blue-500' : 'border-gray-200 text-gray-400'}`}><Droplet size={14} /></button> {COLORS.map(c => ( <button key={`fill-${c}`} onClick={() => { updateSettings({ fillColor: c, isFillTransparent: false }); setActivePopover(null); }} className={`w-8 h-8 rounded-full border-2 mx-auto ${fillColor === c && !isFillTransparent ? 'border-blue-500 scale-110 shadow-md' : 'border-gray-200'}`} style={{ backgroundColor: c }} /> ))} </div> )} </div> <button onClick={() => updateSettings({ textGlow: !textGlow })} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${textGlow ? 'bg-amber-100 text-amber-600' : 'hover:bg-gray-200 text-gray-700'}`}> <Sparkles size={20} strokeWidth={textGlow ? 2.5 : 2} /> <span className="text-[10px] font-bold mt-1">光彩</span> </button> <button onClick={() => setFingerDrawMode(!fingerDrawMode)} className={`p-2 rounded-lg flex flex-col items-center min-w-[48px] ${fingerDrawMode ? 'bg-blue-100 text-blue-600 shadow-inner' : 'hover:bg-gray-200 text-gray-700'}`}> <Hand size={20} /> <span className="text-[9px] font-bold mt-1">指で描く</span> </button>
                 </div>
-                <div className="flex-1 min-w-[8px]"></div>
+                <div className="hidden sm:block flex-1 min-w-[8px]"></div>
                 <div className="flex items-center gap-1"> <button onClick={handlePaste} disabled={clipboard.length === 0} className="p-2 text-blue-600 hover:bg-blue-100 rounded-lg disabled:opacity-30 flex flex-col items-center min-w-[48px]" title="貼り付け (Ctrl+V)"><ClipboardPaste size={20} /><span className="text-[10px] font-bold mt-1">貼付</span></button> <div className="w-px h-6 bg-gray-300 mx-1"></div> <button onClick={() => { if (baseImage) fitImageToViewport(baseImage); }} className="p-2 text-gray-600 hover:bg-gray-200 rounded-lg flex flex-col items-center min-w-[48px]"><RefreshCw size={20} /><span className="text-[10px] font-bold mt-1">表示ﾘｾｯﾄ</span></button> <button onClick={handleUndo} disabled={history.length === 0} className="p-2 text-gray-600 hover:bg-gray-200 rounded-lg disabled:opacity-30 flex flex-col items-center min-w-[48px]" title="元に戻す (Ctrl/Cmd+Z)"><Undo size={20} /><span className="text-[10px] font-bold mt-1">戻す</span></button> <button onClick={handleRedo} disabled={redoStack.length === 0} className="p-2 text-gray-600 hover:bg-gray-200 rounded-lg disabled:opacity-30 flex flex-col items-center min-w-[48px]" title="やり直し (Ctrl/Cmd+Y)"><Redo2 size={20} /><span className="text-[10px] font-bold mt-1">進む</span></button> <button onClick={() => setIsClearConfirmOpen(true)} disabled={annotations.length === 0} className="p-2 text-red-500 hover:bg-red-50 rounded-lg disabled:opacity-30 flex flex-col items-center min-w-[48px]"><Trash2 size={20} /><span className="text-[10px] font-bold mt-1">クリア</span></button> <button onClick={() => { setSelectedIds([]); setTimeout(handleSave, 50); }} disabled={imagesData.length === 0 && !memo} className="p-2 text-blue-700 hover:bg-blue-100 rounded-lg disabled:opacity-30 flex flex-col items-center min-w-[52px] border border-blue-200 bg-blue-50" title="保存"><Save size={20} /><span className="text-[10px] font-bold mt-1">保存</span></button> </div>
               </div>
               {activeImageId && (
-                <div ref={wrapperRef} className="flex-1 overflow-hidden relative flex items-center justify-center p-4 touch-none canvas-container" onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp} onPointerLeave={handlePointerUp} onWheel={handleWheel}>
+                <div ref={wrapperRef} className="flex-1 overflow-hidden relative flex items-center justify-center p-4 touch-none canvas-container" onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp} onWheel={handleWheel} onAuxClick={(e) => e.preventDefault()}>
                   <button onClick={() => setIsFullscreen(!isFullscreen)} className="absolute top-2 right-2 sm:top-3 sm:right-3 z-40 p-2.5 bg-white/90 backdrop-blur rounded-full shadow-lg text-gray-700 hover:bg-white transition-transform hover:scale-110" title={isFullscreen ? "全画面解除" : "全画面表示"}> {isFullscreen ? <Minimize size={22} /> : <Maximize size={22} />} </button>
                   <div className="absolute top-2 left-2 sm:top-3 sm:left-3 z-40 page-pan-handle px-2 py-1.5 rounded-lg bg-white/90 text-gray-700 border border-gray-200 shadow-md text-xs font-bold cursor-grab active:cursor-grabbing">ページ移動</div>
                   <div className="relative flex items-center justify-center shadow-lg bg-white actual-canvas-wrapper shrink-0" style={{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`, transformOrigin: 'center', width: baseImage ? baseImage.width : 1200, height: baseImage ? baseImage.height : 800 }}>
@@ -2447,14 +2660,14 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                     <canvas ref={canvasRef} className={`absolute inset-0 w-full h-full ${currentTool === ToolType.SELECT || currentTool === ToolType.LASSO ? 'cursor-default' : 'cursor-crosshair'}`} />
                     {textInput && (
                       <div className="absolute z-50 transform -translate-x-1/2 -translate-y-1/2 text-overlay pointer-events-auto" style={{ left: `${(textInput.canvasX / canvasRef.current.width) * 100}%`, top: `${(textInput.canvasY / canvasRef.current.height) * 100}%`, transform: `translate(-50%, -50%) rotate(${textInput.rotation || 0}rad)` }}>
-                        <div className="absolute left-1/2 bottom-full mb-2 bg-white/95 backdrop-blur-sm px-3 py-2 rounded-xl shadow-2xl flex items-center gap-2 border border-gray-200 whitespace-nowrap" style={{ transform: `translateX(-50%) scale(${1 / Math.max(transform.scale, 0.1)})`, transformOrigin: 'bottom center' }} onPointerDown={e => e.stopPropagation()}>
-                          <div className="flex gap-1"> {COLORS.slice(0, 4).map(c => <button key={`ti-${c}`} onClick={() => setStrokeColor(c)} className={`w-6 h-6 rounded-full border shadow-sm ${strokeColor === c ? 'border-blue-500 scale-110' : 'border-gray-200'}`} style={{ backgroundColor: c }} />)} </div> <div className="w-px h-5 bg-gray-300 mx-1" /> <div className="flex flex-col gap-1"> <div className="flex items-center gap-2"><span className="text-xs font-bold text-gray-600">ｻｲｽﾞ</span><input type="range" min="16" max="120" value={fontSize} onChange={e => setFontSize(parseInt(e.target.value))} className="w-20 accent-blue-500" /></div><div className="flex gap-1">{fontPresets.map((fs,idx)=>(<button key={`fp-${idx}`} onClick={() => setFontSize(fs)} className={`px-1.5 py-0.5 text-[10px] rounded border ${fontSize===fs ? 'bg-blue-100 border-blue-400 text-blue-700' : 'bg-white border-gray-200 text-gray-600'}`}>{fs}</button>))}</div><div className="grid grid-cols-3 gap-1">{fontPresets.map((fs,idx)=>(<input key={`fps-${idx}`} type="range" min="16" max="120" value={fs} onChange={(e) => setFontPresets(prev => prev.map((pv,i)=> i===idx ? parseInt(e.target.value) : pv))} className="w-full accent-blue-500 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer" />))}</div></div> <div className="w-px h-5 bg-gray-300 mx-1" /> <button onClick={() => setTextGlow(!textGlow)} className={`p-1.5 rounded-lg flex items-center gap-1 ${textGlow ? 'bg-amber-100 text-amber-600' : 'text-gray-400 hover:bg-gray-100'}`} title="光彩"> <Sparkles size={16} strokeWidth={textGlow ? 2.5 : 2} /> <span className="text-[10px] font-bold">光彩</span> </button> <div className="w-px h-5 bg-gray-300 mx-1" /> <button onClick={handleTextSubmit} className="bg-blue-600 text-white px-4 py-1.5 rounded-lg font-bold text-sm hover:bg-blue-700 shadow-md">確定</button>
+                        <div className="absolute left-1/2 bottom-full mb-2 bg-white/95 backdrop-blur-sm px-3 py-2 rounded-xl shadow-2xl flex flex-wrap items-center gap-2 border border-gray-200 max-w-[calc(100vw-1rem)]" style={{ transform: `translateX(-50%) scale(${textMenuScale / Math.max(transform.scale, 0.1)})`, transformOrigin: 'bottom center' }} onPointerDown={e => e.stopPropagation()}>
+                          <div className="flex gap-1"> {COLORS.slice(0, 5).map(c => <button key={`ti-${c}`} onClick={() => updateSettings({ strokeColor: c })} className={`w-6 h-6 rounded-full border shadow-sm ${strokeColor === c ? 'border-blue-500 scale-110' : 'border-gray-200'}`} style={{ backgroundColor: c }} />)} </div> <div className="w-px h-5 bg-gray-300 mx-1" /> <div className="flex flex-col gap-1"> <div className="flex items-center gap-2"><span className="text-xs font-bold text-gray-600">ｻｲｽﾞ</span><input type="range" min="16" max="240" value={fontSize} onChange={e => updateSettings({ fontSize: Math.max(1, parseInt(e.target.value, 10) || 1) })} className="w-20 accent-blue-500" /><input type="text" inputMode="numeric" value={textFontSizeDraft} onChange={(e) => setTextFontSizeDraft(e.target.value)} className="w-16 px-1 py-0.5 text-xs border border-gray-300 rounded" /></div><div className="flex gap-1">{fontPresets.map((fs,idx)=>(<button key={`fp-${idx}`} onClick={() => updateSettings({ fontSize: fs })} className={`px-1.5 py-0.5 text-[10px] rounded border ${fontSize===fs ? 'bg-blue-100 border-blue-400 text-blue-700' : 'bg-white border-gray-200 text-gray-600'}`}>{fs}</button>))}</div><div className="grid grid-cols-3 gap-1">{fontPresets.map((fs,idx)=>(<input key={`fps-${idx}`} type="text" inputMode="numeric" value={fontPresetDrafts[idx] ?? String(fs)} onChange={(e) => setFontPresetDrafts(prev => prev.map((pv, i) => i === idx ? e.target.value : pv))} onBlur={() => setFontPresets(prev => prev.map((pv, i) => i === idx ? Math.max(8, Math.min(240, parseInt(fontPresetDrafts[idx], 10) || pv)) : pv))} onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }} className="w-full px-1 py-0.5 text-xs border border-gray-300 rounded" />))}</div></div> <div className="w-px h-5 bg-gray-300 mx-1" /> <button onClick={() => updateSettings({ textGlow: !textGlow })} className={`p-1.5 rounded-lg flex items-center gap-1 ${textGlow ? 'bg-amber-100 text-amber-600' : 'text-gray-400 hover:bg-gray-100'}`} title="光彩"> <Sparkles size={16} strokeWidth={textGlow ? 2.5 : 2} /> <span className="text-[10px] font-bold">光彩</span> </button> <div className="w-px h-5 bg-gray-300 mx-1" /> <button onClick={handleTextSubmit} className="bg-blue-600 text-white px-4 py-1.5 rounded-lg font-bold text-sm hover:bg-blue-700 shadow-md">確定</button>
                         </div>
-                        <textarea ref={textAreaRef} autoFocus value={textInput.value} onChange={(e) => setTextInput({...textInput, value: e.target.value})} onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleTextSubmit(); } }} onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()} className="p-2 font-bold border-4 border-blue-500 rounded-lg shadow-2xl focus:outline-none bg-transparent text-center resize-none overflow-hidden select-text touch-auto" style={{ color: strokeColor, textShadow: textGlow ? '0 0 10px white, 0 0 10px white, 0 0 10px white' : 'none', minWidth: '200px', width: `${Math.max(200, textInput.value.split('\n').reduce((a,b)=>a.length>b.length?a:b, '').length * fontSize * 1.2 + 40)}px`, fontSize: `${fontSize}px`, lineHeight: 1.2, height: `${Math.max(1, textInput.value.split('\n').length) * fontSize * 1.2 + 32}px`, transformOrigin: 'center center' }} placeholder="文字を入力 (Shift+Enterで改行)" />
+                        <textarea ref={textAreaRef} autoFocus value={textInput.value} onChange={handleTextInputChange} onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleTextSubmit(); } }} onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()} onFocus={(e) => { if (typeof window !== 'undefined') { typingScrollYRef.current = window.scrollY; setTimeout(() => e.currentTarget.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' }), 180); } }} wrap="off" className="p-2 font-bold border-4 border-blue-500 rounded-lg shadow-2xl focus:outline-none bg-transparent text-left resize-none overflow-x-auto overflow-y-hidden select-text touch-auto" style={{ color: strokeColor, textShadow: textGlow ? '0 0 10px white, 0 0 10px white, 0 0 10px white' : 'none', minWidth: 'min(200px, calc(100vw - 1rem))', maxWidth: 'calc(100vw - 1rem)', width: `${Math.max(200, textInput.value.split('\n').reduce((a,b)=>a.length>b.length?a:b, '').length * fontSize * 1.2 + 40)}px`, fontSize: `${fontSize}px`, lineHeight: 1.2, whiteSpace: 'pre', height: `${Math.max(1, textInput.value.split('\n').length) * fontSize * 1.2 + 32}px`, transformOrigin: 'center center' }} placeholder="文字を入力 (Shift+Enterで改行)" />
                       </div>
                     )}
                     {shouldShowSelectionMenu && boundingBoxForMenu && canvasRef.current && (
-                      <div className="absolute z-50 selection-menu flex items-center gap-1 p-1.5 bg-white rounded-xl shadow-2xl border border-gray-200 pointer-events-auto" style={{ left: `${((boundingBoxForMenu.x + boundingBoxForMenu.w/2) / canvasRef.current.width) * 100}%`, top: `${((boundingBoxForMenu.y + boundingBoxForMenu.h + 20) / canvasRef.current.height) * 100}%`, transform: `translateX(-50%) scale(${1 / Math.max(transform.scale, 0.1)})`, transformOrigin: 'top center' }} onPointerDown={(e) => e.stopPropagation()}>
+                      <div className="absolute z-50 selection-menu flex items-center gap-1 p-1.5 bg-white rounded-xl shadow-2xl border border-gray-200 pointer-events-auto max-w-[calc(100vw-1rem)] overflow-x-auto" style={{ left: `${((boundingBoxForMenu.x + boundingBoxForMenu.w/2) / canvasRef.current.width) * 100}%`, top: `${((boundingBoxForMenu.y + boundingBoxForMenu.h + 20) / canvasRef.current.height) * 100}%`, transform: `translateX(-50%) scale(${1 / Math.max(transform.scale, 0.1)})`, transformOrigin: 'top center' }} onPointerDown={(e) => e.stopPropagation()}>
                         {isSingleTextSelected && (() => { const ann = annotations.find(a => a.id === selectedIds[0]); return (<button onClick={(e) => { e.stopPropagation(); setTextInput({ id: ann.id, canvasX: ann.x + (ann.tx || 0), canvasY: ann.y + (ann.ty || 0), value: ann.text, scale: ann.scaleX || ann.scale || 1, rotation: ann.rotation || 0 }); setFontSize(ann.fontSize || 48); setStrokeColor(ann.color || '#000000'); setTextGlow(ann.hasGlow !== undefined ? ann.hasGlow : true); }} className="flex items-center gap-1.5 px-3 py-2 bg-blue-50 text-blue-600 font-bold rounded-lg hover:bg-blue-100 transition whitespace-nowrap"><PenTool size={18} /> 編集</button>); })()}
                         {hasInkSelected && ( <> <button onClick={(e) => { e.stopPropagation(); handleAutoCleanUp(); }} disabled={isCleanUpLoading || isOcrLoading} className={`flex items-center gap-1.5 px-3 py-2 ${isCleanUpLoading ? 'bg-gray-100 text-gray-400' : 'bg-purple-50 text-purple-700 hover:bg-purple-100'} font-bold rounded-lg transition whitespace-nowrap`}>{isCleanUpLoading ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}<span className="hidden sm:inline">{isCleanUpLoading ? (ocrProgress || '処理中...') : 'AI整頓'}</span></button> <button onClick={(e) => { e.stopPropagation(); runOCR(); }} disabled={isCleanUpLoading || isOcrLoading} className={`flex items-center gap-1.5 px-3 py-2 ${isOcrLoading ? 'bg-gray-100 text-gray-400' : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'} font-bold rounded-lg transition whitespace-nowrap`}>{isOcrLoading ? <Loader2 size={18} className="animate-spin" /> : <ScanText size={18} />}<span className="hidden sm:inline">{isOcrLoading ? (ocrProgress || '処理中...') : '自動文字認識'}</span></button> </> )}
                         {isGroupable && <button onClick={(e) => { e.stopPropagation(); handleGroup(); }} className="flex items-center gap-1.5 px-3 py-2 bg-emerald-50 text-emerald-700 font-bold rounded-lg hover:bg-emerald-100 transition whitespace-nowrap" title="グループ化"><Link size={18} /> <span className="hidden sm:inline">グループ</span></button>}
@@ -2551,7 +2764,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
             </>
           )}
         </div>
-        {!isFullscreen && ( <div className="w-full lg:w-80 bg-white border-t lg:border-t-0 lg:border-l border-gray-200 flex flex-col shrink-0 relative z-20"> <div className="p-4 bg-gray-50 border-b font-bold text-gray-700 flex justify-between items-center"> <div className="flex items-center gap-2"><FileText size={20} /> メモ (任意)</div> <button onClick={() => setIsLayoutModalOpen(true)} className="flex items-center gap-1 text-xs bg-white border border-gray-300 px-2 py-1.5 rounded-lg hover:bg-gray-100 text-gray-600 transition shadow-sm font-medium"><LayoutTemplate size={14} /> PPTレイアウト</button> </div> <textarea value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="評価のコメントやメモを入力..." className="flex-1 p-5 text-lg text-gray-800 resize-none focus:outline-none focus:ring-inset focus:ring-2 focus:ring-blue-500 select-text"></textarea> </div> )}
+        {!isFullscreen && ( <div className="w-full lg:w-80 bg-white border-t lg:border-t-0 lg:border-l border-gray-200 flex flex-col shrink-0 relative z-20"> <div className="p-4 bg-gray-50 border-b font-bold text-gray-700 flex justify-between items-center"> <div className="flex items-center gap-2"><FileText size={20} /> メモ (任意)</div> <button onClick={() => setIsLayoutModalOpen(true)} className="flex items-center gap-1 text-xs bg-white border border-gray-300 px-2 py-1.5 rounded-lg hover:bg-gray-100 text-gray-600 transition shadow-sm font-medium"><LayoutTemplate size={14} /> PPTレイアウト</button> </div> <textarea value={memo} onChange={(e) => setMemo(e.target.value)} onFocus={(e) => { setTimeout(() => e.currentTarget.scrollIntoView({ block: 'center', behavior: 'smooth' }), 180); }} placeholder="評価のコメントやメモを入力..." className="flex-1 p-5 text-lg text-gray-800 resize-none focus:outline-none focus:ring-inset focus:ring-2 focus:ring-blue-500 select-text"></textarea> </div> )}
       </div>
       {thumbContextMenu && ( <div className="fixed z-[66] thumb-context-menu bg-white border border-gray-200 rounded-xl shadow-2xl p-1.5 min-w-[170px]" style={{ left: Math.min(thumbContextMenu.x, viewportW - 190), top: Math.min(thumbContextMenu.y, viewportH - 120) }}> <button onClick={() => { copyThumbnailImage(thumbContextMenu.img); setThumbContextMenu(null); }} className="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-100 font-medium text-gray-700">画像をコピー</button> <button onClick={() => { saveThumbnailImage(thumbContextMenu.img); setThumbContextMenu(null); }} className="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-100 font-medium text-gray-700">画像を保存</button> </div> )}
       {isClearConfirmOpen && ( <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4"> <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl"> <h2 className="text-xl font-bold mb-2 text-gray-800">書き込みの消去</h2><p className="text-gray-600 mb-6">すべての書き込みを消去しますか？</p> <div className="flex justify-end gap-3"><button onClick={() => setIsClearConfirmOpen(false)} className="px-5 py-2.5 rounded-xl text-gray-600 hover:bg-gray-100 font-medium">キャンセル</button><button onClick={() => { pushHistory(annotations); setAnnotations([]); setIsClearConfirmOpen(false); }} className="px-5 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 font-medium">消去する</button></div> </div> </div> )}
@@ -2560,5 +2773,14 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       <input ref={albumInputRef} type="file" multiple accept="image/*" className="hidden" onChange={handleImageUpload} />
       {isLayoutModalOpen && ( <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[70] p-4 font-sans select-none backdrop-blur-sm"> <div className="bg-white rounded-2xl p-6 w-full max-w-3xl shadow-2xl max-h-[95vh] overflow-y-auto flex flex-col"> <div className="flex justify-between items-center mb-4"> <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2"><LayoutTemplate size={24} className="text-blue-600" /> スライド出力レイアウト設定</h2> <button onClick={() => setIsLayoutModalOpen(false)} className="p-2 text-gray-400 hover:bg-gray-100 rounded-full transition"><X size={24} /></button> </div> <div className="mb-6 flex gap-2 overflow-x-auto pb-2 shrink-0"> {[ { id: 'default', label: 'デフォルト (左メモ / 右画像)' }, { id: 'top_bottom', label: '上下分割 (上メモ / 下画像)' }, { id: 'images_only', label: '画像のみ (メモ非表示)' }, { id: 'custom', label: '完全カスタム (プレビューを操作)' } ].map(tpl => ( <button key={tpl.id} onClick={() => setLayoutSettings(prev => ({ ...prev, template: tpl.id }))} className={`px-4 py-2.5 border-2 rounded-xl text-sm font-bold whitespace-nowrap transition ${layoutSettings.template === tpl.id ? 'border-blue-500 bg-blue-50 text-blue-700 shadow-sm' : 'border-gray-200 text-gray-600 hover:bg-gray-50 hover:border-gray-300'}`}>{tpl.label}</button> ))} </div> <div className="mb-4"> <div className="flex justify-between items-end mb-2"><h3 className="font-bold text-gray-700 text-sm">プレビュー (ドラッグ＆リサイズ可能)</h3><span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">16:9 スライド</span></div> <div ref={previewContainerRef} className="relative w-full aspect-video bg-white border-2 border-gray-300 shadow-inner overflow-hidden rounded-lg" style={{ backgroundImage: 'radial-gradient(#e5e7eb 1px, transparent 1px)', backgroundSize: '40px 40px', backgroundPosition: '0 0' }}> <div className="absolute top-1/2 left-0 w-full h-px bg-blue-500/20 pointer-events-none"></div><div className="absolute left-1/2 top-0 w-px h-full bg-blue-500/20 pointer-events-none"></div> {layoutSettings.memoRect && ( <LayoutRect rect={layoutSettings.memoRect} onChange={(r) => setLayoutSettings(p => ({...p, memoRect: r}))} onDragStart={() => setLayoutSettings(p => ({...p, template: 'custom'}))} label="📝 メモ配置エリア" isMemo={true} containerRef={previewContainerRef} /> )} {layoutSettings.customImageRects.map((rect, i) => ( <LayoutRect key={i} rect={rect} onChange={(r) => { const newArr = [...layoutSettings.customImageRects]; newArr[i] = r; setLayoutSettings(p => ({...p, customImageRects: newArr})); }} onDragStart={() => setLayoutSettings(p => ({...p, template: 'custom'}))} label={`🖼️ ${i+1}枚目の画像`} bgImg={imagesData[i]?.baseImage?.src} isMemo={false} containerRef={previewContainerRef} /> ))} </div> </div> <div className="border border-gray-200 rounded-xl overflow-hidden shrink-0"> <button onClick={() => setShowAdvancedLayout(!showAdvancedLayout)} className="w-full px-4 py-3 bg-gray-50 hover:bg-gray-100 flex justify-between items-center text-sm font-bold text-gray-700 transition">詳細な数値を手入力して微調整する {showAdvancedLayout ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button> {showAdvancedLayout && ( <div className="p-4 bg-white space-y-4"> <p className="text-xs text-gray-500 mb-2">※単位は「インチ」です（標準16:9スライド幅10.0、高さ5.625）。左上が原点(0,0)です。</p> {layoutSettings.memoRect && ( <div className="space-y-1"><h4 className="font-bold text-gray-700 text-xs flex items-center gap-1.5"><FileText size={14}/> メモ枠</h4> <div className="flex flex-wrap gap-2 items-center text-xs bg-gray-50 p-2 rounded border"> <label className="flex items-center gap-1 font-bold text-gray-600">X: <input type="number" step="0.1" value={layoutSettings.memoRect.x} onChange={e => setLayoutSettings(p => ({...p, template: 'custom', memoRect: {...p.memoRect, x: parseFloat(e.target.value)||0}}))} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">Y: <input type="number" step="0.1" value={layoutSettings.memoRect.y} onChange={e => setLayoutSettings(p => ({...p, template: 'custom', memoRect: {...p.memoRect, y: parseFloat(e.target.value)||0}}))} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">W: <input type="number" step="0.1" value={layoutSettings.memoRect.w} onChange={e => setLayoutSettings(p => ({...p, template: 'custom', memoRect: {...p.memoRect, w: parseFloat(e.target.value)||0}}))} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">H: <input type="number" step="0.1" value={layoutSettings.memoRect.h} onChange={e => setLayoutSettings(p => ({...p, template: 'custom', memoRect: {...p.memoRect, h: parseFloat(e.target.value)||0}}))} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> </div> </div> )} <div className="space-y-1"><h4 className="font-bold text-gray-700 text-xs flex items-center justify-between"><span className="flex items-center gap-1.5"><ImageIcon size={14}/> 各画像枠</span><button onClick={() => setLayoutSettings(p => ({...p, template: 'custom', customImageRects: [...p.customImageRects, {x:0.5, y:1.0, w:4.0, h:3.0}]}))} className="text-blue-600 hover:text-blue-800 text-xs font-bold flex items-center gap-1"><Plus size={12}/> 枠を追加</button></h4> <div className="space-y-2 max-h-32 overflow-y-auto pr-1"> {layoutSettings.customImageRects.map((rect, idx) => ( <div key={idx} className="flex flex-wrap gap-2 items-center text-xs bg-gray-50 p-2 border rounded"> <span className="font-bold text-blue-600 w-12 text-center">{idx + 1}枚目</span> <label className="flex items-center gap-1 font-bold text-gray-600">X: <input type="number" step="0.1" value={rect.x} onChange={e => { const newArr = [...layoutSettings.customImageRects]; newArr[idx].x = parseFloat(e.target.value)||0; setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">Y: <input type="number" step="0.1" value={rect.y} onChange={e => { const newArr = [...layoutSettings.customImageRects]; newArr[idx].y = parseFloat(e.target.value)||0; setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">W: <input type="number" step="0.1" value={rect.w} onChange={e => { const newArr = [...layoutSettings.customImageRects]; newArr[idx].w = parseFloat(e.target.value)||0; setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">H: <input type="number" step="0.1" value={rect.h} onChange={e => { const newArr = [...layoutSettings.customImageRects]; newArr[idx].h = parseFloat(e.target.value)||0; setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <button onClick={() => { const newArr = layoutSettings.customImageRects.filter((_, i) => i !== idx); setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="ml-auto text-red-500 hover:bg-red-100 p-1 rounded transition"><Trash2 size={14} /></button> </div> ))} </div> </div> </div> )} </div> <div className="mt-6 flex justify-end shrink-0"> <button onClick={() => setIsLayoutModalOpen(false)} className="px-8 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold transition shadow-lg flex items-center gap-2">設定を保存して戻る</button> </div> </div> </div> )}
     </div>
+  );
+}
+
+
+export default function App() {
+  return (
+    <AppErrorBoundary>
+      <AppInner />
+    </AppErrorBoundary>
   );
 }
