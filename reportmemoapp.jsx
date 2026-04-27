@@ -18,6 +18,7 @@ const ToolType = {
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
 const APP_VERSION = 'v1.6.7';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
+const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
@@ -1894,7 +1895,11 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const [widthPresetDrafts, setWidthPresetDrafts] = useState(() => widthPresets.map(v => String(v)));
   const [fontPresetDrafts, setFontPresetDrafts] = useState(() => fontPresets.map(v => String(v)));
   const [textFontSizeDraft, setTextFontSizeDraft] = useState(() => String(mergedPrefs.text.fontSize));
-  const [strokeColor, setStrokeColor] = useState(mergedPrefs.freehand.strokeColor || COLORS[0]); const [fillColor, setFillColor] = useState(COLORS[1]);
+  const [strokeColor, setStrokeColor] = useState(() => {
+    if (typeof window === 'undefined') return mergedPrefs.freehand.strokeColor || COLORS[0];
+    const cached = (localStorage.getItem(STROKE_COLOR_CACHE_KEY) || '').trim();
+    return cached || mergedPrefs.freehand.strokeColor || COLORS[0];
+  }); const [fillColor, setFillColor] = useState(COLORS[1]);
   const [isFillTransparent, setIsFillTransparent] = useState(true); const [textGlow, setTextGlow] = useState(mergedPrefs.freehand.textGlow);
   const toolSettingsRef = useRef({
     [ToolType.PEN]: { lineWidth: mergedPrefs.freehand.lineWidth, strokeColor: mergedPrefs.freehand.strokeColor || COLORS[0], textGlow: mergedPrefs.freehand.textGlow }, [ToolType.HANDWRITING_TEXT]: { lineWidth: mergedPrefs.freehand.lineWidth, fontSize: mergedPrefs.text.fontSize, strokeColor: mergedPrefs.freehand.strokeColor || COLORS[0], textGlow: mergedPrefs.freehand.textGlow },
@@ -1921,11 +1926,28 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const annotationsRef = useRef(annotations); useEffect(() => { annotationsRef.current = annotations; }, [annotations]);
   const textInputRef = useRef(textInput); useEffect(() => { textInputRef.current = textInput; }, [textInput]);
   const textAreaRef = useRef(null);
+  const [textInputBoxSize, setTextInputBoxSize] = useState({ width: 220, height: 92 });
   const typingScrollYRef = useRef(0);
   const handwritingTimerRef = useRef(null); const handwritingStrokesRef = useRef([]); const [isAutoOcrLoading, setIsAutoOcrLoading] = useState(false);
   const clipboardReadInFlightRef = useRef(false);
   const lastPasteEventAtRef = useRef(0);
   const lastImageInsertAtRef = useRef(0);
+  useEffect(() => {
+    [ToolType.PEN, ToolType.HANDWRITING_TEXT, ToolType.LINE, ToolType.ARROW, ToolType.RECT, ToolType.CIRCLE].forEach((t) => {
+      if (!toolSettingsRef.current[t]) return;
+      toolSettingsRef.current[t].lineWidth = lineWidth;
+      toolSettingsRef.current[t].strokeColor = strokeColor;
+    });
+    if (toolSettingsRef.current[ToolType.TEXT]) {
+      toolSettingsRef.current[ToolType.TEXT].strokeColor = strokeColor;
+    }
+    projectPrefsRef.current = {
+      ...projectPrefsRef.current,
+      freehand: { ...projectPrefsRef.current.freehand, lineWidth, strokeColor },
+      shape: { ...projectPrefsRef.current.shape, lineWidth, strokeColor },
+      text: { ...projectPrefsRef.current.text, strokeColor }
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !window.visualViewport) return;
@@ -2327,6 +2349,23 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   }, [lineWidth]);
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    localStorage.setItem(STROKE_COLOR_CACHE_KEY, strokeColor);
+  }, [strokeColor]);
+  useEffect(() => {
+    if (!textInput) return;
+    const longestLine = (textInput.value || '').split('\n').reduce((a, b) => a.length > b.length ? a : b, '');
+    const measureCanvas = document.createElement('canvas');
+    const measureCtx = measureCanvas.getContext('2d');
+    if (measureCtx) measureCtx.font = `bold ${fontSize}px sans-serif`;
+    const measuredWidth = measureCtx ? Math.ceil(measureCtx.measureText(longestLine || '　').width) : Math.ceil((longestLine.length || 1) * fontSize * 0.8);
+    const viewportWidth = typeof window !== 'undefined' ? Math.max(220, window.innerWidth - 16) : 360;
+    const width = Math.max(220, Math.min(viewportWidth, measuredWidth + 56));
+    const lineCount = Math.max(1, (textInput.value || '').split('\n').length);
+    const height = Math.max(92, Math.ceil(lineCount * fontSize * 1.35 + 40));
+    setTextInputBoxSize({ width, height });
+  }, [textInput, fontSize]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
     localStorage.setItem(PRESET_CACHE_KEY, JSON.stringify({ widthPresets, fontPresets }));
   }, [widthPresets, fontPresets]);
   useEffect(() => {
@@ -2532,7 +2571,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const handlePointerDown = (e) => {
     if (e.target.closest('.text-overlay') || e.target.closest('.selection-menu')) return; if (e.target.tagName === 'CANVAS' || e.target.closest('.canvas-container')) e.preventDefault(); const isTouch = e.pointerType === 'touch'; const isMiddleMouse = e.pointerType === 'mouse' && e.button === 1; const isCanvasArea = e.target.tagName === 'CANVAS' || !!e.target.closest('.canvas-container'); const keepTextInputForNavPan = (isTouch || isMiddleMouse) && isCanvasArea && !!textInputRef.current && !fingerDrawMode; setActivePopover(null); if (textInput && !keepTextInputForNavPan) handleTextSubmit(); historySnapshotRef.current = annotations; activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (activePointers.current.size >= 2) { isDrawingRef.current = false; setCurrentAnnotation(null); dragModeRef.current = null; const pts = Array.from(activePointers.current.values()); const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y); const center = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }; lastPinch.current = { dist, center, initialTransform: { ...transformRef.current } }; return; }
-    if (activePointers.current.size === 1) { const isPanHandle = !!e.target.closest('.page-pan-handle'); if (isPanHandle) { isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return; } if (e.target.tagName !== 'CANVAS') return; const pos = getCanvasPos(e.clientX, e.clientY); const isTouchNavigation = isTouch && !fingerDrawMode; const isMiddleNavigation = isMiddleMouse; const isUniversalNavigation = isMiddleNavigation || (e.button === 0 && e.altKey) || isTouchNavigation; const isTouchPan = isTouch && !fingerDrawMode && !!textInputRef.current; if (isTouchPan) { isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return; } const effectiveShouldNavigate = isUniversalNavigation || currentToolRef.current === ToolType.SELECT;
+    if (activePointers.current.size === 1) { if (e.target.tagName !== 'CANVAS') return; const pos = getCanvasPos(e.clientX, e.clientY); const isTouchNavigation = isTouch && !fingerDrawMode; const isMiddleNavigation = isMiddleMouse; const isUniversalNavigation = isMiddleNavigation || (e.button === 0 && e.altKey) || isTouchNavigation; const isTouchPan = isTouch && !fingerDrawMode && !!textInputRef.current; if (isTouchPan) { isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return; } const effectiveShouldNavigate = isUniversalNavigation || currentToolRef.current === ToolType.SELECT;
       if (effectiveShouldNavigate) { if (selectedIds.length === 1) { const selAnn = annotations.find(a => a.id === selectedIds[0]); const handle = checkHandleHit(pos.x, pos.y, selAnn); if (handle) { dragModeRef.current = handle; dragStartPointerRef.current = pos; dragStartAnnsRef.current = [JSON.parse(JSON.stringify(selAnn))]; if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = false; return; } }
         if (selectedIds.length > 0) { const mBox = getMultiBBox(annotations, selectedIds); if (mBox && pos.x >= mBox.x && pos.x <= mBox.x + mBox.w && pos.y >= mBox.y && pos.y <= mBox.y + mBox.h) { dragModeRef.current = 'move_multi'; dragStartPointerRef.current = pos; let dragIds = [...selectedIds]; if (e.ctrlKey || e.metaKey) { const { duplicated, ids } = duplicateAnnotationsForDrag(selectedIds); if (duplicated.length > 0) { setAnnotations(prev => [...prev, ...duplicated]); setSelectedIds(ids); dragIds = ids; dragStartAnnsRef.current = duplicated.map(a => JSON.parse(JSON.stringify(a))); } else dragStartAnnsRef.current = annotations.filter(a => selectedIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); } else dragStartAnnsRef.current = annotations.filter(a => selectedIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; if (dragIds.length > 0) setSelectedIds(dragIds); return; } }
         const hit = checkHit(pos.x, pos.y, annotations); if (hit) { let targetIds = [hit.id]; if (hit.groupId) targetIds = annotations.filter(a => a.groupId === hit.groupId).map(a => a.id); if (e.ctrlKey || e.metaKey) { const { duplicated, ids } = duplicateAnnotationsForDrag(targetIds); if (duplicated.length > 0) { setAnnotations(prev => [...prev, ...duplicated]); targetIds = ids; dragStartAnnsRef.current = duplicated.map(a => JSON.parse(JSON.stringify(a))); } else dragStartAnnsRef.current = annotations.filter(a => targetIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); } else dragStartAnnsRef.current = annotations.filter(a => targetIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); setSelectedIds(targetIds); if (hit.color) setStrokeColor(hit.color); if (hit.fillColor !== undefined) { setIsFillTransparent(hit.fillColor === 'transparent'); if (hit.fillColor !== 'transparent') setFillColor(hit.fillColor); } if (hit.width) setLineWidth(hit.width); if (hit.fontSize) setFontSize(hit.fontSize); if (hit.hasGlow !== undefined) setTextGlow(hit.hasGlow); dragModeRef.current = 'move'; dragStartPointerRef.current = pos; if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; return; }
@@ -2626,7 +2665,6 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
               {activeImageId && (
                 <div ref={wrapperRef} className="flex-1 overflow-hidden relative flex items-center justify-center p-4 touch-none canvas-container" onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp} onWheel={handleWheel} onAuxClick={(e) => e.preventDefault()}>
                   <button onClick={() => setIsFullscreen(!isFullscreen)} className="absolute top-2 right-2 sm:top-3 sm:right-3 z-40 p-2.5 bg-white/90 backdrop-blur rounded-full shadow-lg text-gray-700 hover:bg-white transition-transform hover:scale-110" title={isFullscreen ? "全画面解除" : "全画面表示"}> {isFullscreen ? <Minimize size={22} /> : <Maximize size={22} />} </button>
-                  <div className="absolute top-2 left-2 sm:top-3 sm:left-3 z-40 page-pan-handle px-2 py-1.5 rounded-lg bg-white/90 text-gray-700 border border-gray-200 shadow-md text-xs font-bold cursor-grab active:cursor-grabbing">ページ移動</div>
                   <div className="relative flex items-center justify-center shadow-lg bg-white actual-canvas-wrapper shrink-0" style={{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`, transformOrigin: 'center', width: baseImage ? baseImage.width : 1200, height: baseImage ? baseImage.height : 800 }}>
                     {baseImage && <img src={baseImage.src} className="absolute inset-0 w-full h-full object-contain pointer-events-none" alt="Base" />}
                     <canvas ref={canvasRef} className={`absolute inset-0 w-full h-full ${currentTool === ToolType.SELECT || currentTool === ToolType.LASSO ? 'cursor-default' : 'cursor-crosshair'}`} />
@@ -2635,7 +2673,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                         <div className="absolute left-1/2 bottom-full mb-2 bg-white/95 backdrop-blur-sm px-3 py-2 rounded-xl shadow-2xl flex flex-wrap items-center gap-2 border border-gray-200 max-w-[calc(100vw-1rem)]" style={{ transform: `translateX(-50%) scale(${textMenuScale / Math.max(transform.scale, 0.1)})`, transformOrigin: 'bottom center' }} onPointerDown={e => e.stopPropagation()}>
                           <div className="flex gap-1"> {COLORS.slice(0, 5).map(c => <button key={`ti-${c}`} onClick={() => updateSettings({ strokeColor: c })} className={`w-6 h-6 rounded-full border shadow-sm ${strokeColor === c ? 'border-blue-500 scale-110' : 'border-gray-200'}`} style={{ backgroundColor: c }} />)} </div> <div className="w-px h-5 bg-gray-300 mx-1" /> <div className="flex flex-col gap-1"> <div className="flex items-center gap-2"><span className="text-xs font-bold text-gray-600">ｻｲｽﾞ(px)</span><input type="text" inputMode="numeric" value={textFontSizeDraft} onChange={(e) => setTextFontSizeDraft(e.target.value)} onBlur={() => { const parsed = parseInt(textFontSizeDraft, 10); if (Number.isFinite(parsed)) updateSettings({ fontSize: Math.max(8, Math.min(480, parsed)) }); else setTextFontSizeDraft(String(fontSize)); }} onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} className="w-20 px-1 py-0.5 text-xs border border-gray-300 rounded" /></div><div className="flex gap-1">{fontPresets.map((fs,idx)=>(<button key={`fp-${idx}`} onClick={() => updateSettings({ fontSize: fs })} className={`px-1.5 py-0.5 text-[10px] rounded border ${fontSize===fs ? 'bg-blue-100 border-blue-400 text-blue-700' : 'bg-white border-gray-200 text-gray-600'}`}>{fs}</button>))}</div><div className="grid grid-cols-3 gap-1">{fontPresets.map((fs,idx)=>(<input key={`fps-${idx}`} type="text" inputMode="numeric" value={fontPresetDrafts[idx] ?? String(fs)} onChange={(e) => setFontPresetDrafts(prev => prev.map((pv, i) => i === idx ? e.target.value : pv))} onBlur={() => setFontPresets(prev => prev.map((pv, i) => i === idx ? Math.max(8, Math.min(240, parseInt(fontPresetDrafts[idx], 10) || pv)) : pv))} onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }} className="w-full px-1 py-0.5 text-xs border border-gray-300 rounded" />))}</div></div> <div className="w-px h-5 bg-gray-300 mx-1" /> <button onClick={() => updateSettings({ textGlow: !textGlow })} className={`p-1.5 rounded-lg flex items-center gap-1 ${textGlow ? 'bg-amber-100 text-amber-600' : 'text-gray-400 hover:bg-gray-100'}`} title="光彩"> <Sparkles size={16} strokeWidth={textGlow ? 2.5 : 2} /> <span className="text-[10px] font-bold">光彩</span> </button> <div className="w-px h-5 bg-gray-300 mx-1" /> <button onClick={handleTextSubmit} className="bg-blue-600 text-white px-4 py-1.5 rounded-lg font-bold text-sm hover:bg-blue-700 shadow-md">確定</button>
                         </div>
-                        <textarea ref={textAreaRef} autoFocus value={textInput.value} onChange={handleTextInputChange} onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleTextSubmit(); } }} onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()} onFocus={(e) => { if (typeof window !== 'undefined') { typingScrollYRef.current = window.scrollY; setTimeout(() => e.currentTarget.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' }), 180); } }} wrap="off" className="p-2 font-bold border-4 border-blue-500 rounded-lg shadow-2xl focus:outline-none bg-transparent text-left resize-none overflow-x-auto overflow-y-hidden select-text touch-auto" style={{ color: strokeColor, textShadow: textGlow ? '0 0 10px white, 0 0 10px white, 0 0 10px white' : 'none', minWidth: 'min(200px, calc(100vw - 1rem))', maxWidth: 'calc(100vw - 1rem)', width: `${Math.max(200, textInput.value.split('\n').reduce((a,b)=>a.length>b.length?a:b, '').length * fontSize * 1.2 + 40)}px`, fontSize: `${fontSize}px`, lineHeight: 1.2, whiteSpace: 'pre', height: `${Math.max(1, textInput.value.split('\n').length) * fontSize * 1.2 + 32}px`, transformOrigin: 'center center' }} placeholder="文字を入力 (Shift+Enterで改行)" />
+                        <textarea ref={textAreaRef} autoFocus value={textInput.value} onChange={handleTextInputChange} onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleTextSubmit(); } }} onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()} onFocus={(e) => { if (typeof window !== 'undefined') { typingScrollYRef.current = window.scrollY; setTimeout(() => e.currentTarget.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' }), 180); } }} wrap="off" className="p-2 font-bold border-4 border-blue-500 rounded-lg shadow-2xl focus:outline-none bg-transparent text-left resize-none overflow-hidden select-text touch-auto" style={{ color: strokeColor, textShadow: textGlow ? '0 0 10px white, 0 0 10px white, 0 0 10px white' : 'none', minWidth: 'min(220px, calc(100vw - 1rem))', maxWidth: 'calc(100vw - 1rem)', width: `${textInputBoxSize.width}px`, fontSize: `${fontSize}px`, lineHeight: 1.2, whiteSpace: 'pre', height: `${textInputBoxSize.height}px`, transformOrigin: 'center center' }} placeholder="文字を入力 (Shift+Enterで改行)" />
                       </div>
                     )}
                     {shouldShowSelectionMenu && boundingBoxForMenu && canvasRef.current && (
