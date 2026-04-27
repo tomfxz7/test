@@ -713,7 +713,7 @@ export default function App() {
     };
 
     loadProjects();
-  }, [transform.scale]);
+  }, []);
 
   useEffect(() => {
     if (!isProjectsLoaded) return;
@@ -736,7 +736,7 @@ export default function App() {
     } catch {
       // ignore invalid config
     }
-  }, [transform.scale]);
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -755,7 +755,7 @@ export default function App() {
     } catch (e) {
       console.warn('persist auto backup handles failed', e);
     }
-  }, [transform.scale]);
+  }, []);
 
   useEffect(() => {
     const loadBackupHandles = async () => {
@@ -773,7 +773,7 @@ export default function App() {
       }
     };
     loadBackupHandles();
-  }, [transform.scale]);
+  }, []);
 
   const writeAutoBackupNow = useCallback(async (projectId = activeProjectId) => {
     const targetProject = projects.find(p => p.id === projectId);
@@ -833,7 +833,7 @@ export default function App() {
   useEffect(() => {
     const t = setInterval(() => setBackupStatusNow(Date.now()), 30000);
     return () => clearInterval(t);
-  }, [transform.scale]);
+  }, []);
 
   useEffect(() => { const key = localStorage.getItem('gemini_api_key'); if (key) setApiKeyInput(key); }, []);
   useEffect(() => { if (isGlobalExportOpen) setSelectedExportProjectIds(projects.map(p => p.id)); }, [isGlobalExportOpen, projects]);
@@ -856,7 +856,7 @@ export default function App() {
     });
     map.forEach((item) => ordered.push(item));
     return ordered;
-  }, [transform.scale]);
+  }, []);
 
   const pushReorderUndo = useCallback(() => {
     const currentProject = projects.find(p => p.id === activeProjectId);
@@ -1237,7 +1237,7 @@ export default function App() {
       window.removeEventListener('pointerdown', closeListImageMenu);
       if (listLongPressTimerRef.current) clearTimeout(listLongPressTimerRef.current);
     };
-  }, [transform.scale]);
+  }, []);
 
   const copyListImage = async (src) => {
     try {
@@ -1813,7 +1813,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     if (typeof imgObj.image === 'string' && imgObj.image.trim()) return imgObj.image;
     if (imgObj.image && typeof imgObj.image === 'object' && typeof imgObj.image.src === 'string' && imgObj.image.src.trim()) return imgObj.image.src;
     return '';
-  }, [transform.scale]);
+  }, []);
 
   const [memo, setMemo] = useState(initialItem ? initialItem.memo : '');
   const [imagesData, setImagesData] = useState([]);
