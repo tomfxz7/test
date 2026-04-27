@@ -755,7 +755,7 @@ export default function App() {
     } catch (e) {
       console.warn('persist auto backup handles failed', e);
     }
-  }, [transform.scale]);
+  }, []);
 
   useEffect(() => {
     const loadBackupHandles = async () => {
@@ -773,7 +773,7 @@ export default function App() {
       }
     };
     loadBackupHandles();
-  }, [transform.scale]);
+  }, []);
 
   const writeAutoBackupNow = useCallback(async (projectId = activeProjectId) => {
     const targetProject = projects.find(p => p.id === projectId);
@@ -833,7 +833,7 @@ export default function App() {
   useEffect(() => {
     const t = setInterval(() => setBackupStatusNow(Date.now()), 30000);
     return () => clearInterval(t);
-  }, [transform.scale]);
+  }, []);
 
   useEffect(() => { const key = localStorage.getItem('gemini_api_key'); if (key) setApiKeyInput(key); }, []);
   useEffect(() => { if (isGlobalExportOpen) setSelectedExportProjectIds(projects.map(p => p.id)); }, [isGlobalExportOpen, projects]);
@@ -1941,7 +1941,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       vv.removeEventListener('resize', updateInset);
       vv.removeEventListener('scroll', updateInset);
     };
-  }, [transform.scale]);
+  }, []);
 
   useEffect(() => {
     if (initialItem && initialItem.images) {
@@ -2388,7 +2388,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       return newAnn;
     });
     return { duplicated, ids: duplicated.map(a => a.id) };
-  }, [transform.scale]);
+  }, []);
 
   const handleGroup = () => { const newGroupId = 'grp_' + Date.now() + Math.random().toString(36).substring(2, 9); pushHistory(annotationsRef.current); setAnnotations(prev => prev.map(a => selectedIds.includes(a.id) ? { ...a, groupId: newGroupId } : a)); };
   const handleUngroup = () => { pushHistory(annotationsRef.current); setAnnotations(prev => prev.map(a => selectedIds.includes(a.id) ? { ...a, groupId: undefined } : a)); };
