@@ -713,7 +713,7 @@ export default function App() {
     };
 
     loadProjects();
-  }, []);
+  }, [transform.scale]);
 
   useEffect(() => {
     if (!isProjectsLoaded) return;
@@ -736,7 +736,7 @@ export default function App() {
     } catch {
       // ignore invalid config
     }
-  }, []);
+  }, [transform.scale]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -856,7 +856,7 @@ export default function App() {
     });
     map.forEach((item) => ordered.push(item));
     return ordered;
-  }, []);
+  }, [transform.scale]);
 
   const pushReorderUndo = useCallback(() => {
     const currentProject = projects.find(p => p.id === activeProjectId);
@@ -1237,7 +1237,7 @@ export default function App() {
       window.removeEventListener('pointerdown', closeListImageMenu);
       if (listLongPressTimerRef.current) clearTimeout(listLongPressTimerRef.current);
     };
-  }, []);
+  }, [transform.scale]);
 
   const copyListImage = async (src) => {
     try {
@@ -1813,7 +1813,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     if (typeof imgObj.image === 'string' && imgObj.image.trim()) return imgObj.image;
     if (imgObj.image && typeof imgObj.image === 'object' && typeof imgObj.image.src === 'string' && imgObj.image.src.trim()) return imgObj.image.src;
     return '';
-  }, []);
+  }, [transform.scale]);
 
   const [memo, setMemo] = useState(initialItem ? initialItem.memo : '');
   const [imagesData, setImagesData] = useState([]);
@@ -1848,7 +1848,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const transformRef = useRef({ scale: 1, x: 0, y: 0 });
   const setTransform = useCallback((val) => {
     _setTransform(prev => { const next = typeof val === 'function' ? val(prev) : val; transformRef.current = next; return next; });
-  }, []);
+  }, [transform.scale]);
   const fitImageToViewport = useCallback((imgObj) => {
     if (!wrapperRef.current || !imgObj) return;
     const pad = 24;
@@ -1908,7 +1908,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     if (tool === ToolType.TEXT) return 'text';
     if ([ToolType.PEN, ToolType.HANDWRITING_TEXT].includes(tool)) return 'freehand';
     return null;
-  }, []);
+  }, [transform.scale]);
   const [activePopover, setActivePopover] = useState(null); const [textInput, setTextInput] = useState(null); 
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false); const [fingerDrawMode, setFingerDrawMode] = useState(false);
   const [mobileKeyboardInset, setMobileKeyboardInset] = useState(0);
@@ -2066,7 +2066,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     } else {
       thumbDropCentersRef.current = [];
     }
-  }, []);
+  }, [transform.scale]);
 
   const handleThumbDragEnd = useCallback(() => {
     if (thumbDraggedIndex !== null && thumbDropIndex !== null && hasThumbDragMovement && thumbDraggedIndex !== thumbDropIndex) {
@@ -2251,7 +2251,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       window.removeEventListener('pointerdown', closeMenu);
       if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
     };
-  }, []);
+  }, [transform.scale]);
 
   const copyThumbnailImage = async (img) => {
     try {
@@ -2293,7 +2293,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       return newHistory;
     });
     setRedoStack([]);
-  }, []);
+  }, [transform.scale]);
   const handleUndo = useCallback(() => {
     if (history.length > 0) {
       const previous = history[history.length - 1];
@@ -2516,7 +2516,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       if (hasErasers) { tCtx.save(); tCtx.globalCompositeOperation = 'destination-out'; tCtx.lineCap = 'round'; tCtx.lineJoin = 'round'; tCtx.strokeStyle = 'rgba(0,0,0,1)'; for (let eraser of ann.erasers) { tCtx.lineWidth = eraser.width || 4; tCtx.beginPath(); if (eraser.points?.length > 0) { const p0 = transformPoint(eraser.points[0].x, eraser.points[0].y, ann); tCtx.moveTo(p0.x, p0.y); for (let i = 1; i < eraser.points.length; i++) { const pt = transformPoint(eraser.points[i].x, eraser.points[i].y, ann); tCtx.lineTo(pt.x, pt.y); } tCtx.stroke(); } } tCtx.restore(); ctx.drawImage(offCanvas, 0, 0); }
     };
     annotations.forEach(drawAnn); if (currentAnnotation) drawAnn(currentAnnotation);
-    if (selectedIds.length === 1 && (currentTool === ToolType.SELECT || currentTool === ToolType.LASSO)) { const ann = annotations.find(a => a.id === selectedIds[0]); if (ann && (!textInput || ann.id !== textInput.id)) { ctx.save(); const invScale = 1 / Math.max(transform.scale, 0.1); const drawHandle = (pos, isRound) => { const size = 8 * invScale; ctx.beginPath(); if (isRound) ctx.arc(pos.x, pos.y, size, 0, Math.PI*2); else ctx.rect(pos.x - size, pos.y - size, size * 2, size * 2); ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 2 * invScale; ctx.fill(); ctx.stroke(); }; if (['arrow', 'line', 'curve', 'curve_arrow', 'polyline', 'double_arrow', 'double_curve_arrow', 'polygon'].includes(ann.type)) { if (['polyline', 'polygon'].includes(ann.type)) ann.points.forEach(p => drawHandle(p, true)); else { drawHandle({ x: ann.startX, y: ann.startY }, true); drawHandle({ x: ann.endX, y: ann.endY }, true); if (ann.midX !== undefined) drawHandle({ x: ann.midX, y: ann.midY }, true); } } else { const bbox = getBBox(ann); if (bbox) { const p1 = transformPoint(bbox.x, bbox.y, ann); const p2 = transformPoint(bbox.x + bbox.w, bbox.y, ann); const p3 = transformPoint(bbox.x + bbox.w, bbox.y + bbox.h, ann); const p4 = transformPoint(bbox.x, bbox.y + bbox.h, ann); const pt = transformPoint(bbox.x + bbox.w/2, bbox.y, ann); const pb = transformPoint(bbox.x + bbox.w/2, bbox.y + bbox.h, ann); const pl = transformPoint(bbox.x, bbox.y + bbox.h/2, ann); const pr = transformPoint(bbox.x + bbox.w, bbox.y + bbox.h/2, ann); ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 2 * invScale; ctx.setLineDash([6 * invScale, 6 * invScale]); ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.lineTo(p3.x, p3.y); ctx.lineTo(p4.x, p4.y); ctx.closePath(); ctx.stroke(); ctx.setLineDash([]); drawHandle(p1, true); drawHandle(p2, true); drawHandle(p3, true); drawHandle(p4, true); drawHandle(pt, false); drawHandle(pb, false); drawHandle(pl, false); drawHandle(pr, false); const rotAngle = (ann.rotation || 0) - Math.PI/2; const protX = pt.x + 30 * invScale * Math.cos(rotAngle); const protY = pt.y + 30 * invScale * Math.sin(rotAngle); ctx.beginPath(); ctx.moveTo(pt.x, pt.y); ctx.lineTo(protX, protY); ctx.stroke(); drawHandle({x: protX, y: protY}, true); } } ctx.restore(); } } else if (selectedIds.length > 1 && (currentTool === ToolType.SELECT || currentTool === ToolType.LASSO)) { const multiBox = getMultiBBox(annotations, selectedIds); if (multiBox) { ctx.save(); const invScale = 1 / Math.max(transform.scale, 0.1); ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 2 * invScale; ctx.setLineDash([6 * invScale, 6 * invScale]); ctx.strokeRect(multiBox.x, multiBox.y, multiBox.w, multiBox.h); ctx.restore(); } }
+    if (selectedIds.length === 1 && (currentTool === ToolType.SELECT || currentTool === ToolType.LASSO)) { const ann = annotations.find(a => a.id === selectedIds[0]); if (ann && (!textInput || ann.id !== textInput.id)) { ctx.save(); const invScale = 1 / Math.max(transform.scale, 0.1); const drawHandle = (pos, isRound) => { const size = 8 * invScale; ctx.beginPath(); if (isRound) ctx.arc(pos.x, pos.y, size, 0, Math.PI*2); else ctx.rect(pos.x - size, pos.y - size, size * 2, size * 2); ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 2 * invScale; ctx.fill(); ctx.stroke(); }; if (['arrow', 'line', 'curve', 'curve_arrow', 'polyline', 'double_arrow', 'double_curve_arrow', 'polygon'].includes(ann.type)) { if (['polyline', 'polygon'].includes(ann.type)) ann.points.forEach(p => drawHandle(p, true)); else { drawHandle({ x: ann.startX, y: ann.startY }, true); drawHandle({ x: ann.endX, y: ann.endY }, true); if (ann.midX !== undefined) drawHandle({ x: ann.midX, y: ann.midY }, true); } } else { const bbox = getBBox(ann); if (bbox) { const p1 = transformPoint(bbox.x, bbox.y, ann); const p2 = transformPoint(bbox.x + bbox.w, bbox.y, ann); const p3 = transformPoint(bbox.x + bbox.w, bbox.y + bbox.h, ann); const p4 = transformPoint(bbox.x, bbox.y + bbox.h, ann); const pt = transformPoint(bbox.x + bbox.w/2, bbox.y, ann); const pb = transformPoint(bbox.x + bbox.w/2, bbox.y + bbox.h, ann); const pl = transformPoint(bbox.x, bbox.y + bbox.h/2, ann); const pr = transformPoint(bbox.x + bbox.w, bbox.y + bbox.h/2, ann); ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 2 * invScale; ctx.setLineDash([6 * invScale, 6 * invScale]); ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.lineTo(p3.x, p3.y); ctx.lineTo(p4.x, p4.y); ctx.closePath(); ctx.stroke(); ctx.setLineDash([]); drawHandle(p1, true); drawHandle(p2, true); drawHandle(p3, true); drawHandle(p4, true); drawHandle(pt, false); drawHandle(pb, false); drawHandle(pl, false); drawHandle(pr, false); const rotAngle = (ann.rotation || 0) - Math.PI/2; const protX = pt.x + 42 * invScale * Math.cos(rotAngle); const protY = pt.y + 42 * invScale * Math.sin(rotAngle); ctx.beginPath(); ctx.moveTo(pt.x, pt.y); ctx.lineTo(protX, protY); ctx.stroke(); drawHandle({x: protX, y: protY}, true); } } ctx.restore(); } } else if (selectedIds.length > 1 && (currentTool === ToolType.SELECT || currentTool === ToolType.LASSO)) { const multiBox = getMultiBBox(annotations, selectedIds); if (multiBox) { ctx.save(); const invScale = 1 / Math.max(transform.scale, 0.1); ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 2 * invScale; ctx.setLineDash([6 * invScale, 6 * invScale]); ctx.strokeRect(multiBox.x, multiBox.y, multiBox.w, multiBox.h); ctx.restore(); } }
     if (currentTool === ToolType.LASSO && lassoPoints.length > 0) { ctx.save(); ctx.beginPath(); ctx.moveTo(lassoPoints[0].x, lassoPoints[0].y); for (let i = 1; i < lassoPoints.length; i++) ctx.lineTo(lassoPoints[i].x, lassoPoints[i].y); ctx.closePath(); ctx.strokeStyle = '#3b82f6'; ctx.setLineDash([8, 8]); ctx.lineWidth = 2; ctx.stroke(); ctx.fillStyle = 'rgba(59, 130, 246, 0.15)'; ctx.fill(); ctx.restore(); }
   }, [activeImageId, baseImage, annotations, currentAnnotation, selectedIds, currentTool, lassoPoints, textInput, transform.scale]);
 
