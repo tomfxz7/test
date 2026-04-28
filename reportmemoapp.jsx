@@ -891,6 +891,7 @@ export default function App() {
     }));
     setReorderRedoHistory(prev => prev.slice(0, -1));
   };
+  const getItemTitle = (item, index = 0) => (item?.title && String(item.title).trim()) || `ページ ${index + 1}`;
 
   const handleExportPPTX = async () => {
     const project = projects.find(p => p.id === activeProjectId);
@@ -907,7 +908,7 @@ export default function App() {
       pptx.defineSlideMaster({ title: "REPORT_SLIDE", background: { color: "FFFFFF" } });
       for (const [index, item] of targetItems.entries()) {
         const slide = pptx.addSlide({ masterName: "REPORT_SLIDE" });
-        slide.addText(project.title, { x: 0.5, y: 0.2, w: 9.0, h: 0.6, fontSize: 21, fontFace: 'Meiryo', bold: true, color: '000000', valign: 'middle', align: 'left' });
+        slide.addText(getItemTitle(item, index), { x: 0.5, y: 0.2, w: 9.0, h: 0.6, fontSize: 21, fontFace: 'Meiryo', bold: true, color: '000000', valign: 'middle', align: 'left' });
         if (pptxSettings.showPageNumber) { slide.addText(`No. ${index + 1}`, { x: 8.5, y: 0.2, w: 1.0, h: 0.3, fontSize: 12, fontFace: 'Meiryo', bold: true, color: '666666', align: 'right' }); }
         const layout = item.layout || { template: 'default' };
         let memoRect, imageRects;
@@ -1541,7 +1542,7 @@ export default function App() {
                     <div className="bg-gray-50 px-4 py-2 border-b text-gray-500 font-medium flex justify-between items-center select-none drag-handle cursor-grab active:cursor-grabbing" style={{ touchAction: 'none' }}>
                       <div className="flex items-center gap-3">
                         <GripVertical size={20} className="text-gray-400" />
-                        <span className="font-bold text-gray-700">No. {index + 1}</span>
+                        <span className="font-bold text-gray-700">No. {index + 1} / {getItemTitle(item, index)}</span>
                       </div>
                       <div className="flex items-center gap-2 print:hidden pointer-events-auto">
                         {item.memo && (
@@ -1750,7 +1751,7 @@ export default function App() {
                       {project.items.map((it, idx) => (
                         <label key={it.id} className="flex items-center gap-2 text-xs cursor-pointer">
                           <input type="checkbox" checked={pptxSelectedItemIds.includes(it.id)} onChange={(e) => setPptxSelectedItemIds(prev => e.target.checked ? [...new Set([...prev, it.id])] : prev.filter(id => id !== it.id))} className="accent-orange-600" />
-                          No.{idx + 1} {it.memo ? it.memo.slice(0, 20) : '(メモなし)'}
+                          No.{idx + 1} {getItemTitle(it, idx)}
                         </label>
                       ))}
                     </div>
@@ -1817,6 +1818,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   }, []);
 
   const [memo, setMemo] = useState(initialItem ? initialItem.memo : '');
+  const [itemTitle, setItemTitle] = useState(initialItem?.title || '');
   const [imagesData, setImagesData] = useState([]);
   const [activeImageId, setActiveImageId] = useState(null);
   const [layoutSettings, setLayoutSettings] = useState(initialItem?.layout || { template: 'default', memoRect: { x: 0.5, y: 1.2, w: 3.5, h: 4.0 }, customImageRects: [] });
@@ -2508,6 +2510,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     if (activeImageId && baseImage) { const currentFinal = captureCurrentCanvas(); finalImagesData = finalImagesData.map(img => img.id === activeImageId ? { ...img, annotations: annotationsRef.current, finalImage: currentFinal } : img ); }
     onSave({
       id: initialItem ? initialItem.id : Date.now().toString(),
+      title: (itemTitle || '').trim() || '無題ページ',
       images: finalImagesData.map(img => {
         const safeBaseSrc = typeof img.baseImage?.src === 'string' ? img.baseImage.src : resolveStoredImageSrc(img);
         const safeFinalSrc = typeof img.finalImage === 'string' && img.finalImage ? img.finalImage : safeBaseSrc;
@@ -2774,7 +2777,25 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
             </>
           )}
         </div>
-        {!isFullscreen && ( <div className="w-full lg:w-80 bg-white border-t lg:border-t-0 lg:border-l border-gray-200 flex flex-col shrink-0 relative z-20"> <div className="p-4 bg-gray-50 border-b font-bold text-gray-700 flex justify-between items-center"> <div className="flex items-center gap-2"><FileText size={20} /> メモ (任意)</div> <button onClick={() => setIsLayoutModalOpen(true)} className="flex items-center gap-1 text-xs bg-white border border-gray-300 px-2 py-1.5 rounded-lg hover:bg-gray-100 text-gray-600 transition shadow-sm font-medium"><LayoutTemplate size={14} /> PPTレイアウト</button> </div> <textarea value={memo} onChange={(e) => setMemo(e.target.value)} onFocus={(e) => { setTimeout(() => e.currentTarget.scrollIntoView({ block: 'center', behavior: 'smooth' }), 180); }} placeholder="評価のコメントやメモを入力..." className="flex-1 p-5 text-lg text-gray-800 resize-none focus:outline-none focus:ring-inset focus:ring-2 focus:ring-blue-500 select-text"></textarea> </div> )}
+        {!isFullscreen && (
+          <div className="w-full lg:w-80 bg-white border-t lg:border-t-0 lg:border-l border-gray-200 flex flex-col shrink-0 relative z-20">
+            <div className="p-4 bg-gray-50 border-b font-bold text-gray-700 flex justify-between items-center">
+              <div className="flex items-center gap-2"><FileText size={20} /> ページ情報</div>
+              <button onClick={() => setIsLayoutModalOpen(true)} className="flex items-center gap-1 text-xs bg-white border border-gray-300 px-2 py-1.5 rounded-lg hover:bg-gray-100 text-gray-600 transition shadow-sm font-medium"><LayoutTemplate size={14} /> PPTレイアウト</button>
+            </div>
+            <div className="p-4 border-b bg-white">
+              <label className="block text-sm font-bold text-gray-600 mb-2">ページタイトル</label>
+              <input
+                type="text"
+                value={itemTitle}
+                onChange={(e) => setItemTitle(e.target.value)}
+                placeholder="例: 外観チェック 1F東側"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 select-text"
+              />
+            </div>
+            <textarea value={memo} onChange={(e) => setMemo(e.target.value)} onFocus={(e) => { setTimeout(() => e.currentTarget.scrollIntoView({ block: 'center', behavior: 'smooth' }), 180); }} placeholder="評価のコメントやメモを入力..." className="flex-1 p-5 text-lg text-gray-800 resize-none focus:outline-none focus:ring-inset focus:ring-2 focus:ring-blue-500 select-text"></textarea>
+          </div>
+        )}
       </div>
       {thumbContextMenu && ( <div className="fixed z-[66] thumb-context-menu bg-white border border-gray-200 rounded-xl shadow-2xl p-1.5 min-w-[170px]" style={{ left: Math.min(thumbContextMenu.x, viewportW - 190), top: Math.min(thumbContextMenu.y, viewportH - 120) }}> <button onClick={() => { copyThumbnailImage(thumbContextMenu.img); setThumbContextMenu(null); }} className="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-100 font-medium text-gray-700">画像をコピー</button> <button onClick={() => { saveThumbnailImage(thumbContextMenu.img); setThumbContextMenu(null); }} className="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-100 font-medium text-gray-700">画像を保存</button> </div> )}
       {isClearConfirmOpen && ( <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4"> <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl"> <h2 className="text-xl font-bold mb-2 text-gray-800">書き込みの消去</h2><p className="text-gray-600 mb-6">すべての書き込みを消去しますか？</p> <div className="flex justify-end gap-3"><button onClick={() => setIsClearConfirmOpen(false)} className="px-5 py-2.5 rounded-xl text-gray-600 hover:bg-gray-100 font-medium">キャンセル</button><button onClick={() => { pushHistory(annotations); setAnnotations([]); setIsClearConfirmOpen(false); }} className="px-5 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 font-medium">消去する</button></div> </div> </div> )}
