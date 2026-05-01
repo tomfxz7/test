@@ -2176,7 +2176,8 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   useEffect(() => {
     const handleGlobalPaste = async (e) => {
       lastPasteEventAtRef.current = Date.now();
-      if (isLayoutModalOpen || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.tagName === 'INPUT') return;
+      const activeTag = document?.activeElement?.tagName;
+      if (isLayoutModalOpen || activeTag === 'TEXTAREA' || activeTag === 'INPUT') return;
       const items = e.clipboardData?.items;
       const imageFiles = [];
       if (items) {
@@ -2235,7 +2236,8 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   useEffect(() => {
     const handlePasteShortcut = (e) => {
       if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'v') return;
-      if (document.activeElement.tagName === 'TEXTAREA' || document.activeElement.tagName === 'INPUT') return;
+      const activeTag = document?.activeElement?.tagName;
+      if (activeTag === 'TEXTAREA' || activeTag === 'INPUT') return;
       // iPadでpasteイベントが来ないケースのみフォールバック読み取り
       setTimeout(() => {
         if (Date.now() - lastPasteEventAtRef.current > 450 && Date.now() - lastImageInsertAtRef.current > 500) {
@@ -2735,7 +2737,6 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
               {activeImageId && (
                 <div ref={wrapperRef} className="flex-1 overflow-hidden relative flex items-center justify-center p-4 touch-none canvas-container" onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp} onWheel={handleWheel} onAuxClick={(e) => e.preventDefault()}>
                   <button onClick={() => setIsFullscreen(!isFullscreen)} className="absolute top-2 right-2 sm:top-3 sm:right-3 z-40 p-2.5 bg-white/90 backdrop-blur rounded-full shadow-lg text-gray-700 hover:bg-white transition-transform hover:scale-110" title={isFullscreen ? "全画面解除" : "全画面表示"}> {isFullscreen ? <Minimize size={22} /> : <Maximize size={22} />} </button>
-                  <div className="absolute top-2 left-2 sm:top-3 sm:left-3 z-40 page-pan-handle px-2 py-1.5 rounded-lg bg-white/90 text-gray-700 border border-gray-200 shadow-md text-xs font-bold cursor-grab active:cursor-grabbing">ページ移動</div>
                   <div className="relative flex items-center justify-center shadow-lg bg-white actual-canvas-wrapper shrink-0" style={{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`, transformOrigin: 'center', width: baseImage ? baseImage.width : 1200, height: baseImage ? baseImage.height : 800 }}>
                     {baseImage && <img src={baseImage.src} className="absolute inset-0 w-full h-full object-contain pointer-events-none" alt="Base" />}
                     <canvas ref={canvasRef} className={`absolute inset-0 w-full h-full ${currentTool === ToolType.SELECT || currentTool === ToolType.LASSO ? 'cursor-default' : 'cursor-crosshair'}`} />
