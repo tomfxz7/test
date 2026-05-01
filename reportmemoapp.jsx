@@ -713,7 +713,7 @@ export default function App() {
     };
 
     loadProjects();
-  }, [transform.scale]);
+  }, []);
 
   useEffect(() => {
     if (!isProjectsLoaded) return;
@@ -736,7 +736,7 @@ export default function App() {
     } catch {
       // ignore invalid config
     }
-  }, [transform.scale]);
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -755,7 +755,7 @@ export default function App() {
     } catch (e) {
       console.warn('persist auto backup handles failed', e);
     }
-  }, [transform.scale]);
+  }, []);
 
   useEffect(() => {
     const loadBackupHandles = async () => {
@@ -773,7 +773,7 @@ export default function App() {
       }
     };
     loadBackupHandles();
-  }, [transform.scale]);
+  }, []);
 
   const writeAutoBackupNow = useCallback(async (projectId = activeProjectId) => {
     const targetProject = projects.find(p => p.id === projectId);
@@ -833,7 +833,7 @@ export default function App() {
   useEffect(() => {
     const t = setInterval(() => setBackupStatusNow(Date.now()), 30000);
     return () => clearInterval(t);
-  }, [transform.scale]);
+  }, []);
 
   useEffect(() => { const key = localStorage.getItem('gemini_api_key'); if (key) setApiKeyInput(key); }, []);
   useEffect(() => { if (isGlobalExportOpen) setSelectedExportProjectIds(projects.map(p => p.id)); }, [isGlobalExportOpen, projects]);
@@ -856,7 +856,7 @@ export default function App() {
     });
     map.forEach((item) => ordered.push(item));
     return ordered;
-  }, [transform.scale]);
+  }, []);
 
   const pushReorderUndo = useCallback(() => {
     const currentProject = projects.find(p => p.id === activeProjectId);
@@ -1237,7 +1237,7 @@ export default function App() {
       window.removeEventListener('pointerdown', closeListImageMenu);
       if (listLongPressTimerRef.current) clearTimeout(listLongPressTimerRef.current);
     };
-  }, [transform.scale]);
+  }, []);
 
   const copyListImage = async (src) => {
     try {
@@ -1813,7 +1813,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     if (typeof imgObj.image === 'string' && imgObj.image.trim()) return imgObj.image;
     if (imgObj.image && typeof imgObj.image === 'object' && typeof imgObj.image.src === 'string' && imgObj.image.src.trim()) return imgObj.image.src;
     return '';
-  }, [transform.scale]);
+  }, []);
 
   const [memo, setMemo] = useState(initialItem ? initialItem.memo : '');
   const [imagesData, setImagesData] = useState([]);
@@ -1854,7 +1854,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const transformRef = useRef({ scale: 1, x: 0, y: 0 });
   const setTransform = useCallback((val) => {
     _setTransform(prev => { const next = typeof val === 'function' ? val(prev) : val; transformRef.current = next; return next; });
-  }, [transform.scale]);
+  }, []);
   const fitImageToViewport = useCallback((imgObj) => {
     if (!wrapperRef.current || !imgObj) return;
     const pad = 24;
@@ -1914,7 +1914,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     if (tool === ToolType.TEXT) return 'text';
     if ([ToolType.PEN, ToolType.HANDWRITING_TEXT].includes(tool)) return 'freehand';
     return null;
-  }, [transform.scale]);
+  }, []);
   const [activePopover, setActivePopover] = useState(null); const [textInput, setTextInput] = useState(null); 
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false); const [fingerDrawMode, setFingerDrawMode] = useState(false);
   const [mobileKeyboardInset, setMobileKeyboardInset] = useState(0);
@@ -1947,7 +1947,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       vv.removeEventListener('resize', updateInset);
       vv.removeEventListener('scroll', updateInset);
     };
-  }, [transform.scale]);
+  }, []);
 
   useEffect(() => {
     if (initialItem && initialItem.images) {
@@ -2072,7 +2072,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     } else {
       thumbDropCentersRef.current = [];
     }
-  }, [transform.scale]);
+  }, []);
 
   const handleThumbDragEnd = useCallback(() => {
     if (thumbDraggedIndex !== null && thumbDropIndex !== null && hasThumbDragMovement && thumbDraggedIndex !== thumbDropIndex) {
@@ -2257,7 +2257,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       window.removeEventListener('pointerdown', closeMenu);
       if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
     };
-  }, [transform.scale]);
+  }, []);
 
   const copyThumbnailImage = async (img) => {
     try {
@@ -2335,7 +2335,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       return newHistory;
     });
     setRedoStack([]);
-  }, [transform.scale]);
+  }, []);
   const handleUndo = useCallback(() => {
     if (history.length > 0) {
       const previous = history[history.length - 1];
@@ -2430,7 +2430,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       return newAnn;
     });
     return { duplicated, ids: duplicated.map(a => a.id) };
-  }, [transform.scale]);
+  }, []);
 
   const handleGroup = () => { const newGroupId = 'grp_' + Date.now() + Math.random().toString(36).substring(2, 9); pushHistory(annotationsRef.current); setAnnotations(prev => prev.map(a => selectedIds.includes(a.id) ? { ...a, groupId: newGroupId } : a)); };
   const handleUngroup = () => { pushHistory(annotationsRef.current); setAnnotations(prev => prev.map(a => selectedIds.includes(a.id) ? { ...a, groupId: undefined } : a)); };
@@ -2569,7 +2569,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   };
   const checkHit = useCallback((x, y, anns) => {
     const invScaleHit = 1 / Math.max(transform.scale, 0.1); for (let i = anns.length - 1; i >= 0; i--) { const a = anns[i]; const lp = inverseTransformPoint(x, y, a); const threshold = Math.min(180, Math.max(a.width / 2 + 18, 24) * Math.max(1, invScaleHit)); let hit = false; if (a.type === 'pen' || a.type === 'handwriting_text' || a.type === 'eraser_pixel') { for (let j = 0; j < a.points.length - 1; j++) if (distToSegment(lp, a.points[j], a.points[j+1]) < threshold) { hit = true; break; } } else if (a.type === 'rect' || a.type === 'triangle' || a.type === 'star') { const rx = Math.min(a.startX, a.endX), ry = Math.min(a.startY, a.endY), rw = Math.abs(a.endX - a.startX), rh = Math.abs(a.endY - a.startY); if (a.fillColor && a.fillColor !== 'transparent') { if (lp.x >= rx && lp.x <= rx + rw && lp.y >= ry && lp.y <= ry + rh) hit = true; } else { if ((lp.x >= rx - 10 && lp.x <= rx + rw + 10 && Math.abs(lp.y - ry) < 15) || (lp.x >= rx - 10 && lp.x <= rx + rw + 10 && Math.abs(lp.y - (ry + rh)) < 15) || (lp.y >= ry - 10 && lp.y <= ry + rh + 10 && Math.abs(lp.x - rx) < 15) || (lp.y >= ry - 10 && lp.y <= ry + rh + 10 && Math.abs(lp.x - (rx + rw)) < 15)) hit = true; } } else if (a.type === 'polygon') { if (a.fillColor && a.fillColor !== 'transparent') { if (pointInPolygon(lp, a.points)) hit = true; } else { for (let j = 0; j < a.points.length; j++) if (distToSegment({x: lp.x, y: lp.y}, a.points[j], a.points[(j + 1) % a.points.length]) < threshold) { hit = true; break; } } } else if (a.type === 'circle') { const cx = (a.startX + a.endX) / 2, cy = (a.startY + a.endY) / 2, rx = Math.abs(a.endX - a.startX) / 2, ry = Math.abs(a.endY - a.startY) / 2; if (rx > 0 && ry > 0) { const d = Math.pow(lp.x - cx, 2) / Math.pow(rx, 2) + Math.pow(lp.y - cy, 2) / Math.pow(ry, 2); if ((a.fillColor && a.fillColor !== 'transparent') ? d <= 1 : Math.abs(d - 1) < 0.3) hit = true; } } else if (['arrow', 'line', 'curve', 'curve_arrow', 'polyline', 'double_arrow', 'double_curve_arrow'].includes(a.type)) { if (a.type === 'polyline') { for (let j = 0; j < a.points.length - 1; j++) if (distToSegment({x: lp.x, y: lp.y}, a.points[j], a.points[j+1]) < threshold) { hit = true; break; } } else if (a.midX !== undefined) { if (distToSegment({x: lp.x, y: lp.y}, {x: a.startX, y: a.startY}, {x: a.midX, y: a.midY}) < threshold) hit = true; if (distToSegment({x: lp.x, y: lp.y}, {x: a.midX, y: a.midY}, {x: a.endX, y: a.endY}) < threshold) hit = true; } else { if (distToSegment({x: lp.x, y: lp.y}, {x: a.startX, y: a.startY}, {x: a.endX, y: a.endY}) < threshold) hit = true; } } else if (a.type === 'text') { const textPad = Math.min(120, Math.max(10, 10 * invScaleHit)); if (lp.x >= a.x - (a._w || 100)/2 - textPad && lp.x <= a.x + (a._w || 100)/2 + textPad && lp.y >= a.y - (a._h || 48)/2 - textPad && lp.y <= a.y + (a._h || 48)/2 + textPad) hit = true; } if (hit) return a; } return null;
-  }, [transform.scale]);
+  }, []);
 
   const handlePointerDown = (e) => {
     if (e.target.closest('.text-overlay') || e.target.closest('.selection-menu')) return; if (e.target.tagName === 'CANVAS' || e.target.closest('.canvas-container')) e.preventDefault(); const isTouch = e.pointerType === 'touch'; const isMiddleMouse = e.pointerType === 'mouse' && e.button === 1; const isCanvasArea = e.target.tagName === 'CANVAS' || !!e.target.closest('.canvas-container'); const keepTextInputForNavPan = (isTouch || isMiddleMouse) && isCanvasArea && !!textInputRef.current && !fingerDrawMode; setActivePopover(null); if (textInput && !keepTextInputForNavPan) handleTextSubmit(); historySnapshotRef.current = annotations; activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
