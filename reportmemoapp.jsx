@@ -666,6 +666,7 @@ class ReportMemoErrorBoundary extends React.Component {
 
 // --- Main App Component ---
 function AppCore() {
+export default function App() {
   const [fatalAppError, setFatalAppError] = useState(null);
   const [projects, setProjects] = useState([]);
   const [isProjectsLoaded, setIsProjectsLoaded] = useState(false);
