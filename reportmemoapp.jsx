@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.8';
+const APP_VERSION = 'v1.6.9';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -1921,6 +1921,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const [cropState, setCropState] = useState({ open: false, imageId: null, rect: null, dragHandle: null });
   const cropAreaRef = useRef(null);
   const cropDragStartRef = useRef(null);
+  const [cropImageBox, setCropImageBox] = useState({ left: 0, top: 0, width: 1, height: 1 });
   const [mobileKeyboardInset, setMobileKeyboardInset] = useState(0);
   const [selectedIds, setSelectedIds] = useState([]); const [lassoPoints, setLassoPoints] = useState([]); 
   const [isOcrLoading, setIsOcrLoading] = useState(false); const [isCleanUpLoading, setIsCleanUpLoading] = useState(false);
@@ -2222,8 +2223,8 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       const rect = cropAreaRef.current?.getBoundingClientRect();
       const dragStart = cropDragStartRef.current;
       if (!rect || !dragStart) return;
-      const dx = (e.clientX - dragStart.clientX) / rect.width;
-      const dy = (e.clientY - dragStart.clientY) / rect.height;
+      const dx = (e.clientX - dragStart.clientX) / Math.max(1, cropImageBox.width);
+      const dy = (e.clientY - dragStart.clientY) / Math.max(1, cropImageBox.height);
       setCropState(prev => {
         if (!prev.rect) return prev;
         let { x, y, w, h } = dragStart.rect;
@@ -2245,8 +2246,27 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
     return () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
-  }, [cropState.open, cropState.dragHandle]);
+  }, [cropState.open, cropState.dragHandle, cropImageBox.width, cropImageBox.height]);
   const selectedCropImage = cropState.imageId ? imagesData.find(i => i.id === cropState.imageId)?.baseImage : null;
+  useEffect(() => {
+    if (!cropState.open || !selectedCropImage || !cropAreaRef.current) return;
+    const updateCropImageBox = () => {
+      const rect = cropAreaRef.current.getBoundingClientRect();
+      const cw = rect.width;
+      const ch = rect.height;
+      const iw = selectedCropImage.width || 1;
+      const ih = selectedCropImage.height || 1;
+      const scale = Math.min(cw / iw, ch / ih);
+      const width = iw * scale;
+      const height = ih * scale;
+      const left = (cw - width) / 2;
+      const top = (ch - height) / 2;
+      setCropImageBox({ left, top, width, height });
+    };
+    updateCropImageBox();
+    window.addEventListener('resize', updateCropImageBox);
+    return () => window.removeEventListener('resize', updateCropImageBox);
+  }, [cropState.open, selectedCropImage]);
   const readImagesFromClipboardAPI = useCallback(async ({ waitForPermission = false } = {}) => {
     if (clipboardReadInFlightRef.current) return false;
     if (!navigator.clipboard?.read) return false;
@@ -2904,9 +2924,9 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       {cropState.open && cropState.imageId && (
         <div className="fixed inset-0 bg-black/70 z-[90] flex items-center justify-center p-4">
           <div className="bg-white rounded-xl p-4 w-full max-w-3xl">
-            <div ref={cropAreaRef} className="relative w-full bg-black overflow-hidden rounded-lg mx-auto" style={{ aspectRatio: `${selectedCropImage?.width || 4}/${selectedCropImage?.height || 3}`, maxHeight: '72vh' }}>
-              <img src={selectedCropImage?.src} className="w-full h-full object-fill" />
-              <div className="absolute border-2 border-blue-400 bg-blue-200/20" style={{ left: `${cropState.rect.x * 100}%`, top: `${cropState.rect.y * 100}%`, width: `${cropState.rect.w * 100}%`, height: `${cropState.rect.h * 100}%` }}>
+            <div ref={cropAreaRef} className="relative w-full bg-black/80 overflow-hidden rounded-lg mx-auto" style={{ height: '72vh' }}>
+              <img src={selectedCropImage?.src} className="absolute inset-0 w-full h-full object-contain" />
+              <div className="absolute border-2 border-blue-400 bg-blue-200/20" style={{ left: `${cropImageBox.left + cropState.rect.x * cropImageBox.width}px`, top: `${cropImageBox.top + cropState.rect.y * cropImageBox.height}px`, width: `${cropState.rect.w * cropImageBox.width}px`, height: `${cropState.rect.h * cropImageBox.height}px` }}>
                 {['tl','tr','bl','br'].map((h) => <div key={h} onPointerDown={(e) => { cropDragStartRef.current = { clientX: e.clientX, clientY: e.clientY, rect: { ...cropState.rect } }; setCropState(prev => ({ ...prev, dragHandle: h })); }} className={`absolute w-4 h-4 bg-blue-500 rounded-full ${h==='tl'?'left-[-8px] top-[-8px]':h==='tr'?'right-[-8px] top-[-8px]':h==='bl'?'left-[-8px] bottom-[-8px]':'right-[-8px] bottom-[-8px]'}`} />)}
               </div>
             </div>
