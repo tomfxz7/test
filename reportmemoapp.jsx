@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { 
   FolderOpen, Plus, Camera, Image as ImageIcon, 
   PenTool, Square, Circle, ArrowUpRight, Type, 
-  Undo, Trash2, Save, ChevronLeft, Printer, 
+  Undo, Trash2, Save, Printer, 
   Droplet, FileText, Maximize, Minimize, MousePointer2, Eraser,
   Scaling, Sparkles, Minus, Lasso, ScanText, Loader2, Hand, PenLine, Settings,
   Download, Upload, Presentation, Copy, ClipboardPaste, X, RefreshCw, Link, Unlink, LayoutTemplate, ChevronDown, ChevronUp, ChevronRight, GripVertical, Edit, Redo2, Crop
@@ -1433,7 +1433,6 @@ export default function App() {
       <div className="min-h-screen bg-gray-50 font-sans print:bg-white select-none">
         <header className="bg-white border-b px-6 py-4 flex items-center justify-between sticky top-0 z-30 print:hidden flex-wrap gap-4">
           <div className="flex items-center gap-4">
-            <button onClick={() => setCurrentView('home')} className="p-2 hover:bg-gray-100 rounded-full text-gray-600"><ChevronLeft size={28} /></button>
             <h1 className="text-2xl font-bold text-gray-800 break-all">{project.title}</h1>
             <button
               onClick={handleUndoAction}
@@ -1824,8 +1823,9 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
 
   const [isCropModalOpen, setIsCropModalOpen] = useState(false);
   const [cropTargetId, setCropTargetId] = useState(null);
-  const [cropRect, setCropRect] = useState({ x: 0.1, y: 0.1, w: 0.8, h: 0.8 });
+  const [cropRect, setCropRect] = useState({ x: 0, y: 0, w: 1, h: 1 });
   const cropDragRef = useRef(null);
+  const cropStageRef = useRef(null);
 
   const [thumbContextMenu, setThumbContextMenu] = useState(null);
   const [thumbDraggedIndex, setThumbDraggedIndex] = useState(null);
@@ -2284,8 +2284,75 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
 
   const openCropModal = (imgId) => {
     setCropTargetId(imgId);
-    setCropRect({ x: 0.1, y: 0.1, w: 0.8, h: 0.8 });
+    setCropRect({ x: 0, y: 0, w: 1, h: 1 });
     setIsCropModalOpen(true);
+  };
+
+
+  const clampCropRect = (rect) => {
+    const minSize = 0.03;
+    const w = Math.max(minSize, Math.min(1, rect.w));
+    const h = Math.max(minSize, Math.min(1, rect.h));
+    const x = Math.max(0, Math.min(1 - w, rect.x));
+    const y = Math.max(0, Math.min(1 - h, rect.y));
+    return { x, y, w, h };
+  };
+
+  const getCropDisplayRect = () => {
+    const target = imagesData.find(img => img.id === cropTargetId);
+    const stage = cropStageRef.current;
+    if (!target?.baseImage || !stage) return null;
+    const stageRect = stage.getBoundingClientRect();
+    const iw = target.baseImage.width || 1;
+    const ih = target.baseImage.height || 1;
+    const scale = Math.min(stageRect.width / iw, stageRect.height / ih);
+    const drawW = iw * scale;
+    const drawH = ih * scale;
+    const left = (stageRect.width - drawW) / 2;
+    const top = (stageRect.height - drawH) / 2;
+    return { left, top, width: drawW, height: drawH };
+  };
+
+  const startCropDrag = (e, mode) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const stage = cropStageRef.current;
+    const display = getCropDisplayRect();
+    if (!stage || !display) return;
+    const stageRect = stage.getBoundingClientRect();
+    const px = e.clientX - stageRect.left;
+    const py = e.clientY - stageRect.top;
+    cropDragRef.current = { mode, startX: px, startY: py, startRect: { ...cropRect }, display };
+  };
+
+  const onCropPointerMove = (e) => {
+    if (!cropDragRef.current) return;
+    const stage = cropStageRef.current;
+    if (!stage) return;
+    const stageRect = stage.getBoundingClientRect();
+    const px = e.clientX - stageRect.left;
+    const py = e.clientY - stageRect.top;
+    const { mode, startX, startY, startRect, display } = cropDragRef.current;
+    const dx = (px - startX) / display.width;
+    const dy = (py - startY) / display.height;
+    let next = { ...startRect };
+    if (mode === 'move') {
+      next.x = startRect.x + dx;
+      next.y = startRect.y + dy;
+    } else {
+      const right = startRect.x + startRect.w;
+      const bottom = startRect.y + startRect.h;
+      let left = startRect.x;
+      let top = startRect.y;
+      let r = right;
+      let b = bottom;
+      if (mode.includes('l')) left = startRect.x + dx;
+      if (mode.includes('r')) r = right + dx;
+      if (mode.includes('t')) top = startRect.y + dy;
+      if (mode.includes('b')) b = bottom + dy;
+      next = { x: left, y: top, w: r - left, h: b - top };
+    }
+    setCropRect(clampCropRect(next));
   };
 
   const applyCropToImage = async () => {
@@ -2633,7 +2700,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       {!isFullscreen && ( <header className="bg-white border-b px-3 py-2 flex flex-wrap justify-between items-center gap-2 shrink-0 shadow-sm relative z-20"> <button onClick={onCancel} className="text-gray-500 p-2 hover:bg-gray-100 rounded-lg font-medium transition text-sm">キャンセル</button> <div className="font-bold text-gray-800 text-sm sm:text-lg flex items-center gap-2 min-w-0"> {initialItem && <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-xs sm:text-sm">再編集</span>} <span className="truncate">画像の編集</span> </div> <button onClick={() => { setSelectedIds([]); setTimeout(handleSave, 50); }} disabled={imagesData.length === 0 && !memo} className="bg-blue-600 text-white px-3 sm:px-5 py-2 rounded-lg font-bold hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 transition shadow-md text-sm"> <Save size={16} /> 保存 </button> </header> )}
       <div className={`flex-1 flex ${isFullscreen ? 'flex-col fixed inset-0 z-50 bg-gray-200' : 'flex-col lg:flex-row'} overflow-hidden`}>
         <div className="flex-1 flex flex-col bg-gray-200 overflow-hidden relative">
-          {imagesData.length === 0 ? ( <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-6"> <div className="text-center mb-4"><h2 className="text-2xl font-bold text-gray-700 mb-2">写真を追加しますか？</h2><p className="text-gray-500">Ctrl+V (Cmd+V) で直接貼り付けることも可能です</p></div> <div className="flex flex-col sm:flex-row gap-4 w-full max-w-lg"> <label className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm cursor-pointer hover:shadow-md hover:bg-blue-50 transition text-blue-600"><Camera size={48} className="mb-4" /> <span className="font-bold text-lg">カメラで撮影</span><input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={handleImageUpload} /></label> <label className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm cursor-pointer hover:shadow-md hover:bg-blue-50 transition text-blue-600"><ImageIcon size={48} className="mb-4" /> <span className="font-bold text-lg">アルバムから</span><input type="file" multiple accept="image/*" className="hidden" onChange={handleImageUpload} /></label> </div> </div> ) : ( <>
+          {imagesData.length === 0 ? ( <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-6"> <div className="text-center mb-4"><h2 className="text-2xl font-bold text-gray-700 mb-2">写真を追加しますか？</h2><p className="text-gray-500">Ctrl+V (Cmd+V) で直接貼り付けることも可能です</p></div> <div className="flex flex-col sm:flex-row gap-4 w-full max-w-lg"> <label className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm cursor-pointer hover:shadow-md hover:bg-blue-50 transition text-blue-600"><Camera size={48} className="mb-4" /> <span className="font-bold text-lg">カメラで撮影</span><input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={handleImageUpload} /></label> <label className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm cursor-pointer hover:shadow-md hover:bg-blue-50 transition text-blue-600"><ImageIcon size={48} className="mb-4" /> <span className="font-bold text-lg">アルバムから</span><input type="file" multiple accept="image/*" className="hidden" onChange={handleImageUpload} /></label> <button onClick={() => readImagesFromClipboardAPI({ waitForPermission: true })} className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm hover:shadow-md hover:bg-emerald-50 transition text-emerald-600"><ClipboardPaste size={48} className="mb-4" /> <span className="font-bold text-lg">貼り付け</span></button> </div> </div> ) : ( <>
               <div className="bg-white border-b px-2 py-1.5 flex flex-wrap items-center gap-x-2 gap-y-2 shrink-0 shadow-sm z-10 relative overflow-visible">
                 <div className="flex items-center bg-gray-50 p-1 rounded-xl">
                   <ToolButton tool={ToolType.SELECT} icon={MousePointer2} label="選択" /> <ToolButton tool={ToolType.LASSO} icon={Lasso} label="投げ輪" /> <div className="w-px h-6 bg-gray-300 mx-1"></div> <ToolButton tool={ToolType.PEN} icon={PenTool} label="ペン" /> <ToolButton tool={ToolType.HANDWRITING_TEXT} icon={PenLine} label="手書き" /> <ToolButton tool={ToolType.TEXT} icon={Type} label="文字" />
@@ -2783,24 +2850,33 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       {thumbContextMenu && ( <div className="fixed z-[66] thumb-context-menu bg-white border border-gray-200 rounded-xl shadow-2xl p-1.5 min-w-[170px]" style={{ left: Math.min(thumbContextMenu.x, viewportW - 190), top: Math.min(thumbContextMenu.y, viewportH - 120) }}> <button onClick={() => { copyThumbnailImage(thumbContextMenu.img); setThumbContextMenu(null); }} className="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-100 font-medium text-gray-700">画像をコピー</button> <button onClick={() => { saveThumbnailImage(thumbContextMenu.img); setThumbContextMenu(null); }} className="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-100 font-medium text-gray-700">画像を保存</button> <button onClick={() => { openCropModal(thumbContextMenu.img.id); setThumbContextMenu(null); }} className="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-100 font-medium text-gray-700 flex items-center gap-2"><Crop size={16}/>トリミング</button> </div> )}
       
       {isCropModalOpen && (
-        <div className="fixed inset-0 bg-black/60 z-[75] flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl p-4 w-full max-w-xl">
+        <div className="fixed inset-0 bg-black/60 z-[75] flex items-center justify-center p-4" onPointerMove={onCropPointerMove} onPointerUp={() => { cropDragRef.current = null; }} onPointerCancel={() => { cropDragRef.current = null; }}>
+          <div className="bg-white rounded-2xl p-4 w-full max-w-2xl">
             <h3 className="font-bold mb-3">画像をトリミング</h3>
-            <div className="relative aspect-video bg-gray-100 overflow-hidden rounded-lg touch-none" onPointerDown={(e) => {
-              const rect = e.currentTarget.getBoundingClientRect();
-              const nx = (e.clientX - rect.left) / rect.width; const ny = (e.clientY - rect.top) / rect.height;
-              cropDragRef.current = { sx: nx, sy: ny, start: { ...cropRect } };
-            }} onPointerMove={(e) => {
-              if (!cropDragRef.current) return;
-              const rect = e.currentTarget.getBoundingClientRect();
-              const nx = (e.clientX - rect.left) / rect.width; const ny = (e.clientY - rect.top) / rect.height;
-              const dx = nx - cropDragRef.current.sx; const dy = ny - cropDragRef.current.sy;
-              setCropRect(prev => ({ ...prev, x: Math.max(0, Math.min(1 - prev.w, cropDragRef.current.start.x + dx)), y: Math.max(0, Math.min(1 - prev.h, cropDragRef.current.start.y + dy)) }));
-            }} onPointerUp={() => { cropDragRef.current = null; }}>
-              {(() => { const t = imagesData.find(img => img.id === cropTargetId); return t ? <img src={t.baseImage.src} className="absolute inset-0 w-full h-full object-contain" /> : null; })()}
-              <div className="absolute border-2 border-blue-500 bg-blue-200/20" style={{ left: `${cropRect.x*100}%`, top: `${cropRect.y*100}%`, width: `${cropRect.w*100}%`, height: `${cropRect.h*100}%` }} />
+            <div className="w-full h-[60vh] max-h-[520px] bg-gray-100 rounded-lg flex items-center justify-center overflow-hidden">
+              {(() => {
+                const t = imagesData.find(img => img.id === cropTargetId);
+                if (!t) return null;
+                const iw = t.baseImage.width || 1;
+                const ih = t.baseImage.height || 1;
+                const box = {
+                  left: `${cropRect.x * 100}%`,
+                  top: `${cropRect.y * 100}%`,
+                  width: `${cropRect.w * 100}%`,
+                  height: `${cropRect.h * 100}%`
+                };
+                return (
+                  <div ref={cropStageRef} className="relative bg-black/10 touch-none" style={{ width: "min(100%, calc(60vh * (" + (iw/ih) + \")))", aspectRatio: `${iw} / ${ih}` }}>
+                    <img src={t.baseImage.src} className="absolute inset-0 w-full h-full object-cover pointer-events-none" alt="crop" />
+                    <div className="absolute inset-0 bg-black/35" />
+                    <div className="absolute border-2 border-blue-500 bg-transparent" style={box} onPointerDown={(e) => startCropDrag(e, 'move')}>
+                      {['tl','tr','bl','br'].map(k => <div key={k} className={`absolute w-4 h-4 bg-white border-2 border-blue-600 rounded-full ${k==='tl'?'left-[-8px] top-[-8px]':k==='tr'?'right-[-8px] top-[-8px]':k==='bl'?'left-[-8px] bottom-[-8px]':'right-[-8px] bottom-[-8px]'}`} onPointerDown={(e) => startCropDrag(e, k)} />)}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
-            <p className="text-xs text-gray-500 mt-2">枠をドラッグして位置を調整します（簡易版）。</p>
+            <p className="text-xs text-gray-500 mt-2">枠をドラッグで移動、四隅ハンドルでサイズ変更できます。</p>
             <div className="flex justify-end gap-2 mt-4"><button onClick={() => setIsCropModalOpen(false)} className="px-4 py-2">キャンセル</button><button onClick={applyCropToImage} className="px-4 py-2 bg-blue-600 text-white rounded">適用</button></div>
           </div>
         </div>
