@@ -632,7 +632,40 @@ const LayoutRect = ({ rect, onChange, onDragStart, label, bgImg, isMemo, contain
 };
 
 
+class ReportMemoErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, errorCode: '', errorMessage: '' };
+  }
+  static getDerivedStateFromError(error) {
+    const msg = String(error?.message || error || 'Unknown error');
+    const code = `RM-RENDER-${Date.now().toString(36).slice(-6)}`;
+    return { hasError: true, errorCode: code, errorMessage: msg };
+  }
+  componentDidCatch(error) {
+    console.error('Render crash:', error);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-red-50 flex items-center justify-center p-6">
+          <div className="bg-white border border-red-200 rounded-2xl p-6 shadow-sm text-left max-w-xl w-full">
+            <p className="text-red-700 font-extrabold mb-2">アプリの描画中にエラーが発生しました。</p>
+            <p className="text-sm text-gray-700 mb-1">エラーコード: <span className="font-mono font-bold">{this.state.errorCode}</span></p>
+            <p className="text-xs text-gray-500 break-all">詳細: {this.state.errorMessage}</p>
+            <div className="mt-4 flex justify-end">
+              <button onClick={() => window.location.reload()} className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-bold">再読み込み</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // --- Main App Component ---
+function AppCore() {
 export default function App() {
   const [fatalAppError, setFatalAppError] = useState(null);
   const [projects, setProjects] = useState([]);
@@ -1831,6 +1864,14 @@ export default function App() {
         </button>
       </div>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ReportMemoErrorBoundary>
+      <AppCore />
+    </ReportMemoErrorBoundary>
   );
 }
 
