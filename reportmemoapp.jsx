@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.9';
+const APP_VERSION = 'v1.6.10';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -2021,10 +2021,10 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
 
   const switchImage = (newId, isInitial = false) => {
     if (activeImageId === newId) return;
-    const currentFinal = activeImageId && canvasRef.current ? captureCurrentCanvas() : null;
+    const currentFinal = null;
     setImagesData(prev => {
       let nextData = prev;
-      if (!isInitial && activeImageId) nextData = nextData.map(img => img.id === activeImageId ? { ...img, annotations: annotationsRef.current, history: history, redoHistory: redoStack, finalImage: currentFinal } : img );
+      if (!isInitial && activeImageId) nextData = nextData.map(img => img.id === activeImageId ? { ...img, annotations: annotationsRef.current, history: history, redoHistory: redoStack, finalImage: currentFinal || img.finalImage } : img );
       const nextImg = nextData.find(img => img.id === newId);
       if (nextImg) { setTimeout(() => { setBaseImage(nextImg.baseImage); setAnnotations(nextImg.annotations || []); setHistory(nextImg.history || []); setRedoStack(nextImg.redoHistory || []); setActiveImageId(newId); setSelectedIds([]); fitImageToViewport(nextImg.baseImage); }, 0); }
       return nextData;
@@ -2204,7 +2204,6 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       setBaseImage(cropped); setAnnotations([]); setHistory([]); setRedoStack([]); setSelectedIds([]);
       setImagesData(prev => prev.map(it => it.id === activeImageId ? { ...it, baseImage: cropped, annotations: [], history: [], redoHistory: [] } : it));
       fitImageToViewport(cropped);
-      setTimeout(() => handleSave(), 80);
     };
     img.src = src;
   };
@@ -2680,7 +2679,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     <div className={`min-h-screen bg-gray-100 flex flex-col font-sans fixed inset-0 z-50 overflow-hidden select-none`} style={{ paddingBottom: mobileKeyboardInset > 0 ? `${mobileKeyboardInset}px` : 0 }}>
       {isAutoOcrLoading && <div className="absolute top-20 right-4 bg-white/95 border border-blue-200 text-blue-700 px-6 py-3 rounded-xl shadow-2xl z-[100] font-bold flex items-center gap-3"><Loader2 size={24} className="animate-spin" /><span>手書き文字を変換中...</span></div>}
       {errorMessage && <div className="absolute top-20 left-1/2 transform -translate-x-1/2 bg-red-600 text-white px-6 py-3 rounded-xl shadow-2xl z-[100] font-bold flex items-center gap-2"><span>{errorMessage}</span><button onClick={() => setErrorMessage('')} className="ml-4 opacity-70 hover:opacity-100 text-xl font-light">×</button></div>}
-      {!isFullscreen && ( <header className="bg-white border-b px-3 py-2 flex flex-wrap justify-between items-center gap-2 shrink-0 shadow-sm relative z-20"> <button onClick={async () => { handleSave(); await onCancel(); }} className="text-gray-500 p-2 hover:bg-gray-100 rounded-lg font-medium transition text-sm">戻る</button> <div className="font-bold text-gray-800 text-sm sm:text-lg flex items-center gap-2 min-w-0"> {initialItem && <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-xs sm:text-sm">再編集</span>} <span className="truncate">画像の編集</span> </div> <div className="text-xs text-gray-500 font-bold">自動保存</div> </header> )}
+      {!isFullscreen && ( <header className="bg-white border-b px-3 py-2 flex flex-wrap justify-between items-center gap-2 shrink-0 shadow-sm relative z-20"> <button onClick={async () => { handleSave(); await onCancel(); }} className="text-gray-500 p-2 hover:bg-gray-100 rounded-lg font-medium transition text-sm">戻る</button> <div className="font-bold text-gray-800 text-sm sm:text-lg flex items-center gap-2 min-w-0"> {initialItem && <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-xs sm:text-sm">再編集</span>} <span className="truncate">画像の編集</span> </div> <div className="text-xs text-gray-500 font-bold">画像追加時に保存</div> </header> )}
       <div className={`flex-1 flex ${isFullscreen ? 'flex-col fixed inset-0 z-50 bg-gray-200' : 'flex-col lg:flex-row'} overflow-hidden`}>
         <div className="flex-1 flex flex-col bg-gray-200 overflow-hidden relative">
           {imagesData.length === 0 ? ( <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-6"> <div className="text-center mb-4"><h2 className="text-2xl font-bold text-gray-700 mb-2">写真を追加しますか？</h2><p className="text-gray-500">Ctrl+V (Cmd+V) で直接貼り付けることも可能です</p></div> <div className="flex flex-col sm:flex-row gap-4 w-full max-w-lg"> <button onClick={handlePasteImageButton} className="flex-1 flex flex-col items-center justify-center bg-emerald-50 p-8 rounded-2xl shadow-sm hover:shadow-md hover:bg-emerald-100 transition text-emerald-700"><ClipboardPaste size={48} className="mb-4" /> <span className="font-bold text-lg">ペースト</span></button> <label className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm cursor-pointer hover:shadow-md hover:bg-blue-50 transition text-blue-600"><Camera size={48} className="mb-4" /> <span className="font-bold text-lg">カメラで撮影</span><input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={handleImageUpload} /></label> <label className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm cursor-pointer hover:shadow-md hover:bg-blue-50 transition text-blue-600"><ImageIcon size={48} className="mb-4" /> <span className="font-bold text-lg">アルバムから</span><input type="file" multiple accept="image/*" className="hidden" onChange={handleImageUpload} /></label> </div> </div> ) : ( <>
@@ -2862,9 +2861,11 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
               if (cropDragRef.current.mode === 'move') {
                 setCropRect(prev => ({ ...prev, x: Math.max(0, Math.min(1 - prev.w, cropDragRef.current.ox + dx)), y: Math.max(0, Math.min(1 - prev.h, cropDragRef.current.oy + dy)) }));
               } else {
-                setCropRect(prev => ({ ...prev, w: Math.max(0.1, Math.min(1 - prev.x, cropDragRef.current.ow + dx)), h: Math.max(0.1, Math.min(1 - prev.y, cropDragRef.current.oh + dy)) }));
+                const baseW = Number.isFinite(cropDragRef.current.ow) ? cropDragRef.current.ow : cropRect.w;
+                const baseH = Number.isFinite(cropDragRef.current.oh) ? cropDragRef.current.oh : cropRect.h;
+                setCropRect(prev => ({ ...prev, w: Math.max(0.1, Math.min(1 - prev.x, baseW + dx)), h: Math.max(0.1, Math.min(1 - prev.y, baseH + dy)) }));
               }
-            }} onPointerUp={() => { cropDragRef.current = null; }}>
+            }} onPointerUp={() => { cropDragRef.current = null; }} onPointerCancel={() => { cropDragRef.current = null; }} onPointerLeave={() => { cropDragRef.current = null; }}>
               <img src={baseImage.src} className="absolute inset-0 w-full h-full object-contain" alt="crop" />
               <div className="absolute border-2 border-blue-500 bg-blue-200/20" style={{ left: `${cropRect.x*100}%`, top: `${cropRect.y*100}%`, width: `${cropRect.w*100}%`, height: `${cropRect.h*100}%` }} onPointerDown={(e) => { cropDragRef.current = { mode: 'move', sx: e.clientX, sy: e.clientY, ox: cropRect.x, oy: cropRect.y }; }}>
                 <div className="absolute right-0 bottom-0 w-4 h-4 bg-blue-600" onPointerDown={(e) => { e.stopPropagation(); cropDragRef.current = { mode: 'resize', sx: e.clientX, sy: e.clientY, ow: cropRect.w, oh: cropRect.h }; }} />
