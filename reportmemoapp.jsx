@@ -1790,8 +1790,7 @@ export default function App() {
             } else {
               return { ...p, items: [...p.items, newItem], editorPrefs: mergeEditorPrefs(updatedEditorPrefs) };
             }
-          })); 
-          setCurrentView('project'); 
+          }));
         }}
       />
     );
