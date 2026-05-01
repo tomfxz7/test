@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.7';
+const APP_VERSION = 'v1.6.8';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
@@ -634,6 +634,7 @@ const LayoutRect = ({ rect, onChange, onDragStart, label, bgImg, isMemo, contain
 
 // --- Main App Component ---
 export default function App() {
+  const [fatalAppError, setFatalAppError] = useState(null);
   const [projects, setProjects] = useState([]);
   const [isProjectsLoaded, setIsProjectsLoaded] = useState(false);
 
@@ -683,6 +684,37 @@ export default function App() {
   const activeDragPointerIdRef = useRef(null);
   const lastDragPointerYRef = useRef(null);
   const projectListViewportRef = useRef(null);
+
+  useEffect(() => {
+    const normalizeError = (err, source = 'runtime') => {
+      const msg = String(err?.message || err || 'Unknown error');
+      const code = `RM-${source.toUpperCase()}-${Date.now().toString(36).slice(-6)}`;
+      return { code, message: msg };
+    };
+    const onError = (event) => setFatalAppError(normalizeError(event?.error || event?.message, 'runtime'));
+    const onUnhandledRejection = (event) => setFatalAppError(normalizeError(event?.reason, 'promise'));
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onUnhandledRejection);
+    return () => {
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onUnhandledRejection);
+    };
+  }, []);
+
+  if (fatalAppError) {
+    return (
+      <div className="min-h-screen bg-red-50 flex items-center justify-center p-6">
+        <div className="bg-white border border-red-200 rounded-2xl p-6 shadow-sm text-left max-w-xl w-full">
+          <p className="text-red-700 font-extrabold mb-2">アプリの起動中にエラーが発生しました。</p>
+          <p className="text-sm text-gray-700 mb-1">エラーコード: <span className="font-mono font-bold">{fatalAppError.code}</span></p>
+          <p className="text-xs text-gray-500 break-all">詳細: {fatalAppError.message}</p>
+          <div className="mt-4 flex justify-end">
+            <button onClick={() => window.location.reload()} className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-bold">再読み込み</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   useEffect(() => {
     const loadProjects = async () => {
