@@ -2029,6 +2029,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       if (nextImg) { setTimeout(() => { setBaseImage(nextImg.baseImage); setAnnotations(nextImg.annotations || []); setHistory(nextImg.history || []); setRedoStack(nextImg.redoHistory || []); setActiveImageId(newId); setSelectedIds([]); fitImageToViewport(nextImg.baseImage); }, 0); }
       return nextData;
     });
+    setTimeout(() => handleSave(), 80);
   };
 
   const syncActiveImageState = useCallback((list) => {
