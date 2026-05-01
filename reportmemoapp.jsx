@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.7';
+const APP_VERSION = 'v1.6.8';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -1920,6 +1920,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false); const [fingerDrawMode, setFingerDrawMode] = useState(false);
   const [cropState, setCropState] = useState({ open: false, imageId: null, rect: null, dragHandle: null });
   const cropAreaRef = useRef(null);
+  const cropDragStartRef = useRef(null);
   const [mobileKeyboardInset, setMobileKeyboardInset] = useState(0);
   const [selectedIds, setSelectedIds] = useState([]); const [lassoPoints, setLassoPoints] = useState([]); 
   const [isOcrLoading, setIsOcrLoading] = useState(false); const [isCleanUpLoading, setIsCleanUpLoading] = useState(false);
@@ -2219,28 +2220,33 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     if (!cropState.open || !cropState.dragHandle) return;
     const onMove = (e) => {
       const rect = cropAreaRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const px = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      const py = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+      const dragStart = cropDragStartRef.current;
+      if (!rect || !dragStart) return;
+      const dx = (e.clientX - dragStart.clientX) / rect.width;
+      const dy = (e.clientY - dragStart.clientY) / rect.height;
       setCropState(prev => {
         if (!prev.rect) return prev;
-        let { x, y, w, h } = prev.rect;
-        if (prev.dragHandle === 'tl') { w = (x + w) - px; h = (y + h) - py; x = px; y = py; }
-        if (prev.dragHandle === 'tr') { w = px - x; h = (y + h) - py; y = py; }
-        if (prev.dragHandle === 'bl') { w = (x + w) - px; x = px; h = py - y; }
-        if (prev.dragHandle === 'br') { w = px - x; h = py - y; }
-        w = Math.max(0.03, Math.min(1 - x, w));
-        h = Math.max(0.03, Math.min(1 - y, h));
-        x = Math.max(0, Math.min(0.97, x));
-        y = Math.max(0, Math.min(0.97, y));
+        let { x, y, w, h } = dragStart.rect;
+        if (prev.dragHandle === 'tl') { x += dx; y += dy; w -= dx; h -= dy; }
+        if (prev.dragHandle === 'tr') { y += dy; w += dx; h -= dy; }
+        if (prev.dragHandle === 'bl') { x += dx; w -= dx; h += dy; }
+        if (prev.dragHandle === 'br') { w += dx; h += dy; }
+        if (w < 0.03) w = 0.03;
+        if (h < 0.03) h = 0.03;
+        x = Math.max(0, Math.min(1 - w, x));
+        y = Math.max(0, Math.min(1 - h, y));
         return { ...prev, rect: { x, y, w, h } };
       });
     };
-    const onUp = () => setCropState(prev => ({ ...prev, dragHandle: null }));
+    const onUp = () => {
+      cropDragStartRef.current = null;
+      setCropState(prev => ({ ...prev, dragHandle: null }));
+    };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
     return () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
   }, [cropState.open, cropState.dragHandle]);
+  const selectedCropImage = cropState.imageId ? imagesData.find(i => i.id === cropState.imageId)?.baseImage : null;
   const readImagesFromClipboardAPI = useCallback(async ({ waitForPermission = false } = {}) => {
     if (clipboardReadInFlightRef.current) return false;
     if (!navigator.clipboard?.read) return false;
@@ -2898,10 +2904,10 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       {cropState.open && cropState.imageId && (
         <div className="fixed inset-0 bg-black/70 z-[90] flex items-center justify-center p-4">
           <div className="bg-white rounded-xl p-4 w-full max-w-3xl">
-            <div ref={cropAreaRef} className="relative w-full aspect-video bg-black/80 overflow-hidden rounded-lg">
-              <img src={imagesData.find(i => i.id === cropState.imageId)?.baseImage?.src} className="w-full h-full object-contain" />
+            <div ref={cropAreaRef} className="relative w-full bg-black overflow-hidden rounded-lg mx-auto" style={{ aspectRatio: `${selectedCropImage?.width || 4}/${selectedCropImage?.height || 3}`, maxHeight: '72vh' }}>
+              <img src={selectedCropImage?.src} className="w-full h-full object-fill" />
               <div className="absolute border-2 border-blue-400 bg-blue-200/20" style={{ left: `${cropState.rect.x * 100}%`, top: `${cropState.rect.y * 100}%`, width: `${cropState.rect.w * 100}%`, height: `${cropState.rect.h * 100}%` }}>
-                {['tl','tr','bl','br'].map((h) => <div key={h} onPointerDown={() => setCropState(prev => ({ ...prev, dragHandle: h }))} className={`absolute w-4 h-4 bg-blue-500 rounded-full ${h==='tl'?'left-[-8px] top-[-8px]':h==='tr'?'right-[-8px] top-[-8px]':h==='bl'?'left-[-8px] bottom-[-8px]':'right-[-8px] bottom-[-8px]'}`} />)}
+                {['tl','tr','bl','br'].map((h) => <div key={h} onPointerDown={(e) => { cropDragStartRef.current = { clientX: e.clientX, clientY: e.clientY, rect: { ...cropState.rect } }; setCropState(prev => ({ ...prev, dragHandle: h })); }} className={`absolute w-4 h-4 bg-blue-500 rounded-full ${h==='tl'?'left-[-8px] top-[-8px]':h==='tr'?'right-[-8px] top-[-8px]':h==='bl'?'left-[-8px] bottom-[-8px]':'right-[-8px] bottom-[-8px]'}`} />)}
               </div>
             </div>
             <div className="flex justify-end gap-2 mt-3">
