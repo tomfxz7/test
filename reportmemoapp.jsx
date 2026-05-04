@@ -16,10 +16,11 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.10';
+const APP_VERSION = 'v1.6.12';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
+const PPT_TEXT_LANG = 'ja-JP';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -493,12 +494,12 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
       const rx = box.x + (ann.tx || 0); const ry = box.y + (ann.ty || 0);
       const rot = (ann.rotation || 0) * (180 / Math.PI);
       const pColor = (ann.color || '#000000').replace('#', '');
-      const textRuns = (ann.text || '').split('\n').map((line, idx, arr) => ({ text: line, options: { breakLine: idx < arr.length - 1 } }));
+      const textRuns = (ann.text || '').split('\n').map((line, idx, arr) => ({ text: line, options: { breakLine: idx < arr.length - 1, lang: PPT_TEXT_LANG } }));
       const textOpts = {
         x: drawX + rx * ratioX, y: drawY + ry * ratioY,
         w: Math.max(0.05, box.w * ratioX * 1.08), h: Math.max(0.05, box.h * ratioY * 1.05),
         fontSize: Math.max(1, (ann.fontSize || 48) * pxToPt), color: pColor, bold: true, rotate: rot, valign: 'middle', align: 'center',
-        margin: 0, fit: 'resize', fontFace: 'Meiryo',
+        margin: 0, fit: 'resize', fontFace: 'Meiryo', lang: PPT_TEXT_LANG,
         ...glowOpts(ann.hasGlow)
       };
       slide.addText(textRuns, textOpts);
@@ -908,13 +909,13 @@ export default function App() {
       pptx.defineSlideMaster({ title: "REPORT_SLIDE", background: { color: "FFFFFF" } });
       for (const [index, item] of targetItems.entries()) {
         const slide = pptx.addSlide({ masterName: "REPORT_SLIDE" });
-        slide.addText(getItemTitle(item, index), { x: 0.5, y: 0.2, w: 9.0, h: 0.6, fontSize: 21, fontFace: 'Meiryo', bold: true, color: '000000', valign: 'middle', align: 'left' });
-        if (pptxSettings.showPageNumber) { slide.addText(`No. ${index + 1}`, { x: 8.5, y: 0.2, w: 1.0, h: 0.3, fontSize: 12, fontFace: 'Meiryo', bold: true, color: '666666', align: 'right' }); }
+        slide.addText(getItemTitle(item, index), { x: 0.5, y: 0.2, w: 9.0, h: 0.6, fontSize: 21, fontFace: 'Meiryo', bold: true, color: '000000', valign: 'middle', align: 'left', lang: PPT_TEXT_LANG });
+        if (pptxSettings.showPageNumber) { slide.addText(`No. ${index + 1}`, { x: 8.5, y: 0.2, w: 1.0, h: 0.3, fontSize: 12, fontFace: 'Meiryo', bold: true, color: '666666', align: 'right', lang: PPT_TEXT_LANG }); }
         const layout = item.layout || { template: 'default' };
         let memoRect, imageRects;
         if (layout.template === 'custom') { memoRect = layout.memoRect; imageRects = layout.customImageRects || []; } 
         else { const calc = calculateTemplateLayout(layout.template, item.images || []); memoRect = calc.memoRect; imageRects = calc.customImageRects; }
-        if (item.memo && memoRect) { slide.addText(item.memo, { x: memoRect.x, y: memoRect.y, w: memoRect.w, h: memoRect.h, fontSize: 16, fontFace: 'Meiryo', color: '333333', align: 'left', valign: 'top' }); }
+        if (item.memo && memoRect) { slide.addText(item.memo, { x: memoRect.x, y: memoRect.y, w: memoRect.w, h: memoRect.h, fontSize: 16, fontFace: 'Meiryo', color: '333333', align: 'left', valign: 'top', lang: PPT_TEXT_LANG }); }
         const images = item.images || [];
         for (const [i, imgData] of images.entries()) {
             const rect = imageRects[i];
@@ -1143,7 +1144,12 @@ export default function App() {
         scrollDelta = Math.max(1, Math.round(maxSpeed * ratio));
       }
       if (scrollDelta !== 0) {
-        window.scrollBy({ top: scrollDelta, behavior: 'auto' });
+        const listViewport = projectListViewportRef.current;
+        if (listViewport) {
+          listViewport.scrollTop += scrollDelta;
+        } else {
+          window.scrollBy({ top: scrollDelta, behavior: 'auto' });
+        }
         setDragCurrentScrollY(window.scrollY);
         const nextDropIndex = calculateDropIndex(y);
         if (nextDropIndex !== null) setDropIndex(nextDropIndex);
