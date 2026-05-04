@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.12';
+const APP_VERSION = 'v1.6.13';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -1111,6 +1111,12 @@ export default function App() {
     if (draggedIndex === null) return;
     document.body.style.userSelect = 'none';
     document.body.style.touchAction = 'none';
+    let rafId = null;
+    const getScrollTarget = () => {
+      const viewport = projectListViewportRef.current;
+      if (viewport) return viewport;
+      return document.scrollingElement || document.documentElement;
+    };
     const stopDrag = (e) => {
       if (activeDragPointerIdRef.current !== null && e?.pointerId !== undefined && e.pointerId !== activeDragPointerIdRef.current) return;
       handleDragEnd();
@@ -1118,7 +1124,6 @@ export default function App() {
     const trackDrag = (e) => {
       if (activeDragPointerIdRef.current !== null && e.pointerId !== activeDragPointerIdRef.current) return;
       setDragCurrentPos({ x: e.clientX, y: e.clientY });
-      setDragCurrentScrollY(window.scrollY);
       lastDragPointerYRef.current = e.clientY;
       if (dragStartPos) {
         const moved = Math.hypot(e.clientX - dragStartPos.x, e.clientY - dragStartPos.y) > 6;
@@ -1127,39 +1132,38 @@ export default function App() {
       const nextDropIndex = calculateDropIndex(e.clientY);
       if (nextDropIndex !== null) setDropIndex(nextDropIndex);
     };
-    const autoScrollInterval = setInterval(() => {
-      if (lastDragPointerYRef.current === null) return;
-      const y = lastDragPointerYRef.current;
-      const viewportRect = projectListViewportRef.current?.getBoundingClientRect();
-      const topLimit = viewportRect ? viewportRect.top : 0;
-      const bottomLimit = viewportRect ? viewportRect.bottom : window.innerHeight;
-      const edge = Math.min(140, Math.max(56, (bottomLimit - topLimit) * 0.18));
-      const maxSpeed = 9; // px/tick
-      let scrollDelta = 0;
-      if (y < topLimit + edge) {
-        const ratio = (topLimit + edge - y) / edge;
-        scrollDelta = -Math.max(1, Math.round(maxSpeed * ratio));
-      } else if (y > bottomLimit - edge) {
-        const ratio = (y - (bottomLimit - edge)) / edge;
-        scrollDelta = Math.max(1, Math.round(maxSpeed * ratio));
-      }
-      if (scrollDelta !== 0) {
-        const listViewport = projectListViewportRef.current;
-        if (listViewport) {
-          listViewport.scrollTop += scrollDelta;
-        } else {
-          window.scrollBy({ top: scrollDelta, behavior: 'auto' });
+    const runAutoScroll = () => {
+      const pointerY = lastDragPointerYRef.current;
+      if (pointerY !== null) {
+        const target = getScrollTarget();
+        const isElement = target !== document.scrollingElement && target !== document.documentElement;
+        const rect = isElement ? target.getBoundingClientRect() : { top: 0, bottom: window.innerHeight, height: window.innerHeight };
+        const edge = Math.min(160, Math.max(64, rect.height * 0.2));
+        const maxSpeed = 18;
+        let scrollDelta = 0;
+        if (pointerY < rect.top + edge) {
+          const ratio = (rect.top + edge - pointerY) / edge;
+          scrollDelta = -Math.max(1, Math.round(maxSpeed * ratio * ratio));
+        } else if (pointerY > rect.bottom - edge) {
+          const ratio = (pointerY - (rect.bottom - edge)) / edge;
+          scrollDelta = Math.max(1, Math.round(maxSpeed * ratio * ratio));
         }
-        setDragCurrentScrollY(window.scrollY);
-        const nextDropIndex = calculateDropIndex(y);
-        if (nextDropIndex !== null) setDropIndex(nextDropIndex);
+        if (scrollDelta !== 0) {
+          if (isElement) target.scrollTop += scrollDelta;
+          else window.scrollBy({ top: scrollDelta, behavior: 'auto' });
+          setDragCurrentScrollY(window.scrollY);
+          const nextDropIndex = calculateDropIndex(pointerY);
+          if (nextDropIndex !== null) setDropIndex(nextDropIndex);
+        }
       }
-    }, 16);
+      rafId = window.requestAnimationFrame(runAutoScroll);
+    };
+    rafId = window.requestAnimationFrame(runAutoScroll);
     window.addEventListener('pointermove', trackDrag, { passive: true });
     window.addEventListener('pointerup', stopDrag);
     window.addEventListener('pointercancel', stopDrag);
     return () => {
-      clearInterval(autoScrollInterval);
+      if (rafId) window.cancelAnimationFrame(rafId);
       document.body.style.userSelect = '';
       document.body.style.touchAction = '';
       window.removeEventListener('pointermove', trackDrag);
@@ -2750,7 +2754,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       {errorMessage && <div className="absolute top-20 left-1/2 transform -translate-x-1/2 bg-red-600 text-white px-6 py-3 rounded-xl shadow-2xl z-[100] font-bold flex items-center gap-2"><span>{errorMessage}</span><button onClick={() => setErrorMessage('')} className="ml-4 opacity-70 hover:opacity-100 text-xl font-light">×</button></div>}
       {!isFullscreen && ( <header className="bg-white border-b px-3 py-2 flex flex-wrap justify-between items-center gap-2 shrink-0 shadow-sm relative z-20"> <button onClick={onCancel} className="text-gray-500 p-2 hover:bg-gray-100 rounded-lg font-medium transition text-sm">キャンセル</button> <div className="font-bold text-gray-800 text-sm sm:text-lg flex items-center gap-2 min-w-0"> {initialItem && <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-xs sm:text-sm">再編集</span>} <span className="truncate">画像の編集</span> </div> <button onClick={() => { setSelectedIds([]); setTimeout(handleSave, 50); }} disabled={imagesData.length === 0 && !memo} className="bg-blue-600 text-white px-3 sm:px-5 py-2 rounded-lg font-bold hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 transition shadow-md text-sm"> <Save size={16} /> 保存 </button> </header> )}
       <div className={`flex-1 flex ${isFullscreen ? 'flex-col fixed inset-0 z-50 bg-gray-200' : 'flex-col lg:flex-row'} overflow-hidden`}>
-        <div className="flex-1 flex flex-col bg-gray-200 overflow-hidden relative">
+        <div className="flex-1 flex flex-col bg-gray-200 overflow-hidden relative order-2 lg:order-1">
           {imagesData.length === 0 ? ( <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-6"> <div className="text-center mb-4"><h2 className="text-2xl font-bold text-gray-700 mb-2">写真を追加しますか？</h2><p className="text-gray-500">Ctrl+V (Cmd+V) で直接貼り付けることも可能です</p></div> <div className="flex flex-col sm:flex-row gap-4 w-full max-w-lg"> <label className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm cursor-pointer hover:shadow-md hover:bg-blue-50 transition text-blue-600"><Camera size={48} className="mb-4" /> <span className="font-bold text-lg">カメラで撮影</span><input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={(e) => handleImageUpload(e, 'camera')} /></label> <label className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm cursor-pointer hover:shadow-md hover:bg-blue-50 transition text-blue-600"><ImageIcon size={48} className="mb-4" /> <span className="font-bold text-lg">アルバムから</span><input type="file" multiple accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e, 'album')} /></label> <button onClick={() => readImagesFromClipboardAPI({ waitForPermission: true })} className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm hover:shadow-md hover:bg-blue-50 transition text-blue-600"><ClipboardPaste size={48} className="mb-4" /><span className="font-bold text-lg">クリップボード貼付</span></button> </div> </div> ) : ( <>
               <div className="bg-white border-b px-2 py-1.5 flex flex-wrap items-center gap-x-2 gap-y-2 shrink-0 shadow-sm z-10 relative overflow-visible">
                 <div className="flex items-center bg-gray-50 p-1 rounded-xl">
@@ -2906,7 +2910,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
           )}
         </div>
         {!isFullscreen && (
-          <div className="w-full lg:w-80 bg-white border-t lg:border-t-0 lg:border-l border-gray-200 flex flex-col shrink-0 relative z-20">
+          <div className="w-full lg:w-80 bg-white border-t lg:border-t-0 lg:border-l border-gray-200 flex flex-col shrink-0 relative z-20 order-1 lg:order-2">
             <div className="p-4 bg-gray-50 border-b font-bold text-gray-700 flex justify-between items-center">
               <div className="flex items-center gap-2"><FileText size={20} /> ページ情報</div>
               <button onClick={() => setIsLayoutModalOpen(true)} className="flex items-center gap-1 text-xs bg-white border border-gray-300 px-2 py-1.5 rounded-lg hover:bg-gray-100 text-gray-600 transition shadow-sm font-medium"><LayoutTemplate size={14} /> PPTレイアウト</button>
