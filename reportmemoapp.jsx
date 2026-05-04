@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.13';
+const APP_VERSION = 'v1.6.14';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -1114,7 +1114,7 @@ export default function App() {
     let rafId = null;
     const getScrollTarget = () => {
       const viewport = projectListViewportRef.current;
-      if (viewport) return viewport;
+      if (viewport && viewport.scrollHeight > viewport.clientHeight + 2) return viewport;
       return document.scrollingElement || document.documentElement;
     };
     const stopDrag = (e) => {
@@ -1149,9 +1149,13 @@ export default function App() {
           scrollDelta = Math.max(1, Math.round(maxSpeed * ratio * ratio));
         }
         if (scrollDelta !== 0) {
-          if (isElement) target.scrollTop += scrollDelta;
-          else window.scrollBy({ top: scrollDelta, behavior: 'auto' });
-          setDragCurrentScrollY(window.scrollY);
+          if (isElement) {
+            target.scrollTop += scrollDelta;
+            setDragCurrentScrollY(target.scrollTop || 0);
+          } else {
+            window.scrollBy({ top: scrollDelta, behavior: 'auto' });
+            setDragCurrentScrollY(window.scrollY);
+          }
           const nextDropIndex = calculateDropIndex(pointerY);
           if (nextDropIndex !== null) setDropIndex(nextDropIndex);
         }
