@@ -16,11 +16,12 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.14';
+const APP_VERSION = 'v1.6.15';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
 const PPT_TEXT_LANG = 'ja-JP';
+const PPT_FONT_FAMILY = 'Meiryo UI';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -499,7 +500,7 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
         x: drawX + rx * ratioX, y: drawY + ry * ratioY,
         w: Math.max(0.05, box.w * ratioX * 1.08), h: Math.max(0.05, box.h * ratioY * 1.05),
         fontSize: Math.max(1, (ann.fontSize || 48) * pxToPt), color: pColor, bold: true, rotate: rot, valign: 'middle', align: 'center',
-        margin: 0, fit: 'resize', fontFace: 'Meiryo', lang: PPT_TEXT_LANG,
+        margin: 0, fit: 'resize', fontFace: PPT_FONT_FAMILY, lang: PPT_TEXT_LANG,
         ...glowOpts(ann.hasGlow)
       };
       slide.addText(textRuns, textOpts);
@@ -906,16 +907,17 @@ export default function App() {
       const PptxGenJS = await loadPptxGenJS();
       const pptx = new PptxGenJS();
       pptx.layout = 'LAYOUT_16x9';
+      pptx.theme = { lang: PPT_TEXT_LANG, headFontFace: PPT_FONT_FAMILY, bodyFontFace: PPT_FONT_FAMILY };
       pptx.defineSlideMaster({ title: "REPORT_SLIDE", background: { color: "FFFFFF" } });
       for (const [index, item] of targetItems.entries()) {
         const slide = pptx.addSlide({ masterName: "REPORT_SLIDE" });
-        slide.addText(getItemTitle(item, index), { x: 0.5, y: 0.2, w: 9.0, h: 0.6, fontSize: 21, fontFace: 'Meiryo', bold: true, color: '000000', valign: 'middle', align: 'left', lang: PPT_TEXT_LANG });
-        if (pptxSettings.showPageNumber) { slide.addText(`No. ${index + 1}`, { x: 8.5, y: 0.2, w: 1.0, h: 0.3, fontSize: 12, fontFace: 'Meiryo', bold: true, color: '666666', align: 'right', lang: PPT_TEXT_LANG }); }
+        slide.addText(getItemTitle(item, index), { x: 0.5, y: 0.2, w: 9.0, h: 0.6, fontSize: 21, fontFace: PPT_FONT_FAMILY, bold: true, color: '000000', valign: 'middle', align: 'left', lang: PPT_TEXT_LANG });
+        if (pptxSettings.showPageNumber) { slide.addText(`No. ${index + 1}`, { x: 8.5, y: 0.2, w: 1.0, h: 0.3, fontSize: 12, fontFace: PPT_FONT_FAMILY, bold: true, color: '666666', align: 'right', lang: PPT_TEXT_LANG }); }
         const layout = item.layout || { template: 'default' };
         let memoRect, imageRects;
         if (layout.template === 'custom') { memoRect = layout.memoRect; imageRects = layout.customImageRects || []; } 
         else { const calc = calculateTemplateLayout(layout.template, item.images || []); memoRect = calc.memoRect; imageRects = calc.customImageRects; }
-        if (item.memo && memoRect) { slide.addText(item.memo, { x: memoRect.x, y: memoRect.y, w: memoRect.w, h: memoRect.h, fontSize: 16, fontFace: 'Meiryo', color: '333333', align: 'left', valign: 'top', lang: PPT_TEXT_LANG }); }
+        if (item.memo && memoRect) { slide.addText(item.memo, { x: memoRect.x, y: memoRect.y, w: memoRect.w, h: memoRect.h, fontSize: 16, fontFace: PPT_FONT_FAMILY, color: '333333', align: 'left', valign: 'top', lang: PPT_TEXT_LANG }); }
         const images = item.images || [];
         for (const [i, imgData] of images.entries()) {
             const rect = imageRects[i];
