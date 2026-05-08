@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.23';
+const APP_VERSION = 'v1.6.24';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -2782,7 +2782,9 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   };
 
   const handlePointerUp = (e) => {
-    if (e.target.closest('.text-overlay') || e.target.closest('.selection-menu')) return; let isTap = isPotentialTapRef.current; let hasDragged = !!dragModeRef.current && dragModeRef.current !== 'canvas_pan'; activePointers.current.delete(e.pointerId); const remainingTouches = getTouchPointers(); if (remainingTouches.length < 2) { lastPinch.current = null; } if (remainingTouches.length === 1 && dragModeRef.current === 'canvas_pan') { const remainingPointer = remainingTouches[0]; panStartClientRef.current = { x: remainingPointer.x, y: remainingPointer.y }; panStartTransformRef.current = { ...transformRef.current }; } else if (activePointers.current.size === 0) { panStartClientRef.current = null; panStartTransformRef.current = null; }
+    const isOverlayTarget = e.target.closest('.text-overlay') || e.target.closest('.selection-menu');
+    let isTap = isPotentialTapRef.current; let hasDragged = !!dragModeRef.current && dragModeRef.current !== 'canvas_pan'; activePointers.current.delete(e.pointerId); const remainingTouches = getTouchPointers(); if (remainingTouches.length < 2) { lastPinch.current = null; } if (remainingTouches.length === 1 && dragModeRef.current === 'canvas_pan') { const remainingPointer = remainingTouches[0]; panStartClientRef.current = { x: remainingPointer.x, y: remainingPointer.y }; panStartTransformRef.current = { ...transformRef.current }; } else if (activePointers.current.size === 0) { panStartClientRef.current = null; panStartTransformRef.current = null; }
+    if (isOverlayTarget) { isPotentialTapRef.current = false; if (activePointers.current.size === 0) dragModeRef.current = null; return; }
     if (isTap && !isDrawingRef.current) { const pos = getCanvasPos(e.clientX, e.clientY); const hit = checkHit(pos.x, pos.y, annotations); if (hit) { let targetIds = [hit.id]; if (hit.groupId) targetIds = annotations.filter(a => a.groupId === hit.groupId).map(a => a.id); if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); setSelectedIds(targetIds); if (hit.color) setStrokeColor(hit.color); if (hit.fillColor !== undefined) { setIsFillTransparent(hit.fillColor === 'transparent'); if (hit.fillColor !== 'transparent') setFillColor(hit.fillColor); } if (hit.width) setLineWidth(hit.width); if (hit.fontSize) setFontSize(hit.fontSize); if (hit.hasGlow !== undefined) setTextGlow(hit.hasGlow); } else { setSelectedIds([]); } }
     isPotentialTapRef.current = false; if (activePointers.current.size === 0) dragModeRef.current = null; dragStartAnnsRef.current = [];
     if (currentToolRef.current === ToolType.LASSO && isDrawingRef.current) { isDrawingRef.current = false; if (lassoPoints.length > 2) { const hits = annotations.filter(ann => { const bbox = getBBox(ann); if (!bbox) return false; return pointInPolygon(transformPoint(bbox.x + bbox.w/2, bbox.y + bbox.h/2, ann), lassoPoints); }); let selectedSet = new Set(hits.map(a => a.id)); hits.forEach(hit => { if (hit.groupId) annotations.filter(a => a.groupId === hit.groupId).forEach(a => selectedSet.add(a.id)); }); setSelectedIds(Array.from(selectedSet)); } else setSelectedIds([]); setLassoPoints([]); return; }
