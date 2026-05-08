@@ -16,12 +16,12 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.19';
+const APP_VERSION = 'v1.6.20';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
 const PPT_TEXT_LANG = 'ja-JP';
-const PPT_FONT_FAMILY = 'Meiryo';
+const PPT_FONT_FAMILY = 'Meiryo UI';
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -452,7 +452,7 @@ const loadJSZip = async () => {
     document.head.appendChild(script);
   });
 };
-const enforcePptxEastAsiaFont = async (pptxBlob, fontName = 'Meiryo') => {
+const enforcePptxEastAsiaFont = async (pptxBlob, fontName = 'Meiryo UI') => {
   try {
     const JSZip = await loadJSZip();
     const zip = await JSZip.loadAsync(pptxBlob);
