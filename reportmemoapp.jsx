@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.28';
+const APP_VERSION = 'v1.6.29';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -114,15 +114,10 @@ const normalizeImportedImage = async (src, targetLongEdge = IMPORT_NORMALIZED_LO
   const scale = targetLongEdge / Math.max(srcW, srcH);
   const width = Math.max(1, Math.round(srcW * scale));
   const height = Math.max(1, Math.round(srcH * scale));
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d');
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(img, 0, 0, width, height);
-  // 縮小時の文字潰れ/にじみを避けるため、出力は常に可逆PNGに統一
-  return { src: canvas.toDataURL('image/png'), width, height };
+  // 画素データ自体は再エンコードせず元画像を保持し、
+  // 編集座標系の width/height だけ正規化して相対サイズを揃える。
+  // これにより縮小/拡大どちらでも再サンプリング劣化を回避できる。
+  return { src, width, height };
 };
 
 // オフスクリーンキャンバス
