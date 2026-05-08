@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HTML Slide to PDF Converter (Web Tool)</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- CodeMirror (エディタ) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/theme/dracula.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/xml/xml.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/css/css.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/javascript/javascript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/htmlmixed/htmlmixed.min.js"></script>
+    <!-- FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        .CodeMirror { height: 100%; font-family: 'SFMono-Regular', Consolas, monospace; font-size: 14px; }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #1e293b; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+    </style>
+</head>
+<body class="bg-gray-900 h-screen flex flex-col overflow-hidden text-gray-100">
+
+    <!-- ツールバー -->
+    <header class="bg-gray-800 border-b border-gray-700 px-6 py-4 flex justify-between items-center shrink-0 shadow-md z-10">
+        <div class="flex items-center gap-4">
+            <div class="bg-red-500 text-white p-2.5 rounded-lg shadow-lg">
+                <i class="fa-solid fa-file-pdf text-2xl"></i>
+            </div>
+            <div>
+                <h1 class="text-xl font-bold tracking-tight text-white">Slide2PDF Converter</h1>
+                <p class="text-xs text-gray-400 mt-0.5">HTMLスライドを完璧なレイアウトでPDF化するWebアプリ</p>
+            </div>
+        </div>
+        
+        <div class="flex gap-4 items-center bg-gray-900 p-2 rounded-xl border border-gray-700">
+            <!-- サイズ選択機能 (ツールとして汎用性を持たせる) -->
+            <div class="flex items-center gap-2 px-2">
+                <label class="text-xs font-bold text-gray-400"><i class="fa-solid fa-expand"></i> 用紙サイズ:</label>
+                <select id="slideSize" class="bg-gray-800 text-sm text-white border border-gray-600 rounded px-2 py-1 focus:ring-blue-500 outline-none">
+                    <option value="1123px 794px">A4 横 (1123 x 794 px) ※推奨</option>
+                    <option value="1280px 720px">16:9 横 (1280 x 720 px)</option>
+                    <option value="1920px 1080px">Full HD (1920 x 1080 px)</option>
+                </select>
+            </div>
+
+            <div class="h-8 w-px bg-gray-700"></div>
+
+            <!-- アクションボタン -->
+            <button id="downloadHtmlBtn" class="hover:bg-gray-700 text-gray-300 font-bold py-2 px-4 rounded transition-colors text-sm flex items-center gap-2">
+                <i class="fa-solid fa-download"></i>
+                HTML保存
+            </button>
+            <button id="printBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-6 rounded-lg shadow-lg transition-all flex items-center gap-2 transform active:scale-95 text-sm">
+                <i class="fa-solid fa-print"></i>
+                PDF出力画面を開く
+            </button>
+        </div>
+    </header>
+
+    <!-- 注意書きバナー -->
+    <div class="bg-blue-900/40 border-b border-blue-800/50 px-6 py-2 text-xs flex justify-between items-center shrink-0">
+        <div class="flex items-center gap-2 text-blue-200">
+            <i class="fa-solid fa-circle-info"></i>
+            <span><strong>PDF保存のコツ:</strong> 印刷画面で必ず <strong>「送信先: PDFに保存」「余白: なし」「背景のグラフィック: ON」</strong> に設定してください。</span>
+        </div>
+    </div>
+
+    <!-- メインコンテンツ (エディタ & プレビュー) -->
+    <main class="flex-grow flex overflow-hidden">
+        <!-- 左側：エディタ -->
+        <div class="w-1/2 h-full flex flex-col border-r border-gray-700 bg-[#282a36]">
+            <div class="bg-[#1e1f29] text-gray-400 text-xs px-4 py-2 flex justify-between items-center shrink-0 border-b border-gray-800">
+                <span><i class="fa-solid fa-code text-blue-400"></i> index.html</span>
+                <span class="text-gray-500">Auto-updating</span>
+            </div>
+            <div class="flex-grow overflow-hidden relative">
+                <textarea id="editor"></textarea>
+            </div>
+        </div>
+
+        <!-- 右側：プレビュー -->
+        <div class="w-1/2 h-full flex flex-col bg-gray-800">
+            <div class="bg-gray-900 text-gray-400 text-xs px-4 py-2 flex justify-between items-center shrink-0 border-b border-gray-700">
+                <span><i class="fa-solid fa-desktop text-green-400"></i> Live Preview</span>
+                <span id="previewSizeText" class="text-gray-500">Target: 1123px x 794px</span>
+            </div>
+            <div id="previewContainer" class="flex-grow p-6 overflow-auto flex justify-center items-center bg-gray-300 pattern-dots">
+                <!-- スケール後の領域を確保するためのコンテナ（スクロールバーのバグ防止） -->
+                <div id="scaleContainer" class="relative transition-all duration-300">
+                    <!-- 実際にスケールされる要素 -->
+                    <div class="shadow-2xl bg-white absolute top-0 left-0 origin-top-left transition-transform duration-300" id="iframeWrapper">
+                        <iframe id="preview" class="w-full h-full border-0" sandbox="allow-scripts allow-same-origin"></iframe>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- デフォルト入力用テンプレート（ユーザーから提供されたCSV FFT Analyzer） -->
+    <script type="text/template" id="default-template">
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CSV FFT Analyzer マニュアル</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Urbanist:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+* { box-sizing: border-box; }
+body { background-color: #0f172a; display: grid; gap: 30px; grid-template-columns: 1fr; margin: 0; min-height: 100vh; padding: 30px 0; place-items: center; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.slide-container { align-items: flex-start; background-color: #1e293b; border-radius: 12px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); display: flex; flex-direction: column; font-family: 'Noto Sans JP', 'Urbanist', sans-serif; gap: 40px; width: 1123px; height: 794px; justify-content: center; overflow: hidden; padding: 50px; position: relative; }
+.slide-container::before { content: ''; position: absolute; top: -50%; left: -50%; width: 100%; height: 100%; background: radial-gradient(circle, rgba(59, 130, 246, 0.1) 0%, transparent 70%); z-index: 0; pointer-events: none; }
+.slide-container::after { content: ''; position: absolute; bottom: 0; right: 0; width: 60%; height: 60%; background: radial-gradient(circle, rgba(239, 68, 68, 0.05) 0%, transparent 70%); z-index: 0; pointer-events: none; }
+.slide-container > * { position: relative; z-index: 1; }
+.slide-container h1, .slide-container h2, .slide-container h3, .slide-container h4 { color: #f8fafc; font-weight: 700; margin: 0; line-height: 1.2; }
+.slide-container h1 span, .slide-container h2 span { color: #3b82f6; }
+.slide-container h2 .highlight-red { color: #ef4444; }
+.slide-container p, .slide-container .subtitle, .slide-container li { color: #cbd5e1; }
+.slide-container h1 { font-size: 64px; }
+.slide-container .slide-title { font-size: 48px; width: 100%; text-align: left; margin-bottom: 10px; }
+.slide-container h3 { font-size: 26px; }
+.slide-container li { font-size: 18px; font-weight: 500; line-height: 1.6; margin-bottom: 15px;}
+.slide-container p { font-size: 18px; font-weight: 500; line-height: 1.6; margin: 0; }
+.slide-container .subtitle { font-size: 22px; font-weight: 400; line-height: 1.4; margin: 0 0 30px 0; color: #94a3b8; }
+.content-area { align-items: center; display: flex; flex-direction: column; flex-grow: 1; justify-content: center; width: 100%; }
+.title-layout { text-align: center; width: 100%; }
+.title-layout h1 { margin-bottom: 24px; }
+.title-layout .subtitle { margin: 0 auto; max-width: 800px; color: #94a3b8;}
+.two-column { display: flex; gap: 40px; width: 100%; height: 100%; align-items: center; }
+.two-column .content-container { display: flex; flex-direction: column; gap: 20px; width: 50%; }
+.two-column .image-container { height: 520px; overflow: hidden; width: 50%; border-radius: 20px; box-shadow: 0 20px 40px rgba(0,0,0,0.4); border: 1px solid #334155; background-color: #f8fafc; }
+.bullet-list { list-style: none; margin: 0; padding: 0; }
+.bullet-list li { padding-left: 24px; position: relative; }
+.bullet-list li::before { color: #3b82f6; content: '■'; font-size: 14px; left: 0; position: absolute; top: 6px; }
+.tiled-content { display: grid; gap: 30px; grid-template-columns: 1fr 1fr; width: 100%; }
+.tile { background-color: #0f172a; border-radius: 20px; border: 1px solid #334155; display: flex; flex-direction: column; gap: 15px; padding: 30px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); }
+.tile .title-container { display: flex; flex-direction: row; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; padding-bottom: 15px; }
+.tile .main-title { color: #f8fafc; font-size: 28px; font-weight: 700; margin: 0; }
+.tile .icon-container { align-items: center; background-color: rgba(59, 130, 246, 0.1); border-radius: 12px; color: #3b82f6; display: flex; font-size: 24px; height: 56px; justify-content: center; width: 56px; }
+.tile .icon-container.red { background-color: rgba(239, 68, 68, 0.1); color: #ef4444; }
+.tile .tile-content { color: #cbd5e1; font-size: 18px; font-weight: 500; line-height: 1.6; margin: 0; }
+.qa-layout { text-align: center; width: 100%; }
+.qa-layout h2 { font-size: 56px; margin-bottom: 30px; }
+.qa-layout p { font-size: 22px; color: #cbd5e1; max-width: 800px; margin: 0 auto 40px auto; }
+.qa-layout .contact-info { background: rgba(59, 130, 246, 0.1); border: 1px solid #3b82f6; border-radius: 50px; display: inline-block; padding: 15px 40px; color: #60a5fa; font-size: 24px; font-weight: 700; }
+.ui-mockup { width: 100%; height: 100%; padding: 20px; display: flex; flex-direction: column; gap: 15px; color: #1e293b; }
+.mock-header { font-size: 24px; font-weight: 800; text-align: center; color: #0f172a; margin-bottom: 5px; }
+.mock-drop { border: 3px dashed #cbd5e1; border-radius: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 110px; background: #fff; color: #64748b; flex: 1; transition: all 0.3s; }
+.mock-drop.solid { border-style: solid; border-color: #e2e8f0; border-width: 1px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);}
+.mock-graphs { display: flex; gap: 15px; flex: 1; }
+.mock-graph { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; flex: 1; position: relative; padding: 15px; display: flex; flex-direction: column; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+.mock-graph-title { font-size: 14px; font-weight: 700; display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: #1e293b;}
+.mock-dot { width: 10px; height: 10px; border-radius: 50%; }
+.mock-dot.blue { background: #3b82f6; }
+.mock-dot.red { background: #ef4444; }
+.mock-waveform { flex: 1; border-bottom: 1px solid #e2e8f0; border-left: 1px solid #e2e8f0; position: relative; width: 100%; margin-bottom: 5px;}
+.mock-slider { margin-top: 15px; padding: 0 15px; }
+.mock-track { height: 10px; background: #e2e8f0; border-radius: 5px; position: relative; }
+.mock-range { position: absolute; height: 100%; background: rgba(239, 68, 68, 0.5); border-radius: 5px; }
+.mock-handle { position: absolute; top: -6px; width: 22px; height: 22px; background: #ef4444; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 2px 4px rgba(0,0,0,0.3); }
+.mock-handle.left { transform: translateX(-50%); }
+.mock-handle.right { transform: translateX(50%); }
+.mock-action-bar { display: flex; justify-content: space-between; align-items: center; background: #fff; padding: 15px 20px; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+.mock-buttons { display: flex; gap: 10px; }
+.mock-btn { padding: 10px 16px; border-radius: 8px; font-size: 13px; font-weight: bold; color: #fff; display: flex; align-items: center; gap: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+.mock-btn.csv { background: #475569; }
+.mock-btn.excel { background: #16a34a; }
+.mock-table { flex: 1; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; margin-top: 15px; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+.mock-th { display: flex; background: #f8fafc; padding: 12px; border-bottom: 2px solid #e2e8f0; font-size: 12px; font-weight: bold; color: #475569; }
+.mock-tr { display: flex; padding: 12px; border-bottom: 1px solid #f1f5f9; font-size: 12px; color: #64748b; font-family: monospace;}
+.mock-td { flex: 1; text-align: left;}
+    </style>
+</head>
+<body>
+
+<div class="slide-container">
+  <div class="content-area">
+    <div class="title-layout">
+      <h1>CSV <span>FFT</span> Analyzer<br>操作マニュアル</h1>
+      <p class="subtitle">ブラウザで完結する、高速・直感的な周波数解析ツールの使い方</p>
+    </div>
+  </div>
+</div>
+
+<div class="slide-container">
+  <h2 class="slide-title">アプリの<span>概要</span></h2>
+  <div class="content-area">
+    <div class="two-column">
+      <div class="content-container">
+        <ul class="bullet-list">
+          <li><strong>手軽なデータ入力:</strong> CSVファイルのドロップやExcelデータのコピペにネイティブ対応。</li>
+          <li><strong>直感的な範囲選択:</strong> スライダーを動かすだけで、波形の解析したい部分を瞬時に切り出し。</li>
+        </ul>
+      </div>
+      <div class="image-container">
+        <div class="ui-mockup">
+          <div class="mock-header">CSV FFT Analyzer</div>
+          <div class="mock-graphs">
+            <div class="mock-graph">
+              <div class="mock-graph-title"><div class="mock-dot blue"></div>元の波形</div>
+              <div class="mock-waveform"><svg width="100%" height="100%" preserveAspectRatio="none" viewBox="0 0 100 100"><path d="M0,50 C10,10 15,90 25,50 C35,10 40,90 50,50 C60,10 65,90 75,50 C85,10 90,90 100,50" fill="none" stroke="#3b82f6" stroke-width="2"></path></svg></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
+    </script>
+
+    <script>
+        /* 1. エディタ設定 */
+        const defaultCode = document.getElementById('default-template').textContent.trim();
+        const editorTextArea = document.getElementById('editor');
+        editorTextArea.value = defaultCode;
+        
+        const editor = CodeMirror.fromTextArea(editorTextArea, {
+            mode: 'htmlmixed',
+            theme: 'dracula',
+            lineNumbers: true,
+            lineWrapping: true,
+            autoCloseTags: true
+        });
+
+        const iframe = document.getElementById('preview');
+        const iframeWrapper = document.getElementById('iframeWrapper');
+        const scaleContainer = document.getElementById('scaleContainer');
+        const previewContainer = document.getElementById('previewContainer');
+        const slideSizeSelect = document.getElementById('slideSize');
+        const previewSizeText = document.getElementById('previewSizeText');
+
+        /* 2. サイズ設定とプレビューの更新 */
+        function getSelectedSize() {
+            const sizeParts = slideSizeSelect.value.split(' ');
+            return { width: sizeParts[0], height: sizeParts[1] };
+        }
+
+        // Webアプリ内部のプレビュー画面のサイズとスケールを調整
+        function updatePreviewWrapper() {
+            const size = getSelectedSize();
+            const targetWidth = parseInt(size.width);
+            const targetHeight = parseInt(size.height);
+
+            iframeWrapper.style.width = `${targetWidth}px`;
+            iframeWrapper.style.height = `${targetHeight}px`;
+            previewSizeText.innerText = `Target: ${targetWidth}px x ${targetHeight}px`;
+
+            // プレビュー領域に合わせて最大限大きく表示されるようスケール計算
+            // (p-6 のパディング: 24px * 2 = 48px を除外)
+            const availableWidth = previewContainer.clientWidth - 48;
+            const availableHeight = previewContainer.clientHeight - 48;
+
+            const scaleX = availableWidth / targetWidth;
+            const scaleY = availableHeight / targetHeight;
+            // 幅と高さのどちらか厳しい方に合わせる（最大1.0倍まで）
+            const scale = Math.min(scaleX, scaleY, 1);
+
+            // iframe自体をスケールダウン
+            iframeWrapper.style.transform = `scale(${scale})`;
+            
+            // 外側のコンテナサイズをスケール後の実寸サイズに合わせる（無駄な余白を防ぐ）
+            scaleContainer.style.width = `${targetWidth * scale}px`;
+            scaleContainer.style.height = `${targetHeight * scale}px`;
+        }
+
+        // 入力されたHTMLを解析し、ツール側で強制的に印刷CSSを埋め込んでプレビューに反映
+        function updatePreview() {
+            const code = editor.getValue();
+            const size = getSelectedSize();
+            const sizeStr = `${size.width} ${size.height}`;
+            
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(code, 'text/html');
+
+            // --- ツールの中核：完璧にPDF化するためのCSSを強制注入 ---
+            const style = doc.createElement('style');
+            style.id = 'converter-injected-style';
+            style.innerHTML = `
+                /* プレビュー画面でのbodyリセット */
+                body { margin: 0; padding: 0; min-height: 0 !important; }
+
+                /* 印刷時（PDF保存時）の絶対ルール */
+                @media print {
+                    @page {
+                        size: ${sizeStr};
+                        margin: 0 !important;
+                    }
+                    html, body {
+                        width: ${size.width} !important;
+                        height: auto !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                        background: transparent !important;
+                        display: block !important;
+                    }
+                    .slide-container {
+                        width: ${size.width} !important;
+                        height: ${size.height} !important;
+                        max-height: ${size.height} !important;
+                        margin: 0 !important;
+                        box-sizing: border-box !important;
+                        page-break-after: always !important;
+                        break-after: page !important;
+                        page-break-inside: avoid !important;
+                        break-inside: avoid !important;
+                        overflow: hidden !important;
+                        box-shadow: none !important;
+                        border-radius: 0 !important;
+                    }
+                    .slide-container:last-child {
+                        page-break-after: auto !important;
+                        break-after: auto !important;
+                    }
+                    * {
+                        -webkit-print-color-adjust: exact !important;
+                        print-color-adjust: exact !important;
+                    }
+                }
+            `;
+            doc.head.appendChild(style);
+
+            // DOCTYPEを付与して Quirks Mode を防ぐ
+            iframe.srcdoc = "<!DOCTYPE html>\n" + doc.documentElement.outerHTML;
+            updatePreviewWrapper();
+        }
+
+        // イベントリスナー
+        slideSizeSelect.addEventListener('change', updatePreview);
+        window.addEventListener('resize', updatePreviewWrapper);
+
+        let timeout;
+        editor.on('change', () => {
+            clearTimeout(timeout);
+            timeout = setTimeout(updatePreview, 300);
+        });
+
+        // 初期化
+        updatePreview();
+
+        /* 3. エクスポート機能（ツールのメイン機能） */
+        function getReadyHtml() {
+            // iframeに注入済みの（PDF化に最適化された）HTMLを取得
+            let printReadyHtml = iframe.srcdoc;
+            
+            // 自動で印刷ダイアログを開くスクリプトを追加
+            const autoPrintScript = `\n<script>
+                window.onload = function() {
+                    setTimeout(() => { window.print(); }, 500);
+                };
+            <\/script>\n</body>`;
+            
+            if (printReadyHtml.includes('</body>')) {
+                printReadyHtml = printReadyHtml.replace('</body>', autoPrintScript);
+            } else {
+                printReadyHtml += autoPrintScript;
+            }
+            return printReadyHtml;
+        }
+
+        // 「PDF出力画面を開く」ボタン（ツールとして別タブで印刷処理を実行）
+        document.getElementById('printBtn').addEventListener('click', () => {
+            const html = getReadyHtml();
+            const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            
+            // 新しいタブで開いて自動印刷
+            const newWin = window.open(url, '_blank');
+            if (!newWin) {
+                alert("ブラウザのポップアップブロックが有効になっています。\n左側の「HTML保存」ボタンからダウンロードして開いてください。");
+            }
+        });
+
+        // 「HTML保存」ボタン（ポップアップブロック対策 兼 ファイル保存用）
+        document.getElementById('downloadHtmlBtn').addEventListener('click', () => {
+            const html = getReadyHtml();
+            const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = "slide_to_print.html";
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+    </script>
+    <style>
+        /* プレビュー背景のドットパターン */
+        .pattern-dots {
+            background-image: radial-gradient(#9ca3af 1px, transparent 1px);
+            background-size: 20px 20px;
+        }
+    </style>
+</body>
+</html>
