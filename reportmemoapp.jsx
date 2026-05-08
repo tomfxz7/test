@@ -16,12 +16,13 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.24';
+const APP_VERSION = 'v1.6.25';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
 const PPT_TEXT_LANG = 'ja-JP';
 const PPT_FONT_FAMILY = 'Meiryo UI';
+const IMPORT_NORMALIZED_LONG_EDGE = 1200;
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -98,6 +99,26 @@ const normalizeImageForPptx = async (src) => {
   const ctx = canvas.getContext('2d');
   ctx.drawImage(img, 0, 0, width, height);
   return { data: canvas.toDataURL('image/jpeg', 0.82), width, height };
+};
+const normalizeImportedImage = async (src, targetLongEdge = IMPORT_NORMALIZED_LONG_EDGE) => {
+  const img = new Image();
+  img.decoding = 'async';
+  img.src = src;
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = reject;
+  });
+  const srcW = img.naturalWidth || img.width || 1;
+  const srcH = img.naturalHeight || img.height || 1;
+  const scale = targetLongEdge / Math.max(srcW, srcH);
+  const width = Math.max(1, Math.round(srcW * scale));
+  const height = Math.max(1, Math.round(srcH * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, width, height);
+  return { src: canvas.toDataURL('image/jpeg', 0.92), width, height };
 };
 
 // オフスクリーンキャンバス
@@ -2211,13 +2232,18 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     let validFiles = files.filter(file => file.type.startsWith('image/')); if (validFiles.length === 0) return;
     validFiles.forEach(file => {
       const reader = new FileReader();
-      reader.onload = (event) => {
+      reader.onload = async (event) => {
         const img = new Image();
-        img.onload = () => {
-          const width = img.naturalWidth || img.width;
-          const height = img.naturalHeight || img.height;
-          const newImgData = { id: 'img_' + Date.now() + Math.random(), baseImage: { src: event.target.result, element: img, width, height }, annotations: [], history: [], redoHistory: [] };
-          setImagesData(prev => { const next = [...prev, newImgData]; if (next.length === 1 && !activeImageId) { setTimeout(() => { setBaseImage(newImgData.baseImage); setAnnotations([]); setHistory([]); setRedoStack([]); setActiveImageId(newImgData.id); setSelectedIds([]); fitImageToViewport(newImgData.baseImage); }, 0); } return next; });
+        img.onload = async () => {
+          const normalized = await normalizeImportedImage(event.target.result, IMPORT_NORMALIZED_LONG_EDGE);
+          const normalizedImg = new Image();
+          normalizedImg.onload = () => {
+            const width = normalized.width;
+            const height = normalized.height;
+            const newImgData = { id: 'img_' + Date.now() + Math.random(), baseImage: { src: normalized.src, element: normalizedImg, width, height }, annotations: [], history: [], redoHistory: [] };
+            setImagesData(prev => { const next = [...prev, newImgData]; if (next.length === 1 && !activeImageId) { setTimeout(() => { setBaseImage(newImgData.baseImage); setAnnotations([]); setHistory([]); setRedoStack([]); setActiveImageId(newImgData.id); setSelectedIds([]); fitImageToViewport(newImgData.baseImage); }, 0); } return next; });
+          };
+          normalizedImg.src = normalized.src;
         }; img.src = event.target.result;
       }; reader.readAsDataURL(file);
     });
