@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.18';
+const APP_VERSION = 'v1.6.19';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -441,6 +441,33 @@ const loadPptxGenJS = async () => {
     script.onerror = reject;
     document.head.appendChild(script);
   });
+};
+const loadJSZip = async () => {
+  if (window.JSZip) return window.JSZip;
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+    script.onload = () => resolve(window.JSZip);
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+};
+const enforcePptxEastAsiaFont = async (pptxBlob, fontName = 'Meiryo') => {
+  try {
+    const JSZip = await loadJSZip();
+    const zip = await JSZip.loadAsync(pptxBlob);
+    const themePath = 'ppt/theme/theme1.xml';
+    const themeFile = zip.file(themePath);
+    if (!themeFile) return pptxBlob;
+    let xml = await themeFile.async('string');
+    xml = xml.replace(/<a:ea typeface=\"[^\"]*\"\/>/g, `<a:ea typeface="${fontName}"/>`);
+    xml = xml.replace(/<a:font script=\"Jpan\" typeface=\"[^\"]*\"\/>/g, `<a:font script="Jpan" typeface="${fontName}"/>`);
+    zip.file(themePath, xml);
+    return await zip.generateAsync({ type: 'blob' });
+  } catch (e) {
+    console.warn('PPTX font patch skipped:', e);
+    return pptxBlob;
+  }
 };
 
 const openAppDB = () => {
@@ -949,7 +976,15 @@ export default function App() {
             }
         }
       }
-      await pptx.writeFile({ fileName: `${project.title}_export.pptx` });
+      const rawBlob = await pptx.write({ outputType: 'blob' });
+      const patchedBlob = await enforcePptxEastAsiaFont(rawBlob, PPT_FONT_FAMILY);
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(patchedBlob);
+      link.download = `${project.title}_export.pptx`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(link.href), 10000);
       setIsExportSettingsOpen(false);
     } catch (error) { console.error("PPTX Export Error:", error); alert("PPTXの書き出しに失敗しました。"); } finally { setIsExportingPPTX(false); }
   };
