@@ -16,10 +16,13 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.7';
+const APP_VERSION = 'v1.6.30';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
+const PPT_TEXT_LANG = 'ja-JP';
+const PPT_FONT_FAMILY = 'Meiryo UI';
+const IMPORT_NORMALIZED_LONG_EDGE = 1200;
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -96,6 +99,50 @@ const normalizeImageForPptx = async (src) => {
   const ctx = canvas.getContext('2d');
   ctx.drawImage(img, 0, 0, width, height);
   return { data: canvas.toDataURL('image/jpeg', 0.82), width, height };
+};
+const normalizeImportedImage = async (src, targetLongEdge = IMPORT_NORMALIZED_LONG_EDGE) => {
+  const img = new Image();
+  img.decoding = 'async';
+  img.src = src;
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = reject;
+  });
+  const srcW = img.naturalWidth || img.width || 1;
+  const srcH = img.naturalHeight || img.height || 1;
+  // 取り込み時は縮小/拡大どちらも行う（アスペクト比は維持）
+  const scale = targetLongEdge / Math.max(srcW, srcH);
+  const width = Math.max(1, Math.round(srcW * scale));
+  const height = Math.max(1, Math.round(srcH * scale));
+  // 画素データを実際に正規化サイズへ再サンプリングして固定し、
+  // その後の注釈描画が毎フレーム拡大縮小の影響を受けないようにする。
+  const sourceCanvas = document.createElement('canvas');
+  sourceCanvas.width = srcW;
+  sourceCanvas.height = srcH;
+  const sourceCtx = sourceCanvas.getContext('2d');
+  sourceCtx.drawImage(img, 0, 0, srcW, srcH);
+
+  let workCanvas = sourceCanvas;
+  // 縮小時は段階的に半分ずつ落として品質劣化を抑える
+  while (workCanvas.width * 0.5 > width && workCanvas.height * 0.5 > height) {
+    const halfCanvas = document.createElement('canvas');
+    halfCanvas.width = Math.max(width, Math.round(workCanvas.width * 0.5));
+    halfCanvas.height = Math.max(height, Math.round(workCanvas.height * 0.5));
+    const halfCtx = halfCanvas.getContext('2d');
+    halfCtx.imageSmoothingEnabled = true;
+    halfCtx.imageSmoothingQuality = 'high';
+    halfCtx.drawImage(workCanvas, 0, 0, halfCanvas.width, halfCanvas.height);
+    workCanvas = halfCanvas;
+  }
+
+  const finalCanvas = document.createElement('canvas');
+  finalCanvas.width = width;
+  finalCanvas.height = height;
+  const finalCtx = finalCanvas.getContext('2d');
+  finalCtx.imageSmoothingEnabled = true;
+  finalCtx.imageSmoothingQuality = 'high';
+  finalCtx.drawImage(workCanvas, 0, 0, width, height);
+  return { src: finalCanvas.toDataURL('image/png'), width, height };
 };
 
 // オフスクリーンキャンバス
@@ -440,6 +487,33 @@ const loadPptxGenJS = async () => {
     document.head.appendChild(script);
   });
 };
+const loadJSZip = async () => {
+  if (window.JSZip) return window.JSZip;
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+    script.onload = () => resolve(window.JSZip);
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+};
+const enforcePptxEastAsiaFont = async (pptxBlob, fontName = 'Meiryo UI') => {
+  try {
+    const JSZip = await loadJSZip();
+    const zip = await JSZip.loadAsync(pptxBlob);
+    const themePath = 'ppt/theme/theme1.xml';
+    const themeFile = zip.file(themePath);
+    if (!themeFile) return pptxBlob;
+    let xml = await themeFile.async('string');
+    xml = xml.replace(/<a:ea typeface=\"[^\"]*\"\/>/g, `<a:ea typeface="${fontName}"/>`);
+    xml = xml.replace(/<a:font script=\"Jpan\" typeface=\"[^\"]*\"\/>/g, `<a:font script="Jpan" typeface="${fontName}"/>`);
+    zip.file(themePath, xml);
+    return await zip.generateAsync({ type: 'blob' });
+  } catch (e) {
+    console.warn('PPTX font patch skipped:', e);
+    return pptxBlob;
+  }
+};
 
 const openAppDB = () => {
   return new Promise((resolve, reject) => {
@@ -493,12 +567,12 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
       const rx = box.x + (ann.tx || 0); const ry = box.y + (ann.ty || 0);
       const rot = (ann.rotation || 0) * (180 / Math.PI);
       const pColor = (ann.color || '#000000').replace('#', '');
-      const textRuns = (ann.text || '').split('\n').map((line, idx, arr) => ({ text: line, options: { breakLine: idx < arr.length - 1 } }));
+      const textRuns = (ann.text || '').split('\n').map((line, idx, arr) => ({ text: line, options: { breakLine: idx < arr.length - 1, lang: PPT_TEXT_LANG, fontFace: PPT_FONT_FAMILY, fontFaceEastAsia: PPT_FONT_FAMILY, fontFaceEa: PPT_FONT_FAMILY } }));
       const textOpts = {
         x: drawX + rx * ratioX, y: drawY + ry * ratioY,
         w: Math.max(0.05, box.w * ratioX * 1.08), h: Math.max(0.05, box.h * ratioY * 1.05),
         fontSize: Math.max(1, (ann.fontSize || 48) * pxToPt), color: pColor, bold: true, rotate: rot, valign: 'middle', align: 'center',
-        margin: 0, fit: 'resize', fontFace: 'Meiryo',
+        margin: 0, fit: 'resize', fontFace: PPT_FONT_FAMILY, fontFaceEastAsia: PPT_FONT_FAMILY, fontFaceEa: PPT_FONT_FAMILY, lang: PPT_TEXT_LANG,
         ...glowOpts(ann.hasGlow)
       };
       slide.addText(textRuns, textOpts);
@@ -905,16 +979,27 @@ export default function App() {
       const PptxGenJS = await loadPptxGenJS();
       const pptx = new PptxGenJS();
       pptx.layout = 'LAYOUT_16x9';
+      pptx.theme = {
+        lang: PPT_TEXT_LANG,
+        headFontFace: PPT_FONT_FAMILY,
+        bodyFontFace: PPT_FONT_FAMILY,
+        headFontFaceEa: PPT_FONT_FAMILY,
+        bodyFontFaceEa: PPT_FONT_FAMILY,
+        headFontFaceEastAsia: PPT_FONT_FAMILY,
+        bodyFontFaceEastAsia: PPT_FONT_FAMILY,
+        headFontFaceCs: PPT_FONT_FAMILY,
+        bodyFontFaceCs: PPT_FONT_FAMILY
+      };
       pptx.defineSlideMaster({ title: "REPORT_SLIDE", background: { color: "FFFFFF" } });
       for (const [index, item] of targetItems.entries()) {
         const slide = pptx.addSlide({ masterName: "REPORT_SLIDE" });
-        slide.addText(getItemTitle(item, index), { x: 0.5, y: 0.2, w: 9.0, h: 0.6, fontSize: 21, fontFace: 'Meiryo', bold: true, color: '000000', valign: 'middle', align: 'left' });
-        if (pptxSettings.showPageNumber) { slide.addText(`No. ${index + 1}`, { x: 8.5, y: 0.2, w: 1.0, h: 0.3, fontSize: 12, fontFace: 'Meiryo', bold: true, color: '666666', align: 'right' }); }
+        slide.addText(getItemTitle(item, index), { x: 0.5, y: 0.2, w: 9.0, h: 0.6, fontSize: 21, fontFace: PPT_FONT_FAMILY, fontFaceEastAsia: PPT_FONT_FAMILY, fontFaceEa: PPT_FONT_FAMILY, bold: true, color: '000000', valign: 'middle', align: 'left', lang: PPT_TEXT_LANG });
+        if (pptxSettings.showPageNumber) { slide.addText(`No. ${index + 1}`, { x: 8.5, y: 0.2, w: 1.0, h: 0.3, fontSize: 12, fontFace: PPT_FONT_FAMILY, fontFaceEastAsia: PPT_FONT_FAMILY, fontFaceEa: PPT_FONT_FAMILY, bold: true, color: '666666', align: 'right', lang: PPT_TEXT_LANG }); }
         const layout = item.layout || { template: 'default' };
         let memoRect, imageRects;
         if (layout.template === 'custom') { memoRect = layout.memoRect; imageRects = layout.customImageRects || []; } 
         else { const calc = calculateTemplateLayout(layout.template, item.images || []); memoRect = calc.memoRect; imageRects = calc.customImageRects; }
-        if (item.memo && memoRect) { slide.addText(item.memo, { x: memoRect.x, y: memoRect.y, w: memoRect.w, h: memoRect.h, fontSize: 16, fontFace: 'Meiryo', color: '333333', align: 'left', valign: 'top' }); }
+        if (item.memo && memoRect) { slide.addText(item.memo, { x: memoRect.x, y: memoRect.y, w: memoRect.w, h: memoRect.h, fontSize: 16, fontFace: PPT_FONT_FAMILY, fontFaceEastAsia: PPT_FONT_FAMILY, fontFaceEa: PPT_FONT_FAMILY, color: '333333', align: 'left', valign: 'top', lang: PPT_TEXT_LANG }); }
         const images = item.images || [];
         for (const [i, imgData] of images.entries()) {
             const rect = imageRects[i];
@@ -936,7 +1021,15 @@ export default function App() {
             }
         }
       }
-      await pptx.writeFile({ fileName: `${project.title}_export.pptx` });
+      const rawBlob = await pptx.write({ outputType: 'blob' });
+      const patchedBlob = await enforcePptxEastAsiaFont(rawBlob, PPT_FONT_FAMILY);
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(patchedBlob);
+      link.download = `${project.title}_export.pptx`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(link.href), 10000);
       setIsExportSettingsOpen(false);
     } catch (error) { console.error("PPTX Export Error:", error); alert("PPTXの書き出しに失敗しました。"); } finally { setIsExportingPPTX(false); }
   };
@@ -1110,6 +1203,12 @@ export default function App() {
     if (draggedIndex === null) return;
     document.body.style.userSelect = 'none';
     document.body.style.touchAction = 'none';
+    let rafId = null;
+    const getScrollTarget = () => {
+      const viewport = projectListViewportRef.current;
+      if (viewport && viewport.scrollHeight > viewport.clientHeight + 2) return viewport;
+      return document.scrollingElement || document.documentElement;
+    };
     const stopDrag = (e) => {
       if (activeDragPointerIdRef.current !== null && e?.pointerId !== undefined && e.pointerId !== activeDragPointerIdRef.current) return;
       handleDragEnd();
@@ -1117,7 +1216,6 @@ export default function App() {
     const trackDrag = (e) => {
       if (activeDragPointerIdRef.current !== null && e.pointerId !== activeDragPointerIdRef.current) return;
       setDragCurrentPos({ x: e.clientX, y: e.clientY });
-      setDragCurrentScrollY(window.scrollY);
       lastDragPointerYRef.current = e.clientY;
       if (dragStartPos) {
         const moved = Math.hypot(e.clientX - dragStartPos.x, e.clientY - dragStartPos.y) > 6;
@@ -1126,34 +1224,42 @@ export default function App() {
       const nextDropIndex = calculateDropIndex(e.clientY);
       if (nextDropIndex !== null) setDropIndex(nextDropIndex);
     };
-    const autoScrollInterval = setInterval(() => {
-      if (lastDragPointerYRef.current === null) return;
-      const y = lastDragPointerYRef.current;
-      const viewportRect = projectListViewportRef.current?.getBoundingClientRect();
-      const topLimit = viewportRect ? viewportRect.top : 0;
-      const bottomLimit = viewportRect ? viewportRect.bottom : window.innerHeight;
-      const edge = Math.min(140, Math.max(56, (bottomLimit - topLimit) * 0.18));
-      const maxSpeed = 9; // px/tick
-      let scrollDelta = 0;
-      if (y < topLimit + edge) {
-        const ratio = (topLimit + edge - y) / edge;
-        scrollDelta = -Math.max(1, Math.round(maxSpeed * ratio));
-      } else if (y > bottomLimit - edge) {
-        const ratio = (y - (bottomLimit - edge)) / edge;
-        scrollDelta = Math.max(1, Math.round(maxSpeed * ratio));
+    const runAutoScroll = () => {
+      const pointerY = lastDragPointerYRef.current;
+      if (pointerY !== null) {
+        const target = getScrollTarget();
+        const isElement = target !== document.scrollingElement && target !== document.documentElement;
+        const rect = isElement ? target.getBoundingClientRect() : { top: 0, bottom: window.innerHeight, height: window.innerHeight };
+        const edge = Math.min(160, Math.max(64, rect.height * 0.2));
+        const maxSpeed = 18;
+        let scrollDelta = 0;
+        if (pointerY < rect.top + edge) {
+          const ratio = (rect.top + edge - pointerY) / edge;
+          scrollDelta = -Math.max(1, Math.round(maxSpeed * ratio * ratio));
+        } else if (pointerY > rect.bottom - edge) {
+          const ratio = (pointerY - (rect.bottom - edge)) / edge;
+          scrollDelta = Math.max(1, Math.round(maxSpeed * ratio * ratio));
+        }
+        if (scrollDelta !== 0) {
+          if (isElement) {
+            target.scrollTop += scrollDelta;
+            setDragCurrentScrollY(target.scrollTop || 0);
+          } else {
+            window.scrollBy({ top: scrollDelta, behavior: 'auto' });
+            setDragCurrentScrollY(window.scrollY);
+          }
+          const nextDropIndex = calculateDropIndex(pointerY);
+          if (nextDropIndex !== null) setDropIndex(nextDropIndex);
+        }
       }
-      if (scrollDelta !== 0) {
-        window.scrollBy({ top: scrollDelta, behavior: 'auto' });
-        setDragCurrentScrollY(window.scrollY);
-        const nextDropIndex = calculateDropIndex(y);
-        if (nextDropIndex !== null) setDropIndex(nextDropIndex);
-      }
-    }, 16);
+      rafId = window.requestAnimationFrame(runAutoScroll);
+    };
+    rafId = window.requestAnimationFrame(runAutoScroll);
     window.addEventListener('pointermove', trackDrag, { passive: true });
     window.addEventListener('pointerup', stopDrag);
     window.addEventListener('pointercancel', stopDrag);
     return () => {
-      clearInterval(autoScrollInterval);
+      if (rafId) window.cancelAnimationFrame(rafId);
       document.body.style.userSelect = '';
       document.body.style.touchAction = '';
       window.removeEventListener('pointermove', trackDrag);
@@ -1918,6 +2024,10 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   }, [transform.scale]);
   const [activePopover, setActivePopover] = useState(null); const [textInput, setTextInput] = useState(null); 
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false); const [fingerDrawMode, setFingerDrawMode] = useState(false);
+  const [cropState, setCropState] = useState({ open: false, imageId: null, rect: null, dragHandle: null });
+  const cropAreaRef = useRef(null);
+  const cropDragStartRef = useRef(null);
+  const [cropImageBox, setCropImageBox] = useState({ left: 0, top: 0, width: 0, height: 0 });
   const [mobileKeyboardInset, setMobileKeyboardInset] = useState(0);
   const [selectedIds, setSelectedIds] = useState([]); const [lassoPoints, setLassoPoints] = useState([]); 
   const [isOcrLoading, setIsOcrLoading] = useState(false); const [isCleanUpLoading, setIsCleanUpLoading] = useState(false);
@@ -2146,18 +2256,131 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     let validFiles = files.filter(file => file.type.startsWith('image/')); if (validFiles.length === 0) return;
     validFiles.forEach(file => {
       const reader = new FileReader();
-      reader.onload = (event) => {
+      reader.onload = async (event) => {
         const img = new Image();
-        img.onload = () => {
-          const width = img.naturalWidth || img.width;
-          const height = img.naturalHeight || img.height;
-          const newImgData = { id: 'img_' + Date.now() + Math.random(), baseImage: { src: event.target.result, element: img, width, height }, annotations: [], history: [], redoHistory: [] };
-          setImagesData(prev => { const next = [...prev, newImgData]; if (next.length === 1 && !activeImageId) { setTimeout(() => { setBaseImage(newImgData.baseImage); setAnnotations([]); setHistory([]); setRedoStack([]); setActiveImageId(newImgData.id); setSelectedIds([]); fitImageToViewport(newImgData.baseImage); }, 0); } return next; });
+        img.onload = async () => {
+          const normalized = await normalizeImportedImage(event.target.result, IMPORT_NORMALIZED_LONG_EDGE);
+          const normalizedImg = new Image();
+          normalizedImg.onload = () => {
+            const width = normalized.width;
+            const height = normalized.height;
+            const newImgData = { id: 'img_' + Date.now() + Math.random(), baseImage: { src: normalized.src, element: normalizedImg, width, height }, annotations: [], history: [], redoHistory: [] };
+            setImagesData(prev => { const next = [...prev, newImgData]; if (next.length === 1 && !activeImageId) { setTimeout(() => { setBaseImage(newImgData.baseImage); setAnnotations([]); setHistory([]); setRedoStack([]); setActiveImageId(newImgData.id); setSelectedIds([]); fitImageToViewport(newImgData.baseImage); }, 0); } return next; });
+          };
+          normalizedImg.src = normalized.src;
         }; img.src = event.target.result;
       }; reader.readAsDataURL(file);
     });
   }, [activeImageId, fitImageToViewport]);
-  const handleImageUpload = (e) => { const files = Array.from(e.target.files); addImagesFromFiles(files); e.target.value = ''; };
+  const handleImageUpload = (e, source = 'album') => {
+    const files = Array.from(e.target.files);
+    addImagesFromFiles(files);
+    if (source === 'camera') {
+      files.forEach((file, idx) => {
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(file);
+        link.download = file.name || `camera-${Date.now()}-${idx}.jpg`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(link.href), 5000);
+      });
+    }
+    e.target.value = '';
+  };
+  const openCropForImage = useCallback((imageId) => {
+    const target = imagesData.find(i => i.id === imageId);
+    if (!target?.baseImage) return;
+    setCropState({
+      open: true,
+      imageId,
+      rect: { x: 0.1, y: 0.1, w: 0.8, h: 0.8 },
+      dragHandle: null
+    });
+    setCropImageBox({ left: 0, top: 0, width: 0, height: 0 });
+  }, [imagesData]);
+  const applyCrop = useCallback(() => {
+    if (!cropState.open || !cropState.imageId || !cropState.rect) return;
+    const target = imagesData.find(i => i.id === cropState.imageId);
+    if (!target?.baseImage?.src) return;
+    const img = new Image();
+    img.onload = () => {
+      const sx = Math.max(0, Math.floor(cropState.rect.x * img.naturalWidth));
+      const sy = Math.max(0, Math.floor(cropState.rect.y * img.naturalHeight));
+      const sw = Math.max(1, Math.floor(cropState.rect.w * img.naturalWidth));
+      const sh = Math.max(1, Math.floor(cropState.rect.h * img.naturalHeight));
+      const c = document.createElement('canvas');
+      c.width = sw; c.height = sh;
+      c.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+      const src = c.toDataURL('image/jpeg', 0.92);
+      const el = new Image();
+      el.onload = () => {
+        setImagesData(prev => prev.map(p => p.id === cropState.imageId ? {
+          ...p, baseImage: { src, element: el, width: el.naturalWidth || sw, height: el.naturalHeight || sh }, annotations: [], history: [], redoHistory: []
+        } : p));
+        if (activeImageId === cropState.imageId) {
+          setBaseImage({ src, element: el, width: el.naturalWidth || sw, height: el.naturalHeight || sh });
+          setAnnotations([]); setHistory([]); setRedoStack([]);
+          setTimeout(() => fitImageToViewport({ src, element: el, width: el.naturalWidth || sw, height: el.naturalHeight || sh }), 0);
+        }
+        setCropState({ open: false, imageId: null, rect: null, dragHandle: null });
+      };
+      el.src = src;
+    };
+    img.src = target.baseImage.src;
+  }, [cropState, imagesData, activeImageId, fitImageToViewport]);
+  useEffect(() => {
+    if (!cropState.open || !cropState.dragHandle) return;
+    const onMove = (e) => {
+      e.preventDefault();
+      const rect = cropAreaRef.current?.getBoundingClientRect();
+      const dragStart = cropDragStartRef.current;
+      if (!rect || !dragStart) return;
+      const dx = (e.clientX - dragStart.clientX) / Math.max(1, cropImageBox.width);
+      const dy = (e.clientY - dragStart.clientY) / Math.max(1, cropImageBox.height);
+      setCropState(prev => {
+        if (!prev.rect) return prev;
+        let { x, y, w, h } = dragStart.rect;
+        if (prev.dragHandle === 'tl') { x += dx; y += dy; w -= dx; h -= dy; }
+        if (prev.dragHandle === 'tr') { y += dy; w += dx; h -= dy; }
+        if (prev.dragHandle === 'bl') { x += dx; w -= dx; h += dy; }
+        if (prev.dragHandle === 'br') { w += dx; h += dy; }
+        if (w < 0.03) w = 0.03;
+        if (h < 0.03) h = 0.03;
+        x = Math.max(0, Math.min(1 - w, x));
+        y = Math.max(0, Math.min(1 - h, y));
+        return { ...prev, rect: { x, y, w, h } };
+      });
+    };
+    const onUp = (e) => {
+      e.preventDefault();
+      cropDragStartRef.current = null;
+      setCropState(prev => ({ ...prev, dragHandle: null }));
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    return () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
+  }, [cropState.open, cropState.dragHandle, cropImageBox.width, cropImageBox.height]);
+  const selectedCropImage = cropState.imageId ? imagesData.find(i => i.id === cropState.imageId)?.baseImage : null;
+  useEffect(() => {
+    if (!cropState.open || !selectedCropImage || !cropAreaRef.current) return;
+    const updateCropImageBox = () => {
+      const rect = cropAreaRef.current.getBoundingClientRect();
+      const cw = rect.width;
+      const ch = rect.height;
+      const iw = selectedCropImage.width || 1;
+      const ih = selectedCropImage.height || 1;
+      const scale = Math.min(cw / iw, ch / ih);
+      const width = iw * scale;
+      const height = ih * scale;
+      const left = (cw - width) / 2;
+      const top = (ch - height) / 2;
+      setCropImageBox({ left, top, width, height });
+    };
+    requestAnimationFrame(() => requestAnimationFrame(updateCropImageBox));
+    window.addEventListener('resize', updateCropImageBox);
+    return () => window.removeEventListener('resize', updateCropImageBox);
+  }, [cropState.open, selectedCropImage]);
   const readImagesFromClipboardAPI = useCallback(async ({ waitForPermission = false } = {}) => {
     if (clipboardReadInFlightRef.current) return false;
     if (!navigator.clipboard?.read) return false;
@@ -2571,10 +2794,14 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     const invScaleHit = 1 / Math.max(transform.scale, 0.1); for (let i = anns.length - 1; i >= 0; i--) { const a = anns[i]; const lp = inverseTransformPoint(x, y, a); const threshold = Math.min(180, Math.max(a.width / 2 + 18, 24) * Math.max(1, invScaleHit)); let hit = false; if (a.type === 'pen' || a.type === 'handwriting_text' || a.type === 'eraser_pixel') { for (let j = 0; j < a.points.length - 1; j++) if (distToSegment(lp, a.points[j], a.points[j+1]) < threshold) { hit = true; break; } } else if (a.type === 'rect' || a.type === 'triangle' || a.type === 'star') { const rx = Math.min(a.startX, a.endX), ry = Math.min(a.startY, a.endY), rw = Math.abs(a.endX - a.startX), rh = Math.abs(a.endY - a.startY); if (a.fillColor && a.fillColor !== 'transparent') { if (lp.x >= rx && lp.x <= rx + rw && lp.y >= ry && lp.y <= ry + rh) hit = true; } else { if ((lp.x >= rx - 10 && lp.x <= rx + rw + 10 && Math.abs(lp.y - ry) < 15) || (lp.x >= rx - 10 && lp.x <= rx + rw + 10 && Math.abs(lp.y - (ry + rh)) < 15) || (lp.y >= ry - 10 && lp.y <= ry + rh + 10 && Math.abs(lp.x - rx) < 15) || (lp.y >= ry - 10 && lp.y <= ry + rh + 10 && Math.abs(lp.x - (rx + rw)) < 15)) hit = true; } } else if (a.type === 'polygon') { if (a.fillColor && a.fillColor !== 'transparent') { if (pointInPolygon(lp, a.points)) hit = true; } else { for (let j = 0; j < a.points.length; j++) if (distToSegment({x: lp.x, y: lp.y}, a.points[j], a.points[(j + 1) % a.points.length]) < threshold) { hit = true; break; } } } else if (a.type === 'circle') { const cx = (a.startX + a.endX) / 2, cy = (a.startY + a.endY) / 2, rx = Math.abs(a.endX - a.startX) / 2, ry = Math.abs(a.endY - a.startY) / 2; if (rx > 0 && ry > 0) { const d = Math.pow(lp.x - cx, 2) / Math.pow(rx, 2) + Math.pow(lp.y - cy, 2) / Math.pow(ry, 2); if ((a.fillColor && a.fillColor !== 'transparent') ? d <= 1 : Math.abs(d - 1) < 0.3) hit = true; } } else if (['arrow', 'line', 'curve', 'curve_arrow', 'polyline', 'double_arrow', 'double_curve_arrow'].includes(a.type)) { if (a.type === 'polyline') { for (let j = 0; j < a.points.length - 1; j++) if (distToSegment({x: lp.x, y: lp.y}, a.points[j], a.points[j+1]) < threshold) { hit = true; break; } } else if (a.midX !== undefined) { if (distToSegment({x: lp.x, y: lp.y}, {x: a.startX, y: a.startY}, {x: a.midX, y: a.midY}) < threshold) hit = true; if (distToSegment({x: lp.x, y: lp.y}, {x: a.midX, y: a.midY}, {x: a.endX, y: a.endY}) < threshold) hit = true; } else { if (distToSegment({x: lp.x, y: lp.y}, {x: a.startX, y: a.startY}, {x: a.endX, y: a.endY}) < threshold) hit = true; } } else if (a.type === 'text') { const textPad = Math.min(120, Math.max(10, 10 * invScaleHit)); if (lp.x >= a.x - (a._w || 100)/2 - textPad && lp.x <= a.x + (a._w || 100)/2 + textPad && lp.y >= a.y - (a._h || 48)/2 - textPad && lp.y <= a.y + (a._h || 48)/2 + textPad) hit = true; } if (hit) return a; } return null;
   }, [transform.scale]);
 
+  const getTouchPointers = () => Array.from(activePointers.current.values()).filter(p => p.pointerType === 'touch');
+  const getPointersByType = (pointerType) => Array.from(activePointers.current.values()).filter(p => p.pointerType === pointerType);
   const handlePointerDown = (e) => {
-    if (e.target.closest('.text-overlay') || e.target.closest('.selection-menu')) return; if (e.target.tagName === 'CANVAS' || e.target.closest('.canvas-container')) e.preventDefault(); const isTouch = e.pointerType === 'touch'; const isMiddleMouse = e.pointerType === 'mouse' && e.button === 1; const isCanvasArea = e.target.tagName === 'CANVAS' || !!e.target.closest('.canvas-container'); const keepTextInputForNavPan = (isTouch || isMiddleMouse) && isCanvasArea && !!textInputRef.current && !fingerDrawMode; setActivePopover(null); if (textInput && !keepTextInputForNavPan) handleTextSubmit(); historySnapshotRef.current = annotations; activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (activePointers.current.size >= 2) { isDrawingRef.current = false; setCurrentAnnotation(null); dragModeRef.current = null; const pts = Array.from(activePointers.current.values()); const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y); const center = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }; lastPinch.current = { dist, center, initialTransform: { ...transformRef.current } }; return; }
-    if (activePointers.current.size === 1) { if (e.target.tagName !== 'CANVAS') return; const pos = getCanvasPos(e.clientX, e.clientY); const isTouchNavigation = isTouch && !fingerDrawMode; const isMiddleNavigation = isMiddleMouse; const isUniversalNavigation = isMiddleNavigation || (e.button === 0 && e.altKey) || isTouchNavigation; const isTouchPan = isTouch && !fingerDrawMode && !!textInputRef.current; if (isTouchPan) { isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return; } const effectiveShouldNavigate = isUniversalNavigation || currentToolRef.current === ToolType.SELECT;
+    if (e.target.closest('.text-overlay') || e.target.closest('.selection-menu')) return; if (e.target.tagName === 'CANVAS' || e.target.closest('.canvas-container')) e.preventDefault(); const isTouch = e.pointerType === 'touch'; const isMiddleMouse = e.pointerType === 'mouse' && e.button === 1; const isCanvasArea = e.target.tagName === 'CANVAS' || !!e.target.closest('.canvas-container'); const keepTextInputForNavPan = (isTouch || isMiddleMouse) && isCanvasArea && !!textInputRef.current && !fingerDrawMode; setActivePopover(null); if (textInput && !keepTextInputForNavPan) handleTextSubmit(); historySnapshotRef.current = annotations; activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY, pointerType: e.pointerType });
+    const touchPointers = getTouchPointers();
+    if (touchPointers.length >= 2) { isDrawingRef.current = false; setCurrentAnnotation(null); dragModeRef.current = null; const pts = touchPointers.slice(0, 2); const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y); const center = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }; lastPinch.current = { dist, center, initialTransform: { ...transformRef.current } }; return; }
+    const primaryPointerCount = isTouch ? touchPointers.length : getPointersByType(e.pointerType).length;
+    if (primaryPointerCount === 1) { const pos = getCanvasPos(e.clientX, e.clientY); const isTouchNavigation = isTouch && !fingerDrawMode; const isMiddleNavigation = isMiddleMouse; const isUniversalNavigation = isMiddleNavigation || (e.button === 0 && e.altKey) || isTouchNavigation; const isTouchPan = isTouch && !fingerDrawMode && !!textInputRef.current; if (isTouchPan) { isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; dragModeRef.current = 'canvas_pan'; panStartClientRef.current = { x: e.clientX, y: e.clientY }; panStartTransformRef.current = { ...transformRef.current }; return; } const effectiveShouldNavigate = isUniversalNavigation || currentToolRef.current === ToolType.SELECT;
       if (effectiveShouldNavigate) { if (selectedIds.length === 1) { const selAnn = annotations.find(a => a.id === selectedIds[0]); const handle = checkHandleHit(pos.x, pos.y, selAnn); if (handle) { dragModeRef.current = handle; dragStartPointerRef.current = pos; dragStartAnnsRef.current = [JSON.parse(JSON.stringify(selAnn))]; if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = false; return; } }
         if (selectedIds.length > 0) { const mBox = getMultiBBox(annotations, selectedIds); if (mBox && pos.x >= mBox.x && pos.x <= mBox.x + mBox.w && pos.y >= mBox.y && pos.y <= mBox.y + mBox.h) { dragModeRef.current = 'move_multi'; dragStartPointerRef.current = pos; let dragIds = [...selectedIds]; if (e.ctrlKey || e.metaKey) { const { duplicated, ids } = duplicateAnnotationsForDrag(selectedIds); if (duplicated.length > 0) { setAnnotations(prev => [...prev, ...duplicated]); setSelectedIds(ids); dragIds = ids; dragStartAnnsRef.current = duplicated.map(a => JSON.parse(JSON.stringify(a))); } else dragStartAnnsRef.current = annotations.filter(a => selectedIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); } else dragStartAnnsRef.current = annotations.filter(a => selectedIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; if (dragIds.length > 0) setSelectedIds(dragIds); return; } }
         const hit = checkHit(pos.x, pos.y, annotations); if (hit) { let targetIds = [hit.id]; if (hit.groupId) targetIds = annotations.filter(a => a.groupId === hit.groupId).map(a => a.id); if (e.ctrlKey || e.metaKey) { const { duplicated, ids } = duplicateAnnotationsForDrag(targetIds); if (duplicated.length > 0) { setAnnotations(prev => [...prev, ...duplicated]); targetIds = ids; dragStartAnnsRef.current = duplicated.map(a => JSON.parse(JSON.stringify(a))); } else dragStartAnnsRef.current = annotations.filter(a => targetIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); } else dragStartAnnsRef.current = annotations.filter(a => targetIds.includes(a.id)).map(a => JSON.parse(JSON.stringify(a))); setSelectedIds(targetIds); if (hit.color) setStrokeColor(hit.color); if (hit.fillColor !== undefined) { setIsFillTransparent(hit.fillColor === 'transparent'); if (hit.fillColor !== 'transparent') setFillColor(hit.fillColor); } if (hit.width) setLineWidth(hit.width); if (hit.fontSize) setFontSize(hit.fontSize); if (hit.hasGlow !== undefined) setTextGlow(hit.hasGlow); dragModeRef.current = 'move'; dragStartPointerRef.current = pos; if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); isPotentialTapRef.current = true; dragStartClientPosRef.current = { x: e.clientX, y: e.clientY }; return; }
@@ -2595,15 +2822,19 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   };
 
   const handlePointerMove = (e) => {
-    if (e.target.closest('.text-overlay') || e.target.closest('.selection-menu')) return; if (e.target.tagName === 'CANVAS' || e.target.closest('.canvas-container')) e.preventDefault(); if (activePointers.current.has(e.pointerId)) activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (activePointers.current.size >= 2) { const pts = Array.from(activePointers.current.values()); const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y); const center = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }; if (lastPinch.current && wrapperRef.current) { const { dist: startDist, center: startCenter, initialTransform } = lastPinch.current; const scaleRatio = dist / startDist; let newScale = Math.min(Math.max(0.1, initialTransform.scale * scaleRatio), 10); const dx = center.x - startCenter.x; const dy = center.y - startCenter.y; const wrapperRect = wrapperRef.current.getBoundingClientRect(); const pinchOffsetX = startCenter.x - (wrapperRect.left + wrapperRect.width / 2); const pinchOffsetY = startCenter.y - (wrapperRect.top + wrapperRect.height / 2); const actualRatio = newScale / initialTransform.scale; setTransform({ scale: newScale, x: initialTransform.x + dx + (pinchOffsetX - pinchOffsetX * actualRatio), y: initialTransform.y + dy + (pinchOffsetY - pinchOffsetY * actualRatio) }); } return; }
-    if (activePointers.current.size === 1) { if (isPotentialTapRef.current && dragStartClientPosRef.current) { if (Math.hypot(e.clientX - dragStartClientPosRef.current.x, e.clientY - dragStartClientPosRef.current.y) > 10) isPotentialTapRef.current = false; } if (dragModeRef.current === 'canvas_pan') { if (panStartClientRef.current && panStartTransformRef.current) { const dx = e.clientX - panStartClientRef.current.x; const dy = e.clientY - panStartClientRef.current.y; setTransform({ ...panStartTransformRef.current, x: panStartTransformRef.current.x + dx, y: panStartTransformRef.current.y + dy }); const edge = 90; const maxSpeed = 12; let scrollDelta = 0; if (e.clientY < edge) { const ratio = (edge - e.clientY) / edge; scrollDelta = -Math.max(1, Math.round(maxSpeed * ratio)); } else if (e.clientY > window.innerHeight - edge) { const ratio = (e.clientY - (window.innerHeight - edge)) / edge; scrollDelta = Math.max(1, Math.round(maxSpeed * ratio)); } if (scrollDelta !== 0) window.scrollBy({ top: scrollDelta, behavior: 'auto' }); } return; } const pos = getCanvasPos(e.clientX, e.clientY); if (currentToolRef.current === ToolType.LASSO && isDrawingRef.current) { setLassoPoints(prev => [...prev, pos]); return; } const dragMode = dragModeRef.current;
+    if (e.target.closest('.text-overlay') || e.target.closest('.selection-menu')) return; if (e.target.tagName === 'CANVAS' || e.target.closest('.canvas-container')) e.preventDefault(); if (activePointers.current.has(e.pointerId)) activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY, pointerType: activePointers.current.get(e.pointerId)?.pointerType || e.pointerType });
+    const touchPointers = getTouchPointers();
+    if (touchPointers.length >= 2) { const pts = touchPointers.slice(0, 2); const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y); const center = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }; if (lastPinch.current && wrapperRef.current) { const { dist: startDist, center: startCenter, initialTransform } = lastPinch.current; const scaleRatio = dist / startDist; let newScale = Math.min(Math.max(0.1, initialTransform.scale * scaleRatio), 10); const dx = center.x - startCenter.x; const dy = center.y - startCenter.y; const wrapperRect = wrapperRef.current.getBoundingClientRect(); const pinchOffsetX = startCenter.x - (wrapperRect.left + wrapperRect.width / 2); const pinchOffsetY = startCenter.y - (wrapperRect.top + wrapperRect.height / 2); const actualRatio = newScale / initialTransform.scale; setTransform({ scale: newScale, x: initialTransform.x + dx + (pinchOffsetX - pinchOffsetX * actualRatio), y: initialTransform.y + dy + (pinchOffsetY - pinchOffsetY * actualRatio) }); } return; }
+    const primaryPointerCount = e.pointerType === 'touch' ? touchPointers.length : getPointersByType(e.pointerType).length;
+    if (primaryPointerCount === 1) { if (isPotentialTapRef.current && dragStartClientPosRef.current) { if (Math.hypot(e.clientX - dragStartClientPosRef.current.x, e.clientY - dragStartClientPosRef.current.y) > 10) isPotentialTapRef.current = false; } if (dragModeRef.current === 'canvas_pan') { if (panStartClientRef.current && panStartTransformRef.current) { const dx = e.clientX - panStartClientRef.current.x; const dy = e.clientY - panStartClientRef.current.y; setTransform({ ...panStartTransformRef.current, x: panStartTransformRef.current.x + dx, y: panStartTransformRef.current.y + dy }); const edge = 90; const maxSpeed = 12; let scrollDelta = 0; if (e.clientY < edge) { const ratio = (edge - e.clientY) / edge; scrollDelta = -Math.max(1, Math.round(maxSpeed * ratio)); } else if (e.clientY > window.innerHeight - edge) { const ratio = (e.clientY - (window.innerHeight - edge)) / edge; scrollDelta = Math.max(1, Math.round(maxSpeed * ratio)); } if (scrollDelta !== 0) window.scrollBy({ top: scrollDelta, behavior: 'auto' }); } return; } const pos = getCanvasPos(e.clientX, e.clientY); if (currentToolRef.current === ToolType.LASSO && isDrawingRef.current) { setLassoPoints(prev => [...prev, pos]); return; } const dragMode = dragModeRef.current;
       if (dragMode && dragMode !== 'canvas_pan') { const startPos = dragStartPointerRef.current; let dx = pos.x - startPos.x; let dy = pos.y - startPos.y; if (e.shiftKey && ['move', 'move_multi'].includes(dragMode)) { const constrained = constrainMoveDelta(dx, dy); dx = constrained.dx; dy = constrained.dy; } if (dragMode === 'move_multi' || (dragMode === 'move' && selectedIds.length > 1)) { if (dragStartAnnsRef.current.length > 0) { setAnnotations(prev => prev.map(a => { if (selectedIds.includes(a.id)) { const startAnn = dragStartAnnsRef.current.find(sa => sa.id === a.id); if (!startAnn) return a; if (['arrow', 'line', 'curve', 'curve_arrow', 'polyline', 'double_arrow', 'double_curve_arrow', 'polygon'].includes(startAnn.type)) { if (['polyline', 'polygon'].includes(startAnn.type)) return { ...a, points: startAnn.points.map(p => ({ x: p.x + dx, y: p.y + dy })) }; return { ...a, startX: startAnn.startX + dx, startY: startAnn.startY + dy, endX: startAnn.endX + dx, endY: startAnn.endY + dy, midX: startAnn.midX !== undefined ? startAnn.midX + dx : undefined, midY: startAnn.midY !== undefined ? startAnn.midY + dy : undefined }; } else return { ...a, tx: (startAnn.tx || 0) + dx, ty: (startAnn.ty || 0) + dy }; } return a; })); } return; } if (selectedIds.length === 1 && dragStartAnnsRef.current[0]) { const startAnn = dragStartAnnsRef.current[0]; const selectedId = selectedIds[0]; if (['arrow', 'line', 'curve', 'curve_arrow', 'polyline', 'double_arrow', 'double_curve_arrow', 'polygon'].includes(startAnn.type)) { if (dragMode.startsWith('poly_')) { const idx = parseInt(dragMode.split('_')[1], 10); setAnnotations(prev => prev.map(a => { if (a.id === selectedId) { const newPoints = [...a.points]; newPoints[idx] = { x: startAnn.points[idx].x + dx, y: startAnn.points[idx].y + dy }; if (startAnn.type === 'polygon') { if (idx === 0) newPoints[newPoints.length - 1] = newPoints[0]; if (idx === startAnn.points.length - 1) newPoints[0] = newPoints[newPoints.length - 1]; } return { ...a, points: newPoints }; } return a; })); } else if (dragMode === 'start') { if (e.shiftKey && ['line', 'arrow', 'double_arrow'].includes(startAnn.type)) { const snapped = snapPointByStepAngle({ x: startAnn.startX + dx, y: startAnn.startY + dy }, { x: startAnn.endX, y: startAnn.endY }, 5); setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, startX: snapped.x, startY: snapped.y } : a)); } else setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, startX: startAnn.startX + dx, startY: startAnn.startY + dy } : a)); } else if (dragMode === 'end') { if (e.shiftKey && ['line', 'arrow', 'double_arrow'].includes(startAnn.type)) { const snapped = snapPointByStepAngle({ x: startAnn.endX + dx, y: startAnn.endY + dy }, { x: startAnn.startX, y: startAnn.startY }, 5); setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, endX: snapped.x, endY: snapped.y } : a)); } else setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, endX: startAnn.endX + dx, endY: startAnn.endY + dy } : a)); } else if (dragMode === 'mid') setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, midX: startAnn.midX + dx, midY: startAnn.midY + dy } : a)); else if (dragMode === 'move') { if (['polyline', 'polygon'].includes(startAnn.type)) setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, points: startAnn.points.map(p => ({ x: p.x + dx, y: p.y + dy })) } : a)); else setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, startX: startAnn.startX + dx, startY: startAnn.startY + dy, endX: startAnn.endX + dx, endY: startAnn.endY + dy, midX: startAnn.midX !== undefined ? startAnn.midX + dx : undefined, midY: startAnn.midY !== undefined ? startAnn.midY + dy : undefined } : a)); } return; } const r = startAnn.rotation || 0; const cosR = Math.cos(r), sinR = Math.sin(r); const ldx = dx * cosR + dy * sinR; const ldy = -dx * sinR + dy * cosR; const bbox = getBBox(startAnn); const w = bbox.w || 1; const h = bbox.h || 1; const oldSx = startAnn.scaleX || startAnn.scale || 1; const oldSy = startAnn.scaleY || startAnn.scale || 1; let newSx = oldSx, newSy = oldSy; let dcx = 0, dcy = 0; if (['l', 'r', 't', 'b'].includes(dragMode)) { if (dragMode === 'l') { newSx = oldSx - ldx / w; dcx = ldx / 2; } if (dragMode === 'r') { newSx = oldSx + ldx / w; dcx = ldx / 2; } if (dragMode === 't') { newSy = oldSy - ldy / h; dcy = ldy / 2; } if (dragMode === 'b') { newSy = oldSy + ldy / h; dcy = ldy / 2; } newSx = Math.max(0.05, newSx); newSy = Math.max(0.05, newSy); if (dragMode === 'l' || dragMode === 'r') dcx = (dragMode === 'r' ? (newSx - oldSx) : -(newSx - oldSx)) * w / 2; if (dragMode === 't' || dragMode === 'b') dcy = (dragMode === 'b' ? (newSy - oldSy) : -(newSy - oldSy)) * h / 2; } else if (['tl', 'tr', 'bl', 'br'].includes(dragMode)) { let fixLx = dragMode.includes('l') ? (w/2) * oldSx : -(w/2) * oldSx; let fixLy = dragMode.includes('t') ? (h/2) * oldSy : -(h/2) * oldSy; let currentLx = -fixLx + ldx, currentLy = -fixLy + ldy; let ratio = Math.hypot(currentLx - fixLx, currentLy - fixLy) / Math.max(1, Math.hypot(-fixLx - fixLx, -fixLy - fixLy)); newSx = Math.max(0.05, oldSx * ratio); newSy = Math.max(0.05, oldSy * ratio); const actualRatio = newSx / oldSx; dcx = fixLx * (1 - actualRatio); dcy = fixLy * (1 - actualRatio); } else if (dragMode === 'rotate') { const center = transformPoint(bbox.x + bbox.w/2, bbox.y + bbox.h/2, startAnn); setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, rotation: (startAnn.rotation || 0) + (Math.atan2(pos.y - center.y, pos.x - center.x) - Math.atan2(startPos.y - center.y, startPos.x - center.x)) } : a)); return; } else if (dragMode === 'move') { setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, tx: (startAnn.tx || 0) + dx, ty: (startAnn.ty || 0) + dy } : a)); return; } if (['l', 'r', 't', 'b', 'tl', 'tr', 'bl', 'br'].includes(dragMode)) { const dtx = dcx * cosR - dcy * sinR; const dty = dcx * sinR + dcy * cosR; if (startAnn.type === 'text') { const ratioX = Math.abs(newSx / Math.max(0.001, oldSx)); const ratioY = Math.abs(newSy / Math.max(0.001, oldSy)); const fontScale = ['l', 'r'].includes(dragMode) ? ratioX : (['t', 'b'].includes(dragMode) ? ratioY : Math.max(ratioX, ratioY)); const nextFontSize = Math.max(8, Math.min(480, (startAnn.fontSize || 48) * fontScale)); setFontSize(Math.round(nextFontSize)); setTextFontSizeDraft(String(Math.round(nextFontSize))); setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, fontSize: nextFontSize, scaleX: 1, scaleY: 1, tx: (startAnn.tx || 0) + dtx, ty: (startAnn.ty || 0) + dty } : a)); } else { setAnnotations(prev => prev.map(a => a.id === selectedId ? { ...a, scaleX: newSx, scaleY: newSy, tx: (startAnn.tx || 0) + dtx, ty: (startAnn.ty || 0) + dty } : a)); } } return; } } if (currentToolRef.current === ToolType.ERASER_OBJ && isDrawingRef.current) { const hit = checkHit(pos.x, pos.y, annotations); if (hit) { pushHistory(annotationsRef.current); setAnnotations(prev => prev.filter(a => a.id !== hit.id && (!hit.groupId || a.groupId !== hit.groupId))); } return; } if (isDrawingRef.current && currentAnnotation) { if (currentAnnotation.type === ToolType.PEN || currentAnnotation.type === ToolType.ERASER_PIXEL || currentAnnotation.type === ToolType.HANDWRITING_TEXT) setCurrentAnnotation(prev => ({ ...prev, points: [...prev.points, { x: pos.x, y: pos.y }] })); else if (e.shiftKey && [ToolType.LINE, ToolType.ARROW, 'double_arrow'].includes(currentAnnotation.type)) { const snapped = snapPointByStepAngle({ x: pos.x, y: pos.y }, { x: currentAnnotation.startX, y: currentAnnotation.startY }, 5); setCurrentAnnotation(prev => ({ ...prev, endX: snapped.x, endY: snapped.y })); } else setCurrentAnnotation(prev => ({ ...prev, endX: pos.x, endY: pos.y })); }
     }
   };
 
   const handlePointerUp = (e) => {
-    if (e.target.closest('.text-overlay') || e.target.closest('.selection-menu')) return; let isTap = isPotentialTapRef.current; let hasDragged = !!dragModeRef.current && dragModeRef.current !== 'canvas_pan'; activePointers.current.delete(e.pointerId); if (activePointers.current.size < 2) { lastPinch.current = null; } if (activePointers.current.size === 1 && dragModeRef.current === 'canvas_pan') { const remainingPointer = Array.from(activePointers.current.values())[0]; panStartClientRef.current = { x: remainingPointer.x, y: remainingPointer.y }; panStartTransformRef.current = { ...transformRef.current }; } else if (activePointers.current.size === 0) { panStartClientRef.current = null; panStartTransformRef.current = null; }
+    const isOverlayTarget = e.target.closest('.text-overlay') || e.target.closest('.selection-menu');
+    let isTap = isPotentialTapRef.current; let hasDragged = !!dragModeRef.current && dragModeRef.current !== 'canvas_pan'; activePointers.current.delete(e.pointerId); const remainingTouches = getTouchPointers(); if (remainingTouches.length < 2) { lastPinch.current = null; } if (remainingTouches.length === 1 && dragModeRef.current === 'canvas_pan') { const remainingPointer = remainingTouches[0]; panStartClientRef.current = { x: remainingPointer.x, y: remainingPointer.y }; panStartTransformRef.current = { ...transformRef.current }; } else if (activePointers.current.size === 0) { panStartClientRef.current = null; panStartTransformRef.current = null; }
+    if (isOverlayTarget) { isPotentialTapRef.current = false; if (activePointers.current.size === 0) dragModeRef.current = null; return; }
     if (isTap && !isDrawingRef.current) { const pos = getCanvasPos(e.clientX, e.clientY); const hit = checkHit(pos.x, pos.y, annotations); if (hit) { let targetIds = [hit.id]; if (hit.groupId) targetIds = annotations.filter(a => a.groupId === hit.groupId).map(a => a.id); if (currentToolRef.current !== ToolType.SELECT) handleToolChange(ToolType.SELECT, true); setSelectedIds(targetIds); if (hit.color) setStrokeColor(hit.color); if (hit.fillColor !== undefined) { setIsFillTransparent(hit.fillColor === 'transparent'); if (hit.fillColor !== 'transparent') setFillColor(hit.fillColor); } if (hit.width) setLineWidth(hit.width); if (hit.fontSize) setFontSize(hit.fontSize); if (hit.hasGlow !== undefined) setTextGlow(hit.hasGlow); } else { setSelectedIds([]); } }
     isPotentialTapRef.current = false; if (activePointers.current.size === 0) dragModeRef.current = null; dragStartAnnsRef.current = [];
     if (currentToolRef.current === ToolType.LASSO && isDrawingRef.current) { isDrawingRef.current = false; if (lassoPoints.length > 2) { const hits = annotations.filter(ann => { const bbox = getBBox(ann); if (!bbox) return false; return pointInPolygon(transformPoint(bbox.x + bbox.w/2, bbox.y + bbox.h/2, ann), lassoPoints); }); let selectedSet = new Set(hits.map(a => a.id)); hits.forEach(hit => { if (hit.groupId) annotations.filter(a => a.groupId === hit.groupId).forEach(a => selectedSet.add(a.id)); }); setSelectedIds(Array.from(selectedSet)); } else setSelectedIds([]); setLassoPoints([]); return; }
@@ -2632,8 +2863,8 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       {errorMessage && <div className="absolute top-20 left-1/2 transform -translate-x-1/2 bg-red-600 text-white px-6 py-3 rounded-xl shadow-2xl z-[100] font-bold flex items-center gap-2"><span>{errorMessage}</span><button onClick={() => setErrorMessage('')} className="ml-4 opacity-70 hover:opacity-100 text-xl font-light">×</button></div>}
       {!isFullscreen && ( <header className="bg-white border-b px-3 py-2 flex flex-wrap justify-between items-center gap-2 shrink-0 shadow-sm relative z-20"> <button onClick={onCancel} className="text-gray-500 p-2 hover:bg-gray-100 rounded-lg font-medium transition text-sm">キャンセル</button> <div className="font-bold text-gray-800 text-sm sm:text-lg flex items-center gap-2 min-w-0"> {initialItem && <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-xs sm:text-sm">再編集</span>} <span className="truncate">画像の編集</span> </div> <button onClick={() => { setSelectedIds([]); setTimeout(handleSave, 50); }} disabled={imagesData.length === 0 && !memo} className="bg-blue-600 text-white px-3 sm:px-5 py-2 rounded-lg font-bold hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 transition shadow-md text-sm"> <Save size={16} /> 保存 </button> </header> )}
       <div className={`flex-1 flex ${isFullscreen ? 'flex-col fixed inset-0 z-50 bg-gray-200' : 'flex-col lg:flex-row'} overflow-hidden`}>
-        <div className="flex-1 flex flex-col bg-gray-200 overflow-hidden relative">
-          {imagesData.length === 0 ? ( <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-6"> <div className="text-center mb-4"><h2 className="text-2xl font-bold text-gray-700 mb-2">写真を追加しますか？</h2><p className="text-gray-500">Ctrl+V (Cmd+V) で直接貼り付けることも可能です</p></div> <div className="flex flex-col sm:flex-row gap-4 w-full max-w-lg"> <label className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm cursor-pointer hover:shadow-md hover:bg-blue-50 transition text-blue-600"><Camera size={48} className="mb-4" /> <span className="font-bold text-lg">カメラで撮影</span><input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={handleImageUpload} /></label> <label className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm cursor-pointer hover:shadow-md hover:bg-blue-50 transition text-blue-600"><ImageIcon size={48} className="mb-4" /> <span className="font-bold text-lg">アルバムから</span><input type="file" multiple accept="image/*" className="hidden" onChange={handleImageUpload} /></label> </div> </div> ) : ( <>
+        <div className="flex-1 flex flex-col bg-gray-200 overflow-hidden relative order-2 lg:order-1">
+          {imagesData.length === 0 ? ( <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-6"> <div className="text-center mb-4"><h2 className="text-2xl font-bold text-gray-700 mb-2">写真を追加しますか？</h2><p className="text-gray-500">Ctrl+V (Cmd+V) で直接貼り付けることも可能です</p></div> <div className="flex flex-col sm:flex-row gap-4 w-full max-w-lg"> <label className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm cursor-pointer hover:shadow-md hover:bg-blue-50 transition text-blue-600"><Camera size={48} className="mb-4" /> <span className="font-bold text-lg">カメラで撮影</span><input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={(e) => handleImageUpload(e, 'camera')} /></label> <label className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm cursor-pointer hover:shadow-md hover:bg-blue-50 transition text-blue-600"><ImageIcon size={48} className="mb-4" /> <span className="font-bold text-lg">アルバムから</span><input type="file" multiple accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e, 'album')} /></label> <button onClick={() => readImagesFromClipboardAPI({ waitForPermission: true })} className="flex-1 flex flex-col items-center justify-center bg-white p-8 rounded-2xl shadow-sm hover:shadow-md hover:bg-blue-50 transition text-blue-600"><ClipboardPaste size={48} className="mb-4" /><span className="font-bold text-lg">クリップボード貼付</span></button> </div> </div> ) : ( <>
               <div className="bg-white border-b px-2 py-1.5 flex flex-wrap items-center gap-x-2 gap-y-2 shrink-0 shadow-sm z-10 relative overflow-visible">
                 <div className="flex items-center bg-gray-50 p-1 rounded-xl">
                   <ToolButton tool={ToolType.SELECT} icon={MousePointer2} label="選択" /> <ToolButton tool={ToolType.LASSO} icon={Lasso} label="投げ輪" /> <div className="w-px h-6 bg-gray-300 mx-1"></div> <ToolButton tool={ToolType.PEN} icon={PenTool} label="ペン" /> <ToolButton tool={ToolType.HANDWRITING_TEXT} icon={PenLine} label="手書き" /> <ToolButton tool={ToolType.TEXT} icon={Type} label="文字" />
@@ -2751,6 +2982,16 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
+                              openCropForImage(img.id);
+                            }}
+                            className="absolute top-0.5 left-0.5 p-1 bg-black/60 text-white rounded-full hover:bg-blue-500 transition"
+                            title="トリミング"
+                          >
+                            <ScanText size={12} />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
                               handleDeleteImage(img.id);
                             }}
                             className="absolute top-0.5 right-0.5 p-1 bg-black/60 text-white rounded-full hover:bg-red-500 transition"
@@ -2778,7 +3019,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
           )}
         </div>
         {!isFullscreen && (
-          <div className="w-full lg:w-80 bg-white border-t lg:border-t-0 lg:border-l border-gray-200 flex flex-col shrink-0 relative z-20">
+          <div className="w-full lg:w-80 bg-white border-t lg:border-t-0 lg:border-l border-gray-200 flex flex-col shrink-0 relative z-20 order-1 lg:order-2">
             <div className="p-4 bg-gray-50 border-b font-bold text-gray-700 flex justify-between items-center">
               <div className="flex items-center gap-2"><FileText size={20} /> ページ情報</div>
               <button onClick={() => setIsLayoutModalOpen(true)} className="flex items-center gap-1 text-xs bg-white border border-gray-300 px-2 py-1.5 rounded-lg hover:bg-gray-100 text-gray-600 transition shadow-sm font-medium"><LayoutTemplate size={14} /> PPTレイアウト</button>
@@ -2799,9 +3040,27 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       </div>
       {thumbContextMenu && ( <div className="fixed z-[66] thumb-context-menu bg-white border border-gray-200 rounded-xl shadow-2xl p-1.5 min-w-[170px]" style={{ left: Math.min(thumbContextMenu.x, viewportW - 190), top: Math.min(thumbContextMenu.y, viewportH - 120) }}> <button onClick={() => { copyThumbnailImage(thumbContextMenu.img); setThumbContextMenu(null); }} className="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-100 font-medium text-gray-700">画像をコピー</button> <button onClick={() => { saveThumbnailImage(thumbContextMenu.img); setThumbContextMenu(null); }} className="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-100 font-medium text-gray-700">画像を保存</button> </div> )}
       {isClearConfirmOpen && ( <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4"> <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl"> <h2 className="text-xl font-bold mb-2 text-gray-800">書き込みの消去</h2><p className="text-gray-600 mb-6">すべての書き込みを消去しますか？</p> <div className="flex justify-end gap-3"><button onClick={() => setIsClearConfirmOpen(false)} className="px-5 py-2.5 rounded-xl text-gray-600 hover:bg-gray-100 font-medium">キャンセル</button><button onClick={() => { pushHistory(annotations); setAnnotations([]); setIsClearConfirmOpen(false); }} className="px-5 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 font-medium">消去する</button></div> </div> </div> )}
-      {isImageSourcePickerOpen && ( <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[65] p-4"> <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl"> <h2 className="text-2xl font-bold text-gray-800 mb-2">画像の追加方法</h2><p className="text-gray-500 mb-5">カメラで撮影するか、アルバムから選択してください。</p><div className="flex flex-col sm:flex-row gap-4"> <button onClick={() => { setIsImageSourcePickerOpen(false); setTimeout(() => cameraInputRef.current?.click(), 0); }} className="flex-1 flex flex-col items-center justify-center bg-blue-50 p-6 rounded-2xl hover:bg-blue-100 text-blue-700 transition"><Camera size={44} className="mb-3" /><span className="font-bold text-lg">カメラで撮影</span></button> <button onClick={() => { setIsImageSourcePickerOpen(false); setTimeout(() => albumInputRef.current?.click(), 0); }} className="flex-1 flex flex-col items-center justify-center bg-indigo-50 p-6 rounded-2xl hover:bg-indigo-100 text-indigo-700 transition"><ImageIcon size={44} className="mb-3" /><span className="font-bold text-lg">アルバムから選択</span></button> </div><div className="mt-5 flex justify-end"><button onClick={() => setIsImageSourcePickerOpen(false)} className="px-5 py-2.5 rounded-xl text-gray-600 hover:bg-gray-100 font-medium">キャンセル</button></div></div></div> )}
-      <input ref={cameraInputRef} type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={handleImageUpload} />
-      <input ref={albumInputRef} type="file" multiple accept="image/*" className="hidden" onChange={handleImageUpload} />
+      {isImageSourcePickerOpen && ( <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[65] p-4"> <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl"> <h2 className="text-2xl font-bold text-gray-800 mb-2">画像の追加方法</h2><p className="text-gray-500 mb-5">カメラ・アルバム・クリップボードから追加できます。</p><div className="flex flex-col sm:flex-row gap-4"> <button onClick={() => { setIsImageSourcePickerOpen(false); setTimeout(() => cameraInputRef.current?.click(), 0); }} className="flex-1 flex flex-col items-center justify-center bg-blue-50 p-6 rounded-2xl hover:bg-blue-100 text-blue-700 transition"><Camera size={44} className="mb-3" /><span className="font-bold text-lg">カメラで撮影</span></button> <button onClick={() => { setIsImageSourcePickerOpen(false); setTimeout(() => albumInputRef.current?.click(), 0); }} className="flex-1 flex flex-col items-center justify-center bg-indigo-50 p-6 rounded-2xl hover:bg-indigo-100 text-indigo-700 transition"><ImageIcon size={44} className="mb-3" /><span className="font-bold text-lg">アルバムから選択</span></button> <button onClick={() => { setIsImageSourcePickerOpen(false); readImagesFromClipboardAPI({ waitForPermission: true }); }} className="flex-1 flex flex-col items-center justify-center bg-emerald-50 p-6 rounded-2xl hover:bg-emerald-100 text-emerald-700 transition"><ClipboardPaste size={44} className="mb-3" /><span className="font-bold text-lg">貼り付け</span></button> </div><div className="mt-5 flex justify-end"><button onClick={() => setIsImageSourcePickerOpen(false)} className="px-5 py-2.5 rounded-xl text-gray-600 hover:bg-gray-100 font-medium">キャンセル</button></div></div></div> )}
+      <input ref={cameraInputRef} type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={(e) => handleImageUpload(e, 'camera')} />
+      <input ref={albumInputRef} type="file" multiple accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e, 'album')} />
+      {cropState.open && cropState.imageId && (
+        <div className="fixed inset-0 bg-black/70 z-[90] flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl p-4 w-full max-w-3xl">
+            <div ref={cropAreaRef} className="relative w-full bg-black/80 overflow-hidden rounded-lg mx-auto" style={{ height: '72vh', touchAction: 'none' }}>
+              <img src={selectedCropImage?.src} className="absolute inset-0 w-full h-full object-contain" />
+              {cropImageBox.width > 0 && cropImageBox.height > 0 && (
+                <div className="absolute border-2 border-blue-400 bg-blue-200/20" style={{ left: `${cropImageBox.left + cropState.rect.x * cropImageBox.width}px`, top: `${cropImageBox.top + cropState.rect.y * cropImageBox.height}px`, width: `${cropState.rect.w * cropImageBox.width}px`, height: `${cropState.rect.h * cropImageBox.height}px` }}>
+                  {['tl','tr','bl','br'].map((h) => <div key={h} onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); cropDragStartRef.current = { clientX: e.clientX, clientY: e.clientY, rect: { ...cropState.rect } }; setCropState(prev => ({ ...prev, dragHandle: h })); }} className={`absolute w-5 h-5 bg-blue-500 rounded-full ${h==='tl'?'left-[-10px] top-[-10px]':h==='tr'?'right-[-10px] top-[-10px]':h==='bl'?'left-[-10px] bottom-[-10px]':'right-[-10px] bottom-[-10px]'}`} style={{ touchAction: 'none' }} />)}
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end gap-2 mt-3">
+              <button onClick={() => setCropState({ open: false, imageId: null, rect: null, dragHandle: null })} className="px-4 py-2 rounded bg-gray-100">キャンセル</button>
+              <button onClick={applyCrop} className="px-4 py-2 rounded bg-blue-600 text-white">トリミング適用</button>
+            </div>
+          </div>
+        </div>
+      )}
       {isLayoutModalOpen && ( <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[70] p-4 font-sans select-none backdrop-blur-sm"> <div className="bg-white rounded-2xl p-6 w-full max-w-3xl shadow-2xl max-h-[95vh] overflow-y-auto flex flex-col"> <div className="flex justify-between items-center mb-4"> <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2"><LayoutTemplate size={24} className="text-blue-600" /> スライド出力レイアウト設定</h2> <button onClick={() => setIsLayoutModalOpen(false)} className="p-2 text-gray-400 hover:bg-gray-100 rounded-full transition"><X size={24} /></button> </div> <div className="mb-6 flex gap-2 overflow-x-auto pb-2 shrink-0"> {[ { id: 'default', label: 'デフォルト (左メモ / 右画像)' }, { id: 'top_bottom', label: '上下分割 (上メモ / 下画像)' }, { id: 'images_only', label: '画像のみ (メモ非表示)' }, { id: 'custom', label: '完全カスタム (プレビューを操作)' } ].map(tpl => ( <button key={tpl.id} onClick={() => setLayoutSettings(prev => ({ ...prev, template: tpl.id }))} className={`px-4 py-2.5 border-2 rounded-xl text-sm font-bold whitespace-nowrap transition ${layoutSettings.template === tpl.id ? 'border-blue-500 bg-blue-50 text-blue-700 shadow-sm' : 'border-gray-200 text-gray-600 hover:bg-gray-50 hover:border-gray-300'}`}>{tpl.label}</button> ))} </div> <div className="mb-4"> <div className="flex justify-between items-end mb-2"><h3 className="font-bold text-gray-700 text-sm">プレビュー (ドラッグ＆リサイズ可能)</h3><span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">16:9 スライド</span></div> <div ref={previewContainerRef} className="relative w-full aspect-video bg-white border-2 border-gray-300 shadow-inner overflow-hidden rounded-lg" style={{ backgroundImage: 'radial-gradient(#e5e7eb 1px, transparent 1px)', backgroundSize: '40px 40px', backgroundPosition: '0 0' }}> <div className="absolute top-1/2 left-0 w-full h-px bg-blue-500/20 pointer-events-none"></div><div className="absolute left-1/2 top-0 w-px h-full bg-blue-500/20 pointer-events-none"></div> {layoutSettings.memoRect && ( <LayoutRect rect={layoutSettings.memoRect} onChange={(r) => setLayoutSettings(p => ({...p, memoRect: r}))} onDragStart={() => setLayoutSettings(p => ({...p, template: 'custom'}))} label="📝 メモ配置エリア" isMemo={true} containerRef={previewContainerRef} /> )} {layoutSettings.customImageRects.map((rect, i) => ( <LayoutRect key={i} rect={rect} onChange={(r) => { const newArr = [...layoutSettings.customImageRects]; newArr[i] = r; setLayoutSettings(p => ({...p, customImageRects: newArr})); }} onDragStart={() => setLayoutSettings(p => ({...p, template: 'custom'}))} label={`🖼️ ${i+1}枚目の画像`} bgImg={imagesData[i]?.baseImage?.src} isMemo={false} containerRef={previewContainerRef} /> ))} </div> </div> <div className="border border-gray-200 rounded-xl overflow-hidden shrink-0"> <button onClick={() => setShowAdvancedLayout(!showAdvancedLayout)} className="w-full px-4 py-3 bg-gray-50 hover:bg-gray-100 flex justify-between items-center text-sm font-bold text-gray-700 transition">詳細な数値を手入力して微調整する {showAdvancedLayout ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button> {showAdvancedLayout && ( <div className="p-4 bg-white space-y-4"> <p className="text-xs text-gray-500 mb-2">※単位は「インチ」です（標準16:9スライド幅10.0、高さ5.625）。左上が原点(0,0)です。</p> {layoutSettings.memoRect && ( <div className="space-y-1"><h4 className="font-bold text-gray-700 text-xs flex items-center gap-1.5"><FileText size={14}/> メモ枠</h4> <div className="flex flex-wrap gap-2 items-center text-xs bg-gray-50 p-2 rounded border"> <label className="flex items-center gap-1 font-bold text-gray-600">X: <input type="number" step="0.1" value={layoutSettings.memoRect.x} onChange={e => setLayoutSettings(p => ({...p, template: 'custom', memoRect: {...p.memoRect, x: parseFloat(e.target.value)||0}}))} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">Y: <input type="number" step="0.1" value={layoutSettings.memoRect.y} onChange={e => setLayoutSettings(p => ({...p, template: 'custom', memoRect: {...p.memoRect, y: parseFloat(e.target.value)||0}}))} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">W: <input type="number" step="0.1" value={layoutSettings.memoRect.w} onChange={e => setLayoutSettings(p => ({...p, template: 'custom', memoRect: {...p.memoRect, w: parseFloat(e.target.value)||0}}))} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">H: <input type="number" step="0.1" value={layoutSettings.memoRect.h} onChange={e => setLayoutSettings(p => ({...p, template: 'custom', memoRect: {...p.memoRect, h: parseFloat(e.target.value)||0}}))} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> </div> </div> )} <div className="space-y-1"><h4 className="font-bold text-gray-700 text-xs flex items-center justify-between"><span className="flex items-center gap-1.5"><ImageIcon size={14}/> 各画像枠</span><button onClick={() => setLayoutSettings(p => ({...p, template: 'custom', customImageRects: [...p.customImageRects, {x:0.5, y:1.0, w:4.0, h:3.0}]}))} className="text-blue-600 hover:text-blue-800 text-xs font-bold flex items-center gap-1"><Plus size={12}/> 枠を追加</button></h4> <div className="space-y-2 max-h-32 overflow-y-auto pr-1"> {layoutSettings.customImageRects.map((rect, idx) => ( <div key={idx} className="flex flex-wrap gap-2 items-center text-xs bg-gray-50 p-2 border rounded"> <span className="font-bold text-blue-600 w-12 text-center">{idx + 1}枚目</span> <label className="flex items-center gap-1 font-bold text-gray-600">X: <input type="number" step="0.1" value={rect.x} onChange={e => { const newArr = [...layoutSettings.customImageRects]; newArr[idx].x = parseFloat(e.target.value)||0; setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">Y: <input type="number" step="0.1" value={rect.y} onChange={e => { const newArr = [...layoutSettings.customImageRects]; newArr[idx].y = parseFloat(e.target.value)||0; setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">W: <input type="number" step="0.1" value={rect.w} onChange={e => { const newArr = [...layoutSettings.customImageRects]; newArr[idx].w = parseFloat(e.target.value)||0; setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <label className="flex items-center gap-1 font-bold text-gray-600">H: <input type="number" step="0.1" value={rect.h} onChange={e => { const newArr = [...layoutSettings.customImageRects]; newArr[idx].h = parseFloat(e.target.value)||0; setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="w-14 p-1 border rounded focus:ring-1 focus:ring-blue-500 outline-none" /></label> <button onClick={() => { const newArr = layoutSettings.customImageRects.filter((_, i) => i !== idx); setLayoutSettings(p => ({...p, template: 'custom', customImageRects: newArr})); }} className="ml-auto text-red-500 hover:bg-red-100 p-1 rounded transition"><Trash2 size={14} /></button> </div> ))} </div> </div> </div> )} </div> <div className="mt-6 flex justify-end shrink-0"> <button onClick={() => setIsLayoutModalOpen(false)} className="px-8 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold transition shadow-lg flex items-center gap-2">設定を保存して戻る</button> </div> </div> </div> )}
     </div>
   );
