@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.16';
+const APP_VERSION = 'v1.6.17';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -907,7 +907,13 @@ export default function App() {
       const PptxGenJS = await loadPptxGenJS();
       const pptx = new PptxGenJS();
       pptx.layout = 'LAYOUT_16x9';
-      pptx.theme = { lang: PPT_TEXT_LANG, headFontFace: PPT_FONT_FAMILY, bodyFontFace: PPT_FONT_FAMILY };
+      pptx.theme = {
+        lang: PPT_TEXT_LANG,
+        headFontFace: PPT_FONT_FAMILY,
+        bodyFontFace: PPT_FONT_FAMILY,
+        headFontFaceEastAsia: PPT_FONT_FAMILY,
+        bodyFontFaceEastAsia: PPT_FONT_FAMILY
+      };
       pptx.defineSlideMaster({ title: "REPORT_SLIDE", background: { color: "FFFFFF" } });
       for (const [index, item] of targetItems.entries()) {
         const slide = pptx.addSlide({ masterName: "REPORT_SLIDE" });
