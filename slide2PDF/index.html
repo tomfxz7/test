@@ -305,7 +305,9 @@ body { background-color: #0f172a; display: grid; gap: 30px; grid-template-column
                         background: transparent !important;
                         display: block !important;
                     }
-                    .slide-container {
+                    .slide-container,
+                    .slide,
+                    [data-slide] {
                         width: ${size.width} !important;
                         height: ${size.height} !important;
                         max-height: ${size.height} !important;
@@ -319,9 +321,16 @@ body { background-color: #0f172a; display: grid; gap: 30px; grid-template-column
                         box-shadow: none !important;
                         border-radius: 0 !important;
                     }
-                    .slide-container:last-child {
+                    .slide-container:last-child,
+                    .slide:last-child,
+                    [data-slide]:last-child {
                         page-break-after: auto !important;
                         break-after: auto !important;
+                    }
+                    /* Gemini生成スライドで使われがちな body 余白・背景を強制解除 */
+                    body[class], body {
+                        padding: 0 !important;
+                        background: transparent !important;
                     }
                     * {
                         -webkit-print-color-adjust: exact !important;
