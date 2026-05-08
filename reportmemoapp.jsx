@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.27';
+const APP_VERSION = 'v1.6.28';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -121,8 +121,8 @@ const normalizeImportedImage = async (src, targetLongEdge = IMPORT_NORMALIZED_LO
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(img, 0, 0, width, height);
-  const useLossless = scale > 1;
-  return { src: useLossless ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.92), width, height };
+  // 縮小時の文字潰れ/にじみを避けるため、出力は常に可逆PNGに統一
+  return { src: canvas.toDataURL('image/png'), width, height };
 };
 
 // オフスクリーンキャンバス
