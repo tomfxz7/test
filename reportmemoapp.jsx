@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.15';
+const APP_VERSION = 'v1.6.16';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -495,7 +495,7 @@ const drawAnnotationsOnSlide = (slide, pptx, annotations, drawX, drawY, drawW, d
       const rx = box.x + (ann.tx || 0); const ry = box.y + (ann.ty || 0);
       const rot = (ann.rotation || 0) * (180 / Math.PI);
       const pColor = (ann.color || '#000000').replace('#', '');
-      const textRuns = (ann.text || '').split('\n').map((line, idx, arr) => ({ text: line, options: { breakLine: idx < arr.length - 1, lang: PPT_TEXT_LANG } }));
+      const textRuns = (ann.text || '').split('\n').map((line, idx, arr) => ({ text: line, options: { breakLine: idx < arr.length - 1, lang: PPT_TEXT_LANG, fontFace: PPT_FONT_FAMILY } }));
       const textOpts = {
         x: drawX + rx * ratioX, y: drawY + ry * ratioY,
         w: Math.max(0.05, box.w * ratioX * 1.08), h: Math.max(0.05, box.h * ratioY * 1.05),
