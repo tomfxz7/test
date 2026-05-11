@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.31';
+const APP_VERSION = 'v1.6.33';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -110,13 +110,38 @@ const normalizeImportedImage = async (src, targetLongEdge = IMPORT_NORMALIZED_LO
   });
   const srcW = img.naturalWidth || img.width || 1;
   const srcH = img.naturalHeight || img.height || 1;
-  // 取り込み時は縮小/拡大どちらも行う（アスペクト比は維持）
+  // アスペクト比を維持したまま、長辺のみを正規化して解像度を統一する
   const scale = targetLongEdge / Math.max(srcW, srcH);
   const width = Math.max(1, Math.round(srcW * scale));
   const height = Math.max(1, Math.round(srcH * scale));
-  // PowerPoint の拡大縮小と同様に、元画像の画素データは変更せず保持する。
-  // 編集座標系の width/height だけを正規化して、相対的な描画サイズを統一する。
-  return { src, width, height };
+
+  // 画素データも正規化後の解像度へ再サンプリングして固定する
+  const sourceCanvas = document.createElement('canvas');
+  sourceCanvas.width = srcW;
+  sourceCanvas.height = srcH;
+  const sourceCtx = sourceCanvas.getContext('2d');
+  sourceCtx.drawImage(img, 0, 0, srcW, srcH);
+
+  let workCanvas = sourceCanvas;
+  while (workCanvas.width * 0.5 > width && workCanvas.height * 0.5 > height) {
+    const halfCanvas = document.createElement('canvas');
+    halfCanvas.width = Math.max(width, Math.round(workCanvas.width * 0.5));
+    halfCanvas.height = Math.max(height, Math.round(workCanvas.height * 0.5));
+    const halfCtx = halfCanvas.getContext('2d');
+    halfCtx.imageSmoothingEnabled = true;
+    halfCtx.imageSmoothingQuality = 'high';
+    halfCtx.drawImage(workCanvas, 0, 0, halfCanvas.width, halfCanvas.height);
+    workCanvas = halfCanvas;
+  }
+
+  const finalCanvas = document.createElement('canvas');
+  finalCanvas.width = width;
+  finalCanvas.height = height;
+  const finalCtx = finalCanvas.getContext('2d');
+  finalCtx.imageSmoothingEnabled = true;
+  finalCtx.imageSmoothingQuality = 'high';
+  finalCtx.drawImage(workCanvas, 0, 0, width, height);
+  return { src: finalCanvas.toDataURL('image/png'), width, height };
 };
 
 // オフスクリーンキャンバス
