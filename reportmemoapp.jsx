@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.25';
+const APP_VERSION = 'v1.6.28';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -91,7 +91,7 @@ const normalizeImportedImageSize = async (src, targetLongEdge = IMPORT_IMAGE_LON
   const srcW = img.naturalWidth || img.width || 1;
   const srcH = img.naturalHeight || img.height || 1;
   const longEdge = Math.max(srcW, srcH);
-  const scale = targetLongEdge > 0 ? targetLongEdge / longEdge : 1;
+  const scale = targetLongEdge > 0 ? Math.min(1, targetLongEdge / longEdge) : 1;
   const width = Math.max(1, Math.round(srcW * scale));
   const height = Math.max(1, Math.round(srcH * scale));
   const canvas = document.createElement('canvas');
@@ -2244,8 +2244,8 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
           const normalized = await normalizeImportedImageSize(event.target.result);
           const img = new Image();
           img.onload = () => {
-            const width = img.naturalWidth || img.width;
-            const height = img.naturalHeight || img.height;
+            const width = normalized.width || img.naturalWidth || img.width;
+            const height = normalized.height || img.naturalHeight || img.height;
             const newImgData = { id: 'img_' + Date.now() + Math.random(), baseImage: { src: normalized.src, element: img, width, height }, annotations: [], history: [], redoHistory: [] };
             setImagesData(prev => { const next = [...prev, newImgData]; if (next.length === 1 && !activeImageId) { setTimeout(() => { setBaseImage(newImgData.baseImage); setAnnotations([]); setHistory([]); setRedoStack([]); setActiveImageId(newImgData.id); setSelectedIds([]); fitImageToViewport(newImgData.baseImage); }, 0); } return next; });
           };
@@ -2737,7 +2737,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
 
   useEffect(() => {
     if (!activeImageId || !canvasRef.current || !offCanvas) return;
-    const canvas = canvasRef.current; const ctx = canvas.getContext('2d'); const w = baseImage ? baseImage.width : 1200; const h = baseImage ? baseImage.height : 800; if (canvas.width !== w) { canvas.width = w; canvas.height = h; } if (offCanvas.width !== w) { offCanvas.width = w; offCanvas.height = h; } ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const canvas = canvasRef.current; const ctx = canvas.getContext('2d'); const w = baseImage ? baseImage.width : 1200; const h = baseImage ? baseImage.height : 800; if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; } if (offCanvas.width !== w || offCanvas.height !== h) { offCanvas.width = w; offCanvas.height = h; } ctx.clearRect(0, 0, canvas.width, canvas.height);
     const drawAnn = (ann) => {
       if (textInput && ann.id === textInput.id) return; const hasErasers = ann.erasers && ann.erasers.length > 0; const tCtx = hasErasers ? offCtx : ctx; if (hasErasers) tCtx.clearRect(0, 0, w, h); tCtx.save();
       const drawShape = (isGlow) => {
