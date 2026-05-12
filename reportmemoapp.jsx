@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.33';
+const APP_VERSION = 'v1.6.34';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -2130,7 +2130,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       let nextData = prev;
       if (!isInitial && activeImageId) nextData = nextData.map(img => img.id === activeImageId ? { ...img, annotations: annotationsRef.current, history: history, redoHistory: redoStack, finalImage: currentFinal } : img );
       const nextImg = nextData.find(img => img.id === newId);
-      if (nextImg) { setTimeout(() => { setBaseImage(nextImg.baseImage); setAnnotations(nextImg.annotations || []); setHistory(nextImg.history || []); setRedoStack(nextImg.redoHistory || []); setActiveImageId(newId); setSelectedIds([]); fitImageToViewport(nextImg.baseImage); }, 0); }
+      if (nextImg) { setTimeout(() => { const imgBase = nextImg.baseImage ? { ...nextImg.baseImage, width: nextImg.baseImage.element?.naturalWidth || nextImg.baseImage.width, height: nextImg.baseImage.element?.naturalHeight || nextImg.baseImage.height } : nextImg.baseImage; setBaseImage(imgBase); setAnnotations(nextImg.annotations || []); setHistory(nextImg.history || []); setRedoStack(nextImg.redoHistory || []); setActiveImageId(newId); setSelectedIds([]); fitImageToViewport(imgBase); }, 0); }
       return nextData;
     });
   };
@@ -2261,8 +2261,8 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
           const normalized = await normalizeImportedImage(event.target.result, IMPORT_NORMALIZED_LONG_EDGE);
           const normalizedImg = new Image();
           normalizedImg.onload = () => {
-            const width = normalized.width;
-            const height = normalized.height;
+            const width = normalizedImg.naturalWidth || normalized.width;
+            const height = normalizedImg.naturalHeight || normalized.height;
             const newImgData = { id: 'img_' + Date.now() + Math.random(), baseImage: { src: normalized.src, element: normalizedImg, width, height }, annotations: [], history: [], redoHistory: [] };
             setImagesData(prev => { const next = [...prev, newImgData]; if (next.length === 1 && !activeImageId) { setTimeout(() => { setBaseImage(newImgData.baseImage); setAnnotations([]); setHistory([]); setRedoStack([]); setActiveImageId(newImgData.id); setSelectedIds([]); fitImageToViewport(newImgData.baseImage); }, 0); } return next; });
           };
