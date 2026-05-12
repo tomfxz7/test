@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.28';
+const APP_VERSION = 'v1.6.29';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -726,6 +726,8 @@ export default function App() {
   const [selectedExportProjectIds, setSelectedExportProjectIds] = useState([]);
   const [globalImportMode, setGlobalImportMode] = useState('append');
   const [listImageContextMenu, setListImageContextMenu] = useState(null);
+  const [listImagePreview, setListImagePreview] = useState(null);
+  const [itemEditorMode, setItemEditorMode] = useState('normal');
   const listLongPressTimerRef = useRef(null);
   const projectImportInputRef = useRef(null);
   const globalImportInputRef = useRef(null);
@@ -1647,7 +1649,7 @@ export default function App() {
                         <button 
                           type="button"
                           onPointerDown={(e) => e.stopPropagation()}
-                          onClick={(e) => { e.stopPropagation(); setEditingItem(item); setCurrentView('item-editor'); }} 
+                          onClick={(e) => { e.stopPropagation(); setItemEditorMode('normal'); setEditingItem(item); setCurrentView('item-editor'); }} 
                           className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition font-bold text-sm"
                         >
                           <Edit size={16} /> 編集
@@ -1705,6 +1707,26 @@ export default function App() {
                               onPointerCancel={() => { if (listLongPressTimerRef.current) clearTimeout(listLongPressTimerRef.current); }}
                             >
                               <img src={img.image || img.baseImage} alt="Report Item" className="w-full h-auto max-h-[30vh] object-contain" />
+                              <div className="absolute top-1 right-1 flex gap-1 print:hidden">
+                                <button
+                                  type="button"
+                                  onPointerDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => { e.stopPropagation(); setListImagePreview(img.image || img.baseImage); }}
+                                  className="p-1.5 rounded-md bg-black/65 text-white hover:bg-black/80"
+                                  title="画像を拡大"
+                                >
+                                  <Maximize size={14} />
+                                </button>
+                                <button
+                                  type="button"
+                                  onPointerDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => { e.stopPropagation(); setItemEditorMode('focus'); setEditingItem(item); setCurrentView('item-editor'); }}
+                                  className="p-1.5 rounded-md bg-blue-600/90 text-white hover:bg-blue-700"
+                                  title="この画像を編集"
+                                >
+                                  <Edit size={14} />
+                                </button>
+                              </div>
                             </div>
                           ))}
                         </div>
@@ -1728,13 +1750,21 @@ export default function App() {
         </main>
 
         <div className="fixed bottom-8 right-8 z-40 print:hidden">
-          <button onClick={() => { setEditingItem(null); setCurrentView('item-editor'); }} className="flex items-center justify-center w-20 h-20 bg-blue-600 text-white rounded-full shadow-xl hover:bg-blue-700 hover:scale-105 transition-transform"><Plus size={40} /></button>
+          <button onClick={() => { setItemEditorMode('normal'); setEditingItem(null); setCurrentView('item-editor'); }} className="flex items-center justify-center w-20 h-20 bg-blue-600 text-white rounded-full shadow-xl hover:bg-blue-700 hover:scale-105 transition-transform"><Plus size={40} /></button>
         </div>
 
         {listImageContextMenu && (
           <div className="fixed z-[90] list-image-context-menu bg-white border border-gray-200 rounded-xl shadow-2xl p-1.5 min-w-[170px]" style={{ left: Math.min(listImageContextMenu.x, (typeof window !== 'undefined' ? window.innerWidth : 1024) - 190), top: Math.min(listImageContextMenu.y, (typeof window !== 'undefined' ? window.innerHeight : 768) - 120) }}>
             <button onClick={() => { copyListImage(listImageContextMenu.src); setListImageContextMenu(null); }} className="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-100 font-medium text-gray-700">画像をコピー</button>
             <button onClick={() => { saveListImage(listImageContextMenu.src); setListImageContextMenu(null); }} className="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-100 font-medium text-gray-700">画像を保存</button>
+          </div>
+        )}
+        {listImagePreview && (
+          <div className="fixed inset-0 z-[95] bg-black/90 flex items-center justify-center p-4" onClick={() => setListImagePreview(null)}>
+            <button className="absolute top-4 right-4 p-2 rounded-full bg-white/20 text-white hover:bg-white/35" onClick={() => setListImagePreview(null)}>
+              <X size={24} />
+            </button>
+            <img src={listImagePreview} alt="拡大表示" className="max-w-full max-h-full object-contain" onClick={(e) => e.stopPropagation()} />
           </div>
         )}
 
@@ -1865,6 +1895,7 @@ export default function App() {
       <ItemEditor 
         key={editingItem ? editingItem.id : 'new'}
         initialItem={editingItem}
+        mode={itemEditorMode}
         editorPrefs={mergeEditorPrefs(activeProject?.editorPrefs)}
         onCancel={() => setCurrentView('project')}
         onSave={(newItem, updatedEditorPrefs) => {
@@ -1895,7 +1926,7 @@ export default function App() {
 }
 
 // --- Item Editor Component ---
-function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
+function ItemEditor({ onCancel, onSave, initialItem, editorPrefs, mode = 'normal' }) {
   const mergedPrefs = mergeEditorPrefs(editorPrefs);
   const resolveStoredImageSrc = useCallback((imgObj) => {
     if (!imgObj) return '';
@@ -1932,7 +1963,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const [annotations, setAnnotations] = useState([]);
   const [history, setHistory] = useState([]);
   const [redoStack, setRedoStack] = useState([]);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(mode === 'focus');
   const canvasRef = useRef(null); const wrapperRef = useRef(null);
   const historySnapshotRef = useRef(null);
   const [clipboard, setClipboard] = useState([]);
