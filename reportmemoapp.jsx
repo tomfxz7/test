@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.24';
+const APP_VERSION = 'v1.6.25';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -76,6 +76,34 @@ const imageSrcToPngBlob = async (src) => {
       else reject(new Error('toBlob failed'));
     }, 'image/png');
   });
+};
+
+const IMPORT_IMAGE_LONG_EDGE = 960; // roughly half of a 16:9 slide width in px-equivalent
+const normalizeImportedImageSize = async (src, targetLongEdge = IMPORT_IMAGE_LONG_EDGE) => {
+  const img = new Image();
+  img.decoding = 'async';
+  img.crossOrigin = 'anonymous';
+  img.src = src;
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = reject;
+  });
+  const srcW = img.naturalWidth || img.width || 1;
+  const srcH = img.naturalHeight || img.height || 1;
+  const longEdge = Math.max(srcW, srcH);
+  const scale = targetLongEdge > 0 ? targetLongEdge / longEdge : 1;
+  const width = Math.max(1, Math.round(srcW * scale));
+  const height = Math.max(1, Math.round(srcH * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, width, height);
+  return {
+    src: canvas.toDataURL('image/jpeg', 0.92),
+    width,
+    height
+  };
 };
 const normalizeImageForPptx = async (src) => {
   const img = new Image();
@@ -2211,14 +2239,20 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     let validFiles = files.filter(file => file.type.startsWith('image/')); if (validFiles.length === 0) return;
     validFiles.forEach(file => {
       const reader = new FileReader();
-      reader.onload = (event) => {
-        const img = new Image();
-        img.onload = () => {
-          const width = img.naturalWidth || img.width;
-          const height = img.naturalHeight || img.height;
-          const newImgData = { id: 'img_' + Date.now() + Math.random(), baseImage: { src: event.target.result, element: img, width, height }, annotations: [], history: [], redoHistory: [] };
-          setImagesData(prev => { const next = [...prev, newImgData]; if (next.length === 1 && !activeImageId) { setTimeout(() => { setBaseImage(newImgData.baseImage); setAnnotations([]); setHistory([]); setRedoStack([]); setActiveImageId(newImgData.id); setSelectedIds([]); fitImageToViewport(newImgData.baseImage); }, 0); } return next; });
-        }; img.src = event.target.result;
+      reader.onload = async (event) => {
+        try {
+          const normalized = await normalizeImportedImageSize(event.target.result);
+          const img = new Image();
+          img.onload = () => {
+            const width = img.naturalWidth || img.width;
+            const height = img.naturalHeight || img.height;
+            const newImgData = { id: 'img_' + Date.now() + Math.random(), baseImage: { src: normalized.src, element: img, width, height }, annotations: [], history: [], redoHistory: [] };
+            setImagesData(prev => { const next = [...prev, newImgData]; if (next.length === 1 && !activeImageId) { setTimeout(() => { setBaseImage(newImgData.baseImage); setAnnotations([]); setHistory([]); setRedoStack([]); setActiveImageId(newImgData.id); setSelectedIds([]); fitImageToViewport(newImgData.baseImage); }, 0); } return next; });
+          };
+          img.src = normalized.src;
+        } catch (error) {
+          console.error('Failed to normalize imported image size:', error);
+        }
       }; reader.readAsDataURL(file);
     });
   }, [activeImageId, fitImageToViewport]);
