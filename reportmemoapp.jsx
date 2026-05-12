@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.29';
+const APP_VERSION = 'v1.6.30';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -728,6 +728,7 @@ export default function App() {
   const [listImageContextMenu, setListImageContextMenu] = useState(null);
   const [listImagePreview, setListImagePreview] = useState(null);
   const [itemEditorMode, setItemEditorMode] = useState('normal');
+  const [initialActiveImageId, setInitialActiveImageId] = useState(null);
   const listLongPressTimerRef = useRef(null);
   const projectImportInputRef = useRef(null);
   const globalImportInputRef = useRef(null);
@@ -1649,7 +1650,7 @@ export default function App() {
                         <button 
                           type="button"
                           onPointerDown={(e) => e.stopPropagation()}
-                          onClick={(e) => { e.stopPropagation(); setItemEditorMode('normal'); setEditingItem(item); setCurrentView('item-editor'); }} 
+                          onClick={(e) => { e.stopPropagation(); setItemEditorMode('normal'); setInitialActiveImageId(null); setEditingItem(item); setCurrentView('item-editor'); }} 
                           className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition font-bold text-sm"
                         >
                           <Edit size={16} /> 編集
@@ -1720,7 +1721,7 @@ export default function App() {
                                 <button
                                   type="button"
                                   onPointerDown={(e) => e.stopPropagation()}
-                                  onClick={(e) => { e.stopPropagation(); setItemEditorMode('focus'); setEditingItem(item); setCurrentView('item-editor'); }}
+                                  onClick={(e) => { e.stopPropagation(); setItemEditorMode('focus'); setInitialActiveImageId(img.id); setEditingItem(item); setCurrentView('item-editor'); }}
                                   className="p-1.5 rounded-md bg-blue-600/90 text-white hover:bg-blue-700"
                                   title="この画像を編集"
                                 >
@@ -1750,7 +1751,7 @@ export default function App() {
         </main>
 
         <div className="fixed bottom-8 right-8 z-40 print:hidden">
-          <button onClick={() => { setItemEditorMode('normal'); setEditingItem(null); setCurrentView('item-editor'); }} className="flex items-center justify-center w-20 h-20 bg-blue-600 text-white rounded-full shadow-xl hover:bg-blue-700 hover:scale-105 transition-transform"><Plus size={40} /></button>
+          <button onClick={() => { setItemEditorMode('normal'); setInitialActiveImageId(null); setEditingItem(null); setCurrentView('item-editor'); }} className="flex items-center justify-center w-20 h-20 bg-blue-600 text-white rounded-full shadow-xl hover:bg-blue-700 hover:scale-105 transition-transform"><Plus size={40} /></button>
         </div>
 
         {listImageContextMenu && (
@@ -1896,6 +1897,7 @@ export default function App() {
         key={editingItem ? editingItem.id : 'new'}
         initialItem={editingItem}
         mode={itemEditorMode}
+        initialActiveImageId={initialActiveImageId}
         editorPrefs={mergeEditorPrefs(activeProject?.editorPrefs)}
         onCancel={() => setCurrentView('project')}
         onSave={(newItem, updatedEditorPrefs) => {
@@ -1926,7 +1928,7 @@ export default function App() {
 }
 
 // --- Item Editor Component ---
-function ItemEditor({ onCancel, onSave, initialItem, editorPrefs, mode = 'normal' }) {
+function ItemEditor({ onCancel, onSave, initialItem, editorPrefs, mode = 'normal', initialActiveImageId = null }) {
   const mergedPrefs = mergeEditorPrefs(editorPrefs);
   const resolveStoredImageSrc = useCallback((imgObj) => {
     if (!imgObj) return '';
@@ -2122,11 +2124,18 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs, mode = 'normal
         }));
         const validImages = loadedImages.filter(Boolean);
         setImagesData(validImages);
-        if (validImages.length > 0) { setBaseImage(validImages[0].baseImage); setAnnotations(validImages[0].annotations); setActiveImageId(validImages[0].id); setRedoStack([]); }
+        if (validImages.length > 0) {
+          const preferred = initialActiveImageId ? validImages.find(v => v.id === initialActiveImageId) : null;
+          const firstImage = preferred || validImages[0];
+          setBaseImage(firstImage.baseImage);
+          setAnnotations(firstImage.annotations);
+          setActiveImageId(firstImage.id);
+          setRedoStack([]);
+        }
       };
       loadImages();
     }
-  }, [initialItem, resolveStoredImageSrc]);
+  }, [initialItem, resolveStoredImageSrc, initialActiveImageId]);
 
   useEffect(() => { if (layoutSettings.template !== 'custom') { const newLayout = calculateTemplateLayout(layoutSettings.template, imagesData); setLayoutSettings(prev => ({ ...prev, memoRect: newLayout.memoRect, customImageRects: newLayout.customImageRects })); } }, [layoutSettings.template, imagesData.length]);
 
