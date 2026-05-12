@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.30';
+const APP_VERSION = 'v1.6.31';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -1900,7 +1900,7 @@ export default function App() {
         initialActiveImageId={initialActiveImageId}
         editorPrefs={mergeEditorPrefs(activeProject?.editorPrefs)}
         onCancel={() => setCurrentView('project')}
-        onSave={(newItem, updatedEditorPrefs) => {
+        onSave={(newItem, updatedEditorPrefs, options = {}) => {
           setProjects(prev => prev.map(p => {
             if (p.id !== activeProjectId) return p;
             const existingIdx = p.items.findIndex(i => i.id === newItem.id);
@@ -1910,7 +1910,7 @@ export default function App() {
               return { ...p, items: [...p.items, newItem], editorPrefs: mergeEditorPrefs(updatedEditorPrefs) };
             }
           })); 
-          setCurrentView('project'); 
+          if (!options?.stayInEditor) setCurrentView('project'); 
         }}
       />
     );
@@ -2274,6 +2274,25 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs, mode = 'normal
     };
   }, [thumbDraggedIndex, thumbDragStartPos, hasThumbDragMovement, calculateThumbDropIndex, handleThumbDragEnd]);
 
+  const buildSavePayload = useCallback((imagesInput = imagesData, activeIdInput = activeImageId, baseImageInput = baseImage) => {
+    let finalImagesData = [...imagesInput];
+    if (activeIdInput && baseImageInput) {
+      const currentFinal = captureCurrentCanvas();
+      finalImagesData = finalImagesData.map(img => img.id === activeIdInput ? { ...img, annotations: annotationsRef.current, finalImage: currentFinal } : img);
+    }
+    return {
+      id: initialItem ? initialItem.id : Date.now().toString(),
+      title: (itemTitle || '').trim() || '無題ページ',
+      images: finalImagesData.map(img => {
+        const safeBaseSrc = typeof img.baseImage?.src === 'string' ? img.baseImage.src : resolveStoredImageSrc(img);
+        const safeFinalSrc = typeof img.finalImage === 'string' && img.finalImage ? img.finalImage : safeBaseSrc;
+        return ({ id: img.id, image: safeFinalSrc, baseImage: safeBaseSrc, baseWidth: img.baseImage?.width || 1200, baseHeight: img.baseImage?.height || 800, annotations: img.annotations });
+      }),
+      memo,
+      layout: layoutSettings
+    };
+  }, [imagesData, activeImageId, baseImage, initialItem, itemTitle, memo, layoutSettings, resolveStoredImageSrc]);
+
   const handleDeleteImage = (imgId) => { if (confirm('この画像を削除しますか？')) { setImagesData(prev => { const next = prev.filter(img => img.id !== imgId); if (activeImageId === imgId) { if (next.length > 0) setTimeout(() => switchImage(next[0].id, true), 0); else { setActiveImageId(null); setBaseImage(null); setAnnotations([]); setHistory([]); setRedoStack([]); } } return next; }); } };
   const addImagesFromFiles = useCallback((files) => {
     let validFiles = files.filter(file => file.type.startsWith('image/')); if (validFiles.length === 0) return;
@@ -2287,7 +2306,14 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs, mode = 'normal
             const width = normalized.width || img.naturalWidth || img.width;
             const height = normalized.height || img.naturalHeight || img.height;
             const newImgData = { id: 'img_' + Date.now() + Math.random(), baseImage: { src: normalized.src, element: img, width, height }, annotations: [], history: [], redoHistory: [] };
-            setImagesData(prev => { const next = [...prev, newImgData]; if (next.length === 1 && !activeImageId) { setTimeout(() => { setBaseImage(newImgData.baseImage); setAnnotations([]); setHistory([]); setRedoStack([]); setActiveImageId(newImgData.id); setSelectedIds([]); fitImageToViewport(newImgData.baseImage); }, 0); } return next; });
+            setImagesData(prev => {
+              const next = [...prev, newImgData];
+              setTimeout(() => onSave(buildSavePayload(next, newImgData.id, newImgData.baseImage), projectPrefsRef.current, { stayInEditor: true }), 0);
+              return next;
+            });
+            setTimeout(() => {
+              setBaseImage(newImgData.baseImage); setAnnotations([]); setHistory([]); setRedoStack([]); setActiveImageId(newImgData.id); setSelectedIds([]); fitImageToViewport(newImgData.baseImage);
+            }, 0);
           };
           img.src = normalized.src;
         } catch (error) {
@@ -2295,7 +2321,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs, mode = 'normal
         }
       }; reader.readAsDataURL(file);
     });
-  }, [activeImageId, fitImageToViewport]);
+  }, [fitImageToViewport, onSave, buildSavePayload]);
   const handleImageUpload = (e, source = 'album') => {
     const files = Array.from(e.target.files);
     addImagesFromFiles(files);
@@ -2753,26 +2779,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs, mode = 'normal
   };
 
   const handleSave = () => {
-    let finalImagesData = [...imagesData];
-    if (activeImageId && baseImage) { const currentFinal = captureCurrentCanvas(); finalImagesData = finalImagesData.map(img => img.id === activeImageId ? { ...img, annotations: annotationsRef.current, finalImage: currentFinal } : img ); }
-    onSave({
-      id: initialItem ? initialItem.id : Date.now().toString(),
-      title: (itemTitle || '').trim() || '無題ページ',
-      images: finalImagesData.map(img => {
-        const safeBaseSrc = typeof img.baseImage?.src === 'string' ? img.baseImage.src : resolveStoredImageSrc(img);
-        const safeFinalSrc = typeof img.finalImage === 'string' && img.finalImage ? img.finalImage : safeBaseSrc;
-        return ({
-        id: img.id,
-        image: safeFinalSrc,
-        baseImage: safeBaseSrc,
-        baseWidth: img.baseImage?.width || 1200,
-        baseHeight: img.baseImage?.height || 800,
-        annotations: img.annotations
-      });
-      }),
-      memo,
-      layout: layoutSettings
-    }, projectPrefsRef.current);
+    onSave(buildSavePayload(), projectPrefsRef.current);
   };
 
   useEffect(() => {
