@@ -16,13 +16,12 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.34';
+const APP_VERSION = 'v1.6.24';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
 const PPT_TEXT_LANG = 'ja-JP';
 const PPT_FONT_FAMILY = 'Meiryo UI';
-const IMPORT_NORMALIZED_LONG_EDGE = 1200;
 // NOTE: merge-conflict resolution — keep IndexedDB constants used by project persistence.
 const APP_DB_NAME = 'eval_report_db';
 const APP_DB_VERSION = 1;
@@ -99,49 +98,6 @@ const normalizeImageForPptx = async (src) => {
   const ctx = canvas.getContext('2d');
   ctx.drawImage(img, 0, 0, width, height);
   return { data: canvas.toDataURL('image/jpeg', 0.82), width, height };
-};
-const normalizeImportedImage = async (src, targetLongEdge = IMPORT_NORMALIZED_LONG_EDGE) => {
-  const img = new Image();
-  img.decoding = 'async';
-  img.src = src;
-  await new Promise((resolve, reject) => {
-    img.onload = resolve;
-    img.onerror = reject;
-  });
-  const srcW = img.naturalWidth || img.width || 1;
-  const srcH = img.naturalHeight || img.height || 1;
-  // アスペクト比を維持したまま、長辺のみを正規化して解像度を統一する
-  const scale = targetLongEdge / Math.max(srcW, srcH);
-  const width = Math.max(1, Math.round(srcW * scale));
-  const height = Math.max(1, Math.round(srcH * scale));
-
-  // 画素データも正規化後の解像度へ再サンプリングして固定する
-  const sourceCanvas = document.createElement('canvas');
-  sourceCanvas.width = srcW;
-  sourceCanvas.height = srcH;
-  const sourceCtx = sourceCanvas.getContext('2d');
-  sourceCtx.drawImage(img, 0, 0, srcW, srcH);
-
-  let workCanvas = sourceCanvas;
-  while (workCanvas.width * 0.5 > width && workCanvas.height * 0.5 > height) {
-    const halfCanvas = document.createElement('canvas');
-    halfCanvas.width = Math.max(width, Math.round(workCanvas.width * 0.5));
-    halfCanvas.height = Math.max(height, Math.round(workCanvas.height * 0.5));
-    const halfCtx = halfCanvas.getContext('2d');
-    halfCtx.imageSmoothingEnabled = true;
-    halfCtx.imageSmoothingQuality = 'high';
-    halfCtx.drawImage(workCanvas, 0, 0, halfCanvas.width, halfCanvas.height);
-    workCanvas = halfCanvas;
-  }
-
-  const finalCanvas = document.createElement('canvas');
-  finalCanvas.width = width;
-  finalCanvas.height = height;
-  const finalCtx = finalCanvas.getContext('2d');
-  finalCtx.imageSmoothingEnabled = true;
-  finalCtx.imageSmoothingQuality = 'high';
-  finalCtx.drawImage(workCanvas, 0, 0, width, height);
-  return { src: finalCanvas.toDataURL('image/png'), width, height };
 };
 
 // オフスクリーンキャンバス
@@ -2130,7 +2086,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
       let nextData = prev;
       if (!isInitial && activeImageId) nextData = nextData.map(img => img.id === activeImageId ? { ...img, annotations: annotationsRef.current, history: history, redoHistory: redoStack, finalImage: currentFinal } : img );
       const nextImg = nextData.find(img => img.id === newId);
-      if (nextImg) { setTimeout(() => { const imgBase = nextImg.baseImage ? { ...nextImg.baseImage, width: nextImg.baseImage.element?.naturalWidth || nextImg.baseImage.width, height: nextImg.baseImage.element?.naturalHeight || nextImg.baseImage.height } : nextImg.baseImage; setBaseImage(imgBase); setAnnotations(nextImg.annotations || []); setHistory(nextImg.history || []); setRedoStack(nextImg.redoHistory || []); setActiveImageId(newId); setSelectedIds([]); fitImageToViewport(imgBase); }, 0); }
+      if (nextImg) { setTimeout(() => { setBaseImage(nextImg.baseImage); setAnnotations(nextImg.annotations || []); setHistory(nextImg.history || []); setRedoStack(nextImg.redoHistory || []); setActiveImageId(newId); setSelectedIds([]); fitImageToViewport(nextImg.baseImage); }, 0); }
       return nextData;
     });
   };
@@ -2255,18 +2211,13 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     let validFiles = files.filter(file => file.type.startsWith('image/')); if (validFiles.length === 0) return;
     validFiles.forEach(file => {
       const reader = new FileReader();
-      reader.onload = async (event) => {
+      reader.onload = (event) => {
         const img = new Image();
-        img.onload = async () => {
-          const normalized = await normalizeImportedImage(event.target.result, IMPORT_NORMALIZED_LONG_EDGE);
-          const normalizedImg = new Image();
-          normalizedImg.onload = () => {
-            const width = normalizedImg.naturalWidth || normalized.width;
-            const height = normalizedImg.naturalHeight || normalized.height;
-            const newImgData = { id: 'img_' + Date.now() + Math.random(), baseImage: { src: normalized.src, element: normalizedImg, width, height }, annotations: [], history: [], redoHistory: [] };
-            setImagesData(prev => { const next = [...prev, newImgData]; if (next.length === 1 && !activeImageId) { setTimeout(() => { setBaseImage(newImgData.baseImage); setAnnotations([]); setHistory([]); setRedoStack([]); setActiveImageId(newImgData.id); setSelectedIds([]); fitImageToViewport(newImgData.baseImage); }, 0); } return next; });
-          };
-          normalizedImg.src = normalized.src;
+        img.onload = () => {
+          const width = img.naturalWidth || img.width;
+          const height = img.naturalHeight || img.height;
+          const newImgData = { id: 'img_' + Date.now() + Math.random(), baseImage: { src: event.target.result, element: img, width, height }, annotations: [], history: [], redoHistory: [] };
+          setImagesData(prev => { const next = [...prev, newImgData]; if (next.length === 1 && !activeImageId) { setTimeout(() => { setBaseImage(newImgData.baseImage); setAnnotations([]); setHistory([]); setRedoStack([]); setActiveImageId(newImgData.id); setSelectedIds([]); fitImageToViewport(newImgData.baseImage); }, 0); } return next; });
         }; img.src = event.target.result;
       }; reader.readAsDataURL(file);
     });
