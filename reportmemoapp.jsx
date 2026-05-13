@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.24';
+const APP_VERSION = 'v1.6.32';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -76,6 +76,34 @@ const imageSrcToPngBlob = async (src) => {
       else reject(new Error('toBlob failed'));
     }, 'image/png');
   });
+};
+
+const IMPORT_IMAGE_LONG_EDGE = 960; // roughly half of a 16:9 slide width in px-equivalent
+const normalizeImportedImageSize = async (src, targetLongEdge = IMPORT_IMAGE_LONG_EDGE) => {
+  const img = new Image();
+  img.decoding = 'async';
+  img.crossOrigin = 'anonymous';
+  img.src = src;
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = reject;
+  });
+  const srcW = img.naturalWidth || img.width || 1;
+  const srcH = img.naturalHeight || img.height || 1;
+  const longEdge = Math.max(srcW, srcH);
+  const scale = targetLongEdge > 0 ? Math.min(1, targetLongEdge / longEdge) : 1;
+  const width = Math.max(1, Math.round(srcW * scale));
+  const height = Math.max(1, Math.round(srcH * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, width, height);
+  return {
+    src: canvas.toDataURL('image/jpeg', 0.92),
+    width,
+    height
+  };
 };
 const normalizeImageForPptx = async (src) => {
   const img = new Image();
@@ -698,6 +726,9 @@ export default function App() {
   const [selectedExportProjectIds, setSelectedExportProjectIds] = useState([]);
   const [globalImportMode, setGlobalImportMode] = useState('append');
   const [listImageContextMenu, setListImageContextMenu] = useState(null);
+  const [listImagePreview, setListImagePreview] = useState(null);
+  const [itemEditorMode, setItemEditorMode] = useState('normal');
+  const [initialActiveImageId, setInitialActiveImageId] = useState(null);
   const listLongPressTimerRef = useRef(null);
   const projectImportInputRef = useRef(null);
   const globalImportInputRef = useRef(null);
@@ -1619,7 +1650,7 @@ export default function App() {
                         <button 
                           type="button"
                           onPointerDown={(e) => e.stopPropagation()}
-                          onClick={(e) => { e.stopPropagation(); setEditingItem(item); setCurrentView('item-editor'); }} 
+                          onClick={(e) => { e.stopPropagation(); setItemEditorMode('normal'); setInitialActiveImageId(null); setEditingItem(item); setCurrentView('item-editor'); }} 
                           className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition font-bold text-sm"
                         >
                           <Edit size={16} /> 編集
@@ -1677,6 +1708,26 @@ export default function App() {
                               onPointerCancel={() => { if (listLongPressTimerRef.current) clearTimeout(listLongPressTimerRef.current); }}
                             >
                               <img src={img.image || img.baseImage} alt="Report Item" className="w-full h-auto max-h-[30vh] object-contain" />
+                              <div className="absolute top-1 right-1 flex gap-1 print:hidden">
+                                <button
+                                  type="button"
+                                  onPointerDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => { e.stopPropagation(); setListImagePreview(img.image || img.baseImage); }}
+                                  className="p-1.5 rounded-md bg-black/65 text-white hover:bg-black/80"
+                                  title="画像を拡大"
+                                >
+                                  <Maximize size={14} />
+                                </button>
+                                <button
+                                  type="button"
+                                  onPointerDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => { e.stopPropagation(); setItemEditorMode('focus'); setInitialActiveImageId(img.id); setEditingItem(item); setCurrentView('item-editor'); }}
+                                  className="p-1.5 rounded-md bg-blue-600/90 text-white hover:bg-blue-700"
+                                  title="この画像を編集"
+                                >
+                                  <Edit size={14} />
+                                </button>
+                              </div>
                             </div>
                           ))}
                         </div>
@@ -1700,13 +1751,21 @@ export default function App() {
         </main>
 
         <div className="fixed bottom-8 right-8 z-40 print:hidden">
-          <button onClick={() => { setEditingItem(null); setCurrentView('item-editor'); }} className="flex items-center justify-center w-20 h-20 bg-blue-600 text-white rounded-full shadow-xl hover:bg-blue-700 hover:scale-105 transition-transform"><Plus size={40} /></button>
+          <button onClick={() => { setItemEditorMode('normal'); setInitialActiveImageId(null); setEditingItem(null); setCurrentView('item-editor'); }} className="flex items-center justify-center w-20 h-20 bg-blue-600 text-white rounded-full shadow-xl hover:bg-blue-700 hover:scale-105 transition-transform"><Plus size={40} /></button>
         </div>
 
         {listImageContextMenu && (
           <div className="fixed z-[90] list-image-context-menu bg-white border border-gray-200 rounded-xl shadow-2xl p-1.5 min-w-[170px]" style={{ left: Math.min(listImageContextMenu.x, (typeof window !== 'undefined' ? window.innerWidth : 1024) - 190), top: Math.min(listImageContextMenu.y, (typeof window !== 'undefined' ? window.innerHeight : 768) - 120) }}>
             <button onClick={() => { copyListImage(listImageContextMenu.src); setListImageContextMenu(null); }} className="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-100 font-medium text-gray-700">画像をコピー</button>
             <button onClick={() => { saveListImage(listImageContextMenu.src); setListImageContextMenu(null); }} className="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-100 font-medium text-gray-700">画像を保存</button>
+          </div>
+        )}
+        {listImagePreview && (
+          <div className="fixed inset-0 z-[95] bg-black/90 flex items-center justify-center p-4" onClick={() => setListImagePreview(null)}>
+            <button className="absolute top-4 right-4 p-2 rounded-full bg-white/20 text-white hover:bg-white/35" onClick={() => setListImagePreview(null)}>
+              <X size={24} />
+            </button>
+            <img src={listImagePreview} alt="拡大表示" className="max-w-full max-h-full object-contain" onClick={(e) => e.stopPropagation()} />
           </div>
         )}
 
@@ -1837,9 +1896,11 @@ export default function App() {
       <ItemEditor 
         key={editingItem ? editingItem.id : 'new'}
         initialItem={editingItem}
+        mode={itemEditorMode}
+        initialActiveImageId={initialActiveImageId}
         editorPrefs={mergeEditorPrefs(activeProject?.editorPrefs)}
         onCancel={() => setCurrentView('project')}
-        onSave={(newItem, updatedEditorPrefs) => {
+        onSave={(newItem, updatedEditorPrefs, options = {}) => {
           setProjects(prev => prev.map(p => {
             if (p.id !== activeProjectId) return p;
             const existingIdx = p.items.findIndex(i => i.id === newItem.id);
@@ -1849,7 +1910,7 @@ export default function App() {
               return { ...p, items: [...p.items, newItem], editorPrefs: mergeEditorPrefs(updatedEditorPrefs) };
             }
           })); 
-          setCurrentView('project'); 
+          if (!options?.stayInEditor) setCurrentView('project'); 
         }}
       />
     );
@@ -1867,8 +1928,9 @@ export default function App() {
 }
 
 // --- Item Editor Component ---
-function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
+function ItemEditor({ onCancel, onSave, initialItem, editorPrefs, mode = 'normal', initialActiveImageId = null }) {
   const mergedPrefs = mergeEditorPrefs(editorPrefs);
+  const draftItemIdRef = useRef(initialItem?.id || Date.now().toString());
   const resolveStoredImageSrc = useCallback((imgObj) => {
     if (!imgObj) return '';
     if (typeof imgObj.baseImage === 'string' && imgObj.baseImage.trim()) return imgObj.baseImage;
@@ -1904,7 +1966,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   const [annotations, setAnnotations] = useState([]);
   const [history, setHistory] = useState([]);
   const [redoStack, setRedoStack] = useState([]);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(mode === 'focus');
   const canvasRef = useRef(null); const wrapperRef = useRef(null);
   const historySnapshotRef = useRef(null);
   const [clipboard, setClipboard] = useState([]);
@@ -2063,11 +2125,18 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
         }));
         const validImages = loadedImages.filter(Boolean);
         setImagesData(validImages);
-        if (validImages.length > 0) { setBaseImage(validImages[0].baseImage); setAnnotations(validImages[0].annotations); setActiveImageId(validImages[0].id); setRedoStack([]); }
+        if (validImages.length > 0) {
+          const preferred = initialActiveImageId ? validImages.find(v => v.id === initialActiveImageId) : null;
+          const firstImage = preferred || validImages[0];
+          setBaseImage(firstImage.baseImage);
+          setAnnotations(firstImage.annotations);
+          setActiveImageId(firstImage.id);
+          setRedoStack([]);
+        }
       };
       loadImages();
     }
-  }, [initialItem, resolveStoredImageSrc]);
+  }, [initialItem, resolveStoredImageSrc, initialActiveImageId]);
 
   useEffect(() => { if (layoutSettings.template !== 'custom') { const newLayout = calculateTemplateLayout(layoutSettings.template, imagesData); setLayoutSettings(prev => ({ ...prev, memoRect: newLayout.memoRect, customImageRects: newLayout.customImageRects })); } }, [layoutSettings.template, imagesData.length]);
 
@@ -2206,22 +2275,54 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
     };
   }, [thumbDraggedIndex, thumbDragStartPos, hasThumbDragMovement, calculateThumbDropIndex, handleThumbDragEnd]);
 
+  const buildSavePayload = useCallback((imagesInput = imagesData, activeIdInput = activeImageId, baseImageInput = baseImage, includeCanvasCapture = true) => {
+    let finalImagesData = [...imagesInput];
+    if (includeCanvasCapture && activeIdInput && baseImageInput) {
+      const currentFinal = captureCurrentCanvas();
+      finalImagesData = finalImagesData.map(img => img.id === activeIdInput ? { ...img, annotations: annotationsRef.current, finalImage: currentFinal } : img);
+    }
+    return {
+      id: draftItemIdRef.current,
+      title: (itemTitle || '').trim() || '無題ページ',
+      images: finalImagesData.map(img => {
+        const safeBaseSrc = typeof img.baseImage?.src === 'string' ? img.baseImage.src : resolveStoredImageSrc(img);
+        const safeFinalSrc = typeof img.finalImage === 'string' && img.finalImage ? img.finalImage : safeBaseSrc;
+        return ({ id: img.id, image: safeFinalSrc, baseImage: safeBaseSrc, baseWidth: img.baseImage?.width || 1200, baseHeight: img.baseImage?.height || 800, annotations: img.annotations });
+      }),
+      memo,
+      layout: layoutSettings
+    };
+  }, [imagesData, activeImageId, baseImage, initialItem, itemTitle, memo, layoutSettings, resolveStoredImageSrc]);
+
   const handleDeleteImage = (imgId) => { if (confirm('この画像を削除しますか？')) { setImagesData(prev => { const next = prev.filter(img => img.id !== imgId); if (activeImageId === imgId) { if (next.length > 0) setTimeout(() => switchImage(next[0].id, true), 0); else { setActiveImageId(null); setBaseImage(null); setAnnotations([]); setHistory([]); setRedoStack([]); } } return next; }); } };
   const addImagesFromFiles = useCallback((files) => {
     let validFiles = files.filter(file => file.type.startsWith('image/')); if (validFiles.length === 0) return;
     validFiles.forEach(file => {
       const reader = new FileReader();
-      reader.onload = (event) => {
-        const img = new Image();
-        img.onload = () => {
-          const width = img.naturalWidth || img.width;
-          const height = img.naturalHeight || img.height;
-          const newImgData = { id: 'img_' + Date.now() + Math.random(), baseImage: { src: event.target.result, element: img, width, height }, annotations: [], history: [], redoHistory: [] };
-          setImagesData(prev => { const next = [...prev, newImgData]; if (next.length === 1 && !activeImageId) { setTimeout(() => { setBaseImage(newImgData.baseImage); setAnnotations([]); setHistory([]); setRedoStack([]); setActiveImageId(newImgData.id); setSelectedIds([]); fitImageToViewport(newImgData.baseImage); }, 0); } return next; });
-        }; img.src = event.target.result;
+      reader.onload = async (event) => {
+        try {
+          const normalized = await normalizeImportedImageSize(event.target.result);
+          const img = new Image();
+          img.onload = () => {
+            const width = normalized.width || img.naturalWidth || img.width;
+            const height = normalized.height || img.naturalHeight || img.height;
+            const newImgData = { id: 'img_' + Date.now() + Math.random(), baseImage: { src: normalized.src, element: img, width, height }, annotations: [], history: [], redoHistory: [] };
+            setImagesData(prev => {
+              const next = [...prev, newImgData];
+              setTimeout(() => onSave(buildSavePayload(next, null, null, false), projectPrefsRef.current, { stayInEditor: true }), 0);
+              return next;
+            });
+            setTimeout(() => {
+              setBaseImage(newImgData.baseImage); setAnnotations([]); setHistory([]); setRedoStack([]); setActiveImageId(newImgData.id); setSelectedIds([]); fitImageToViewport(newImgData.baseImage);
+            }, 0);
+          };
+          img.src = normalized.src;
+        } catch (error) {
+          console.error('Failed to normalize imported image size:', error);
+        }
       }; reader.readAsDataURL(file);
     });
-  }, [activeImageId, fitImageToViewport]);
+  }, [fitImageToViewport, onSave, buildSavePayload]);
   const handleImageUpload = (e, source = 'album') => {
     const files = Array.from(e.target.files);
     addImagesFromFiles(files);
@@ -2679,31 +2780,12 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs }) {
   };
 
   const handleSave = () => {
-    let finalImagesData = [...imagesData];
-    if (activeImageId && baseImage) { const currentFinal = captureCurrentCanvas(); finalImagesData = finalImagesData.map(img => img.id === activeImageId ? { ...img, annotations: annotationsRef.current, finalImage: currentFinal } : img ); }
-    onSave({
-      id: initialItem ? initialItem.id : Date.now().toString(),
-      title: (itemTitle || '').trim() || '無題ページ',
-      images: finalImagesData.map(img => {
-        const safeBaseSrc = typeof img.baseImage?.src === 'string' ? img.baseImage.src : resolveStoredImageSrc(img);
-        const safeFinalSrc = typeof img.finalImage === 'string' && img.finalImage ? img.finalImage : safeBaseSrc;
-        return ({
-        id: img.id,
-        image: safeFinalSrc,
-        baseImage: safeBaseSrc,
-        baseWidth: img.baseImage?.width || 1200,
-        baseHeight: img.baseImage?.height || 800,
-        annotations: img.annotations
-      });
-      }),
-      memo,
-      layout: layoutSettings
-    }, projectPrefsRef.current);
+    onSave(buildSavePayload(), projectPrefsRef.current);
   };
 
   useEffect(() => {
     if (!activeImageId || !canvasRef.current || !offCanvas) return;
-    const canvas = canvasRef.current; const ctx = canvas.getContext('2d'); const w = baseImage ? baseImage.width : 1200; const h = baseImage ? baseImage.height : 800; if (canvas.width !== w) { canvas.width = w; canvas.height = h; } if (offCanvas.width !== w) { offCanvas.width = w; offCanvas.height = h; } ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const canvas = canvasRef.current; const ctx = canvas.getContext('2d'); const w = baseImage ? baseImage.width : 1200; const h = baseImage ? baseImage.height : 800; if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; } if (offCanvas.width !== w || offCanvas.height !== h) { offCanvas.width = w; offCanvas.height = h; } ctx.clearRect(0, 0, canvas.width, canvas.height);
     const drawAnn = (ann) => {
       if (textInput && ann.id === textInput.id) return; const hasErasers = ann.erasers && ann.erasers.length > 0; const tCtx = hasErasers ? offCtx : ctx; if (hasErasers) tCtx.clearRect(0, 0, w, h); tCtx.save();
       const drawShape = (isGlow) => {
