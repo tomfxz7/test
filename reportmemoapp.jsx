@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.31';
+const APP_VERSION = 'v1.6.32';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -1930,6 +1930,7 @@ export default function App() {
 // --- Item Editor Component ---
 function ItemEditor({ onCancel, onSave, initialItem, editorPrefs, mode = 'normal', initialActiveImageId = null }) {
   const mergedPrefs = mergeEditorPrefs(editorPrefs);
+  const draftItemIdRef = useRef(initialItem?.id || Date.now().toString());
   const resolveStoredImageSrc = useCallback((imgObj) => {
     if (!imgObj) return '';
     if (typeof imgObj.baseImage === 'string' && imgObj.baseImage.trim()) return imgObj.baseImage;
@@ -2274,14 +2275,14 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs, mode = 'normal
     };
   }, [thumbDraggedIndex, thumbDragStartPos, hasThumbDragMovement, calculateThumbDropIndex, handleThumbDragEnd]);
 
-  const buildSavePayload = useCallback((imagesInput = imagesData, activeIdInput = activeImageId, baseImageInput = baseImage) => {
+  const buildSavePayload = useCallback((imagesInput = imagesData, activeIdInput = activeImageId, baseImageInput = baseImage, includeCanvasCapture = true) => {
     let finalImagesData = [...imagesInput];
-    if (activeIdInput && baseImageInput) {
+    if (includeCanvasCapture && activeIdInput && baseImageInput) {
       const currentFinal = captureCurrentCanvas();
       finalImagesData = finalImagesData.map(img => img.id === activeIdInput ? { ...img, annotations: annotationsRef.current, finalImage: currentFinal } : img);
     }
     return {
-      id: initialItem ? initialItem.id : Date.now().toString(),
+      id: draftItemIdRef.current,
       title: (itemTitle || '').trim() || '無題ページ',
       images: finalImagesData.map(img => {
         const safeBaseSrc = typeof img.baseImage?.src === 'string' ? img.baseImage.src : resolveStoredImageSrc(img);
@@ -2308,7 +2309,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs, mode = 'normal
             const newImgData = { id: 'img_' + Date.now() + Math.random(), baseImage: { src: normalized.src, element: img, width, height }, annotations: [], history: [], redoHistory: [] };
             setImagesData(prev => {
               const next = [...prev, newImgData];
-              setTimeout(() => onSave(buildSavePayload(next, newImgData.id, newImgData.baseImage), projectPrefsRef.current, { stayInEditor: true }), 0);
+              setTimeout(() => onSave(buildSavePayload(next, null, null, false), projectPrefsRef.current, { stayInEditor: true }), 0);
               return next;
             });
             setTimeout(() => {
