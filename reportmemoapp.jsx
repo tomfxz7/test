@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.33';
+const APP_VERSION = 'v1.6.34';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -709,6 +709,7 @@ export default function App() {
   const [backupStatusNow, setBackupStatusNow] = useState(Date.now());
   const autoBackupHandlesRef = useRef({});
   const autoBackupInFlightRef = useRef({});
+  const autoBackupDigestRef = useRef({});
   
   const [reorderUndoHistory, setReorderUndoHistory] = useState([]); // Project page order undo history
   const [reorderRedoHistory, setReorderRedoHistory] = useState([]); // Project page order redo history
@@ -894,6 +895,17 @@ export default function App() {
     if (!isProjectsLoaded || !activeProjectId) return;
     if (!projectBackupEnabledMap[activeProjectId]) return;
     if (!autoBackupHandlesRef.current[activeProjectId]) return;
+    const project = projects.find(p => p.id === activeProjectId);
+    if (!project) return;
+    let digest = '';
+    try { digest = JSON.stringify(project); } catch { return; }
+    const prevDigest = autoBackupDigestRef.current[activeProjectId];
+    if (!prevDigest) {
+      autoBackupDigestRef.current[activeProjectId] = digest;
+      return;
+    }
+    if (prevDigest === digest) return;
+    autoBackupDigestRef.current[activeProjectId] = digest;
     writeAutoBackupNow(activeProjectId);
   }, [projects, isProjectsLoaded, activeProjectId, projectBackupEnabledMap, writeAutoBackupNow]);
 
