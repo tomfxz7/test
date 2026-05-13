@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.34';
+const APP_VERSION = 'v1.6.35';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -872,7 +872,7 @@ export default function App() {
     const targetProject = projects.find(p => p.id === activeProjectId);
     if (!targetProject) return;
     if (typeof window === 'undefined' || !window.showSaveFilePicker) {
-      alert('このブラウザは自動バックアップ先のファイル指定に対応していません。');
+      console.warn('auto backup destination picker is not supported in this browser');
       return;
     }
     try {
@@ -886,7 +886,6 @@ export default function App() {
     } catch (e) {
       if (e?.name !== 'AbortError') {
         console.warn('select auto backup destination failed', e);
-        alert('バックアップ先の設定に失敗しました。');
       }
     }
   }, [activeProjectId, projects, writeAutoBackupNow, persistAutoBackupHandles]);
