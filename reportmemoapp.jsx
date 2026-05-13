@@ -16,7 +16,7 @@ const ToolType = {
 };
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#000000', '#ffffff'];
-const APP_VERSION = 'v1.6.32';
+const APP_VERSION = 'v1.6.33';
 const LINE_WIDTH_CACHE_KEY = 'editor_line_width_cache';
 const STROKE_COLOR_CACHE_KEY = 'editor_stroke_color_cache';
 const PRESET_CACHE_KEY = 'editor_size_presets_v1';
@@ -29,6 +29,7 @@ const APP_DB_STORE = 'app_data';
 const PROJECTS_KEY = 'eval_report_projects';
 const AUTO_BACKUP_CONFIG_KEY = 'eval_report_auto_backup_cfg_v3';
 const AUTO_BACKUP_HANDLES_KEY = 'eval_report_auto_backup_handles_v1';
+const CAMERA_AUTO_SAVE_ACTION_KEY = 'report_camera_auto_save_action_v1';
 const normalizeProjects = (rawProjects) => {
   if (!Array.isArray(rawProjects)) return [];
   return rawProjects.map(p => ({
@@ -723,6 +724,11 @@ export default function App() {
   const [isExportingPPTX, setIsExportingPPTX] = useState(false);
   const [isGlobalExportOpen, setIsGlobalExportOpen] = useState(false);
   const [isGlobalImportOpen, setIsGlobalImportOpen] = useState(false);
+  const [cameraAutoSaveActionEnabled, setCameraAutoSaveActionEnabled] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    const raw = localStorage.getItem(CAMERA_AUTO_SAVE_ACTION_KEY);
+    return raw === null ? true : raw === '1';
+  });
   const [selectedExportProjectIds, setSelectedExportProjectIds] = useState([]);
   const [globalImportMode, setGlobalImportMode] = useState('append');
   const [listImageContextMenu, setListImageContextMenu] = useState(null);
@@ -898,6 +904,10 @@ export default function App() {
 
   useEffect(() => { const key = localStorage.getItem('gemini_api_key'); if (key) setApiKeyInput(key); }, []);
   useEffect(() => { if (isGlobalExportOpen) setSelectedExportProjectIds(projects.map(p => p.id)); }, [isGlobalExportOpen, projects]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(CAMERA_AUTO_SAVE_ACTION_KEY, cameraAutoSaveActionEnabled ? '1' : '0');
+  }, [cameraAutoSaveActionEnabled]);
 
   // Clear project reorder history on project change
   useEffect(() => {
@@ -1427,6 +1437,17 @@ export default function App() {
                 保存
               </button>
             </div>
+            <div className="mt-4 p-3 rounded-xl border border-gray-200 bg-gray-50">
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={cameraAutoSaveActionEnabled}
+                  onChange={(e) => setCameraAutoSaveActionEnabled(e.target.checked)}
+                  className="w-5 h-5 accent-blue-600 cursor-pointer"
+                />
+                <span className="text-sm text-gray-700 font-medium">カメラ撮影後に画像保存アクションを自動表示する</span>
+              </label>
+            </div>
             <p className="text-xs text-gray-500 mt-3">アプリバージョン: <span className="font-semibold text-gray-700">{APP_VERSION}</span></p>
           </section>
         )}
@@ -1898,6 +1919,7 @@ export default function App() {
         initialItem={editingItem}
         mode={itemEditorMode}
         initialActiveImageId={initialActiveImageId}
+        cameraAutoSaveActionEnabled={cameraAutoSaveActionEnabled}
         editorPrefs={mergeEditorPrefs(activeProject?.editorPrefs)}
         onCancel={() => setCurrentView('project')}
         onSave={(newItem, updatedEditorPrefs, options = {}) => {
@@ -1928,7 +1950,7 @@ export default function App() {
 }
 
 // --- Item Editor Component ---
-function ItemEditor({ onCancel, onSave, initialItem, editorPrefs, mode = 'normal', initialActiveImageId = null }) {
+function ItemEditor({ onCancel, onSave, initialItem, editorPrefs, mode = 'normal', initialActiveImageId = null, cameraAutoSaveActionEnabled = true }) {
   const mergedPrefs = mergeEditorPrefs(editorPrefs);
   const draftItemIdRef = useRef(initialItem?.id || Date.now().toString());
   const resolveStoredImageSrc = useCallback((imgObj) => {
@@ -2326,7 +2348,7 @@ function ItemEditor({ onCancel, onSave, initialItem, editorPrefs, mode = 'normal
   const handleImageUpload = (e, source = 'album') => {
     const files = Array.from(e.target.files);
     addImagesFromFiles(files);
-    if (source === 'camera') {
+    if (source === 'camera' && cameraAutoSaveActionEnabled) {
       files.forEach((file, idx) => {
         const link = document.createElement('a');
         link.href = URL.createObjectURL(file);
