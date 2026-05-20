@@ -164,8 +164,14 @@
                             </button>
                         </div>
                     </div>
-                    <div class="relative h-64 w-full">
-                        <canvas id="waveform-chart"></canvas>
+                                        <div class="mt-3 flex items-center gap-3 text-xs text-slate-600">
+                        <label class="flex items-center gap-1"><input type="checkbox" id="enable-bg-subtract" checked>環境音FFT差し引き</label>
+                    </div>
+                    <div class="mt-3 grid grid-cols-[auto,1fr] gap-2 items-stretch">
+                        <button type="button" id="mute-main-audio-btn" class="px-2 text-xs border border-slate-300 rounded bg-white hover:bg-slate-50">主音MUTE</button>
+                        <div class="relative h-40 w-full"><canvas id="waveform-chart"></canvas></div>
+                        <button type="button" id="mute-bg-audio-btn" class="px-2 text-xs border border-slate-300 rounded bg-white hover:bg-slate-50">環境音MUTE</button>
+                        <div class="relative h-40 w-full"><canvas id="bg-waveform-chart"></canvas></div>
                     </div>
                     <div class="mt-3 flex items-center gap-4 text-xs text-slate-600">
                         <label class="flex items-center gap-1"><input type="checkbox" id="mute-main-audio">主音ミュート</label>
@@ -309,8 +315,8 @@
             // --- 音声再生・アニメーション用の要素・変数 ---
             const playAudioBtn = document.getElementById('play-audio-btn');
             const stopAudioBtn = document.getElementById('stop-audio-btn');
-            const muteMainAudio = document.getElementById('mute-main-audio');
-            const muteBgAudio = document.getElementById('mute-bg-audio');
+            const muteMainAudioBtn = document.getElementById('mute-main-audio-btn');
+            const muteBgAudioBtn = document.getElementById('mute-bg-audio-btn');
             const enableBgSubtract = document.getElementById('enable-bg-subtract');
             let audioCtx = null;
             let currentAudioSource = null;
@@ -345,6 +351,8 @@
             let mainWavChannel = 0;
             let bgWavChannel = 0;
             let currentBgPlayBuffer = null;
+            let isMainMuted = false;
+            let isBgMuted = false;
             let rangeSliderInstance = null;
             let lastSelectedYColIdx = null; // 列名ではなくインデックスで記憶する
 
@@ -411,6 +419,15 @@
                 bgWavChannel = parseInt(bgWavChannelSelect.value, 10) || 0;
                 applyBackgroundWavChannel();
             });
+
+
+            function updateMuteButtonStyles() {
+                muteMainAudioBtn.classList.toggle('bg-rose-100', isMainMuted);
+                muteBgAudioBtn.classList.toggle('bg-rose-100', isBgMuted);
+            }
+            muteMainAudioBtn.addEventListener('click', () => { isMainMuted = !isMainMuted; updateMuteButtonStyles(); });
+            muteBgAudioBtn.addEventListener('click', () => { isBgMuted = !isBgMuted; updateMuteButtonStyles(); });
+            updateMuteButtonStyles();
 
             // ペースト実行ボタン
             pasteBtn.addEventListener('click', (e) => {
@@ -619,7 +636,7 @@
                 const sourceMain = audioCtx.createBufferSource();
                 sourceMain.buffer = globalAudioBuffer;
                 const mainGain = audioCtx.createGain();
-                mainGain.gain.value = muteMainAudio.checked ? 0 : 1;
+                mainGain.gain.value = isMainMuted ? 0 : 1;
                 sourceMain.connect(mainGain).connect(audioCtx.destination);
 
                 let sourceBg = null;
@@ -630,7 +647,7 @@
                     sourceBg = audioCtx.createBufferSource();
                     sourceBg.buffer = bgBuf;
                     const bgGain = audioCtx.createGain();
-                    bgGain.gain.value = muteBgAudio.checked ? 0 : 1;
+                    bgGain.gain.value = isBgMuted ? 0 : 1;
                     sourceBg.connect(bgGain).connect(audioCtx.destination);
                 }
                 currentAudioSource = sourceMain;
@@ -961,7 +978,7 @@
                 drawWaveform(globalTData, globalYData);
                 initSlider();
                 if (bgWavData) drawBackgroundWaveform(globalTData, bgWavData);
-                bgWavStatus.textContent = bgWavData ? `設定中: ${bgWavName}（差分FFT適用）` : bgWavStatus.textContent;
+                bgWavStatus.textContent = bgWavData ? `設定中: ${bgWavName}` : bgWavStatus.textContent;
             }
 
             function applyBackgroundWavChannel() {
@@ -1311,13 +1328,18 @@
                 if (enableBgSubtract.checked && bgWavData && bgWavFs) {
                     if (Math.abs(bgWavFs - globalFs) > 1e-6) {
                         showMessage(`環境音WAVのサンプリング周波数(${bgWavFs}Hz)が一致しないため差分FFTを無効化しました。`, 'error');
+                    } else if (endIdx >= bgWavData.length) {
+                        showMessage('環境音WAVの長さが不足しているため、この範囲では差分FFTを無効化しました。', 'error');
                     } else {
-                        const bgSlice = bgWavData.slice(startIdx, Math.min(endIdx + 1, bgWavData.length));
+                        const bgSlice = bgWavData.slice(startIdx, endIdx + 1);
                         if (bgSlice.length >= 8) {
-                            const bgFft = computeFFT(bgSlice, globalFs);
+                            const bgFft = computeFFT(bgSlice, globalFs, amps.length * 2);
                             const n = Math.min(amps.length, bgFft.amps.length);
                             const diff = new Float64Array(n);
-                            for (let i = 0; i < n; i++) diff[i] = Math.max(amps[i] - bgFft.amps[i], 0);
+                            for (let i = 0; i < n; i++) {
+                                const d = amps[i] - bgFft.amps[i];
+                                diff[i] = d > 1e-12 ? d : 0;
+                            }
                             finalAmps = diff;
                             bgWavStatus.textContent = `設定中: ${bgWavName}（差分FFT適用）`;
                         }
@@ -1333,10 +1355,13 @@
                 findTopFrequencies(freqs.slice(0, finalAmps.length), finalAmps);
             }
 
-            function computeFFT(yData, fs) {
+            function computeFFT(yData, fs, forcedN = null) {
                 const dataLen = yData.length;
                 let N = 1;
                 while (N * 2 <= dataLen && N * 2 <= 65536) N *= 2;
+                if (forcedN && Number.isFinite(forcedN)) {
+                    N = Math.min(65536, Math.max(8, forcedN));
+                }
                 const real = new Float64Array(N);
                 const imag = new Float64Array(N);
                 for (let i = 0; i < N; i++) {
