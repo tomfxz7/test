@@ -58,6 +58,20 @@
             </div>
         </div>
 
+        <div class="mt-4 bg-white border border-slate-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+                <p class="font-medium text-slate-700">環境音WAV（任意）</p>
+                <p id="bg-wav-status" class="text-xs text-slate-500">未設定（通常FFT）</p>
+            </div>
+            <div class="flex items-center gap-2">
+                <label for="bg-wav-channel-select" class="text-sm text-slate-600">CH:</label>
+                <select id="bg-wav-channel-select" class="border border-slate-300 rounded-md p-1 text-sm" disabled></select>
+                <input type="file" id="bg-wav-input" class="hidden" accept=".wav,audio/wav">
+                <button type="button" id="bg-wav-btn" class="bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium py-2 px-3 rounded-lg">環境音WAVを読み込む</button>
+                <button type="button" id="clear-bg-wav-btn" class="text-sm text-slate-600 hover:text-slate-800 underline">解除</button>
+            </div>
+        </div>
+
         <div class="mt-4 text-center">
             <button type="button" id="demo-btn" class="text-sm text-blue-600 hover:text-blue-800 underline transition-colors">
                 サンプルデータで試す（前半440Hz / 後半880Hz）
@@ -66,16 +80,20 @@
 
         <!-- 設定・列選択エリア -->
         <div id="column-select-area" class="hidden mt-6 bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex-wrap items-center gap-6 animate-fade-in">
-            <div class="flex items-center gap-2">
+            <div id="x-col-control" class="flex items-center gap-2">
                 <label for="x-col-select" class="font-medium text-slate-700 text-sm">X軸 (時間):</label>
                 <select id="x-col-select" class="border border-slate-300 rounded-md p-1.5 min-w-[120px] text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white">
                     <option value="-1">自動生成 (インデックス)</option>
                 </select>
             </div>
-            <div class="flex items-center gap-2">
+            <div id="y-col-control" class="flex items-center gap-2">
                 <label for="y-col-select" class="font-medium text-slate-700 text-sm">Y軸 (波形データ):</label>
                 <select id="y-col-select" class="border border-slate-300 rounded-md p-1.5 min-w-[120px] text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white">
                 </select>
+            </div>
+            <div id="wav-channel-control" class="hidden flex items-center gap-2">
+                <label for="wav-channel-select" class="font-medium text-slate-700 text-sm">WAVチャンネル:</label>
+                <select id="wav-channel-select" class="border border-slate-300 rounded-md p-1.5 min-w-[100px] text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white"></select>
             </div>
             <div class="flex items-center gap-2">
                 <label for="fs-input" class="font-medium text-slate-700 text-sm">サンプリング周波数 (Hz):</label>
@@ -146,8 +164,11 @@
                             </button>
                         </div>
                     </div>
-                    <div class="relative h-64 w-full">
-                        <canvas id="waveform-chart"></canvas>
+                                                            <div class="mt-3 grid grid-cols-[auto,1fr] gap-2 items-stretch">
+                        <button type="button" id="mute-main-audio-btn" class="px-2 text-xs border border-slate-300 rounded bg-white hover:bg-slate-50">主音MUTE</button>
+                        <div class="relative h-40 w-full"><canvas id="waveform-chart"></canvas></div>
+                        <button type="button" id="mute-bg-audio-btn" class="px-2 text-xs border border-slate-300 rounded bg-white hover:bg-slate-50">環境音MUTE</button>
+                        <div class="relative h-40 w-full"><canvas id="bg-waveform-chart"></canvas></div>
                     </div>
                     <!-- 範囲選択スライダー -->
                     <div class="mt-10 mb-4 px-6">
@@ -187,6 +208,9 @@
                     </div>
                     <div class="relative h-64 w-full">
                         <canvas id="fft-chart"></canvas>
+                    </div>
+                    <div class="relative h-64 w-full mt-4">
+                        <canvas id="fft-diff-chart"></canvas>
                     </div>
                 </div>
             </div>
@@ -249,6 +273,10 @@
             const dropZone = document.getElementById('drop-zone');
             const fileInput = document.getElementById('file-input');
             const fsInput = document.getElementById('fs-input');
+            const xColControl = document.getElementById('x-col-control');
+            const yColControl = document.getElementById('y-col-control');
+            const wavChannelControl = document.getElementById('wav-channel-control');
+            const wavChannelSelect = document.getElementById('wav-channel-select');
             const resultsDiv = document.getElementById('results');
             const demoBtn = document.getElementById('demo-btn');
             
@@ -258,6 +286,11 @@
 
             const pasteArea = document.getElementById('paste-area');
             const pasteBtn = document.getElementById('paste-btn');
+            const bgWavInput = document.getElementById('bg-wav-input');
+            const bgWavBtn = document.getElementById('bg-wav-btn');
+            const clearBgWavBtn = document.getElementById('clear-bg-wav-btn');
+            const bgWavStatus = document.getElementById('bg-wav-status');
+            const bgWavChannelSelect = document.getElementById('bg-wav-channel-select');
             const exportCsvBtn = document.getElementById('export-csv-btn');
             const exportExcelBtn = document.getElementById('export-excel-btn');
             
@@ -274,8 +307,13 @@
             // --- 音声再生・アニメーション用の要素・変数 ---
             const playAudioBtn = document.getElementById('play-audio-btn');
             const stopAudioBtn = document.getElementById('stop-audio-btn');
+            const muteMainAudioBtn = document.getElementById('mute-main-audio-btn');
+            const muteBgAudioBtn = document.getElementById('mute-bg-audio-btn');
             let audioCtx = null;
             let currentAudioSource = null;
+            let currentBgAudioSource = null;
+            let mainGainNode = null;
+            let bgGainNode = null;
             let globalAudioBuffer = null;
             
             let animationFrameId = null;
@@ -290,7 +328,9 @@
             const yColSelect = document.getElementById('y-col-select');
 
             let waveformChart = null;
+            let bgWaveformChart = null;
             let fftChart = null;
+            let fftDiffChart = null;
 
             // グローバルデータ保持用
             let currentDataType = null; // 'csv' or 'wav'
@@ -299,6 +339,15 @@
             let globalTData = [];
             let globalYData = [];
             let globalFs = 1000;
+            let bgWavData = null;
+            let bgWavFs = null;
+            let bgWavName = '';
+            let bgAudioBuffer = null;
+            let mainWavChannel = 0;
+            let bgWavChannel = 0;
+            let currentBgPlayBuffer = null;
+            let isMainMuted = false;
+            let isBgMuted = false;
             let rangeSliderInstance = null;
             let lastSelectedYColIdx = null; // 列名ではなくインデックスで記憶する
 
@@ -335,6 +384,45 @@
                 }
                 e.target.value = ''; // 同じファイルを再選択可能にする
             });
+
+            bgWavBtn.addEventListener('click', () => bgWavInput.click());
+            bgWavInput.addEventListener('change', (e) => {
+                if (e.target.files.length > 0) {
+                    handleBackgroundWavFile(e.target.files[0]);
+                }
+                e.target.value = '';
+            });
+            clearBgWavBtn.addEventListener('click', () => {
+                bgWavData = null;
+                bgWavFs = null;
+                bgWavName = '';
+                bgWavStatus.textContent = '未設定（通常FFT）';
+                bgAudioBuffer = null;
+                bgWavChannel = 0;
+                bgWavChannelSelect.innerHTML = '';
+                bgWavChannelSelect.disabled = true;
+                drawBackgroundWaveform([], []);
+            });
+
+            wavChannelSelect.addEventListener('change', () => {
+                if (currentDataType !== 'wav' || !globalAudioBuffer) return;
+                mainWavChannel = parseInt(wavChannelSelect.value, 10) || 0;
+                applyMainWavChannel();
+            });
+            bgWavChannelSelect.addEventListener('change', () => {
+                if (!bgAudioBuffer) return;
+                bgWavChannel = parseInt(bgWavChannelSelect.value, 10) || 0;
+                applyBackgroundWavChannel();
+            });
+
+
+            function updateMuteButtonStyles() {
+                muteMainAudioBtn.classList.toggle('bg-rose-100', isMainMuted);
+                muteBgAudioBtn.classList.toggle('bg-rose-100', isBgMuted);
+            }
+            muteMainAudioBtn.addEventListener('click', () => { isMainMuted = !isMainMuted; if (mainGainNode) mainGainNode.gain.value = isMainMuted ? 0 : 1; updateMuteButtonStyles(); });
+            muteBgAudioBtn.addEventListener('click', () => { isBgMuted = !isBgMuted; if (bgGainNode) bgGainNode.gain.value = isBgMuted ? 0 : 1; updateMuteButtonStyles(); });
+            updateMuteButtonStyles();
 
             // ペースト実行ボタン
             pasteBtn.addEventListener('click', (e) => {
@@ -540,9 +628,25 @@
                     await audioCtx.resume();
                 }
                 
-                currentAudioSource = audioCtx.createBufferSource();
-                currentAudioSource.buffer = globalAudioBuffer;
-                currentAudioSource.connect(audioCtx.destination);
+                const sourceMain = audioCtx.createBufferSource();
+                sourceMain.buffer = globalAudioBuffer;
+                mainGainNode = audioCtx.createGain();
+                mainGainNode.gain.value = isMainMuted ? 0 : 1;
+                sourceMain.connect(mainGainNode).connect(audioCtx.destination);
+
+                let sourceBg = null;
+                if (bgWavData && bgWavFs && Math.abs(bgWavFs - globalFs) < 1e-6) {
+                    const bgBuf = audioCtx.createBuffer(1, globalYData.length, globalFs);
+                    const bgCh = bgBuf.getChannelData(0);
+                    for (let i=0;i<globalYData.length;i++) bgCh[i]= bgWavData[i] ?? 0;
+                    sourceBg = audioCtx.createBufferSource();
+                    sourceBg.buffer = bgBuf;
+                    bgGainNode = audioCtx.createGain();
+                    bgGainNode.gain.value = isBgMuted ? 0 : 1;
+                    sourceBg.connect(bgGainNode).connect(audioCtx.destination);
+                }
+                currentAudioSource = sourceMain;
+                currentBgAudioSource = sourceBg;
                 
                 currentAudioSource.onended = () => {
                     playAudioBtn.classList.remove('hidden');
@@ -556,7 +660,8 @@
                 playEndIdx = eIdx;
                 isPlaying = true;
 
-                currentAudioSource.start(0, startTime, duration);
+                sourceMain.start(0, startTime, duration);
+                if (sourceBg) sourceBg.start(0, startTime, duration);
                 updatePlayhead();
                 
                 playAudioBtn.classList.add('hidden');
@@ -570,6 +675,13 @@
                     currentAudioSource.disconnect();
                     currentAudioSource = null;
                 }
+                if (currentBgAudioSource) {
+                    currentBgAudioSource.stop();
+                    currentBgAudioSource.disconnect();
+                    currentBgAudioSource = null;
+                }
+                mainGainNode = null;
+                bgGainNode = null;
                 stopPlayhead();
                 playAudioBtn.classList.remove('hidden');
                 stopAudioBtn.classList.add('hidden');
@@ -859,6 +971,65 @@
                 messageText.textContent = msg;
             }
 
+
+
+            function applyMainWavChannel() {
+                const channelData = globalAudioBuffer.getChannelData(mainWavChannel);
+                globalYData = channelData;
+                globalTData = new Float32Array(channelData.length);
+                for(let i = 0; i < channelData.length; i++) globalTData[i] = i / globalFs;
+                drawWaveform(globalTData, globalYData);
+                initSlider();
+                if (bgWavData) drawBackgroundWaveform(globalTData, bgWavData);
+                bgWavStatus.textContent = bgWavData ? `設定中: ${bgWavName}` : bgWavStatus.textContent;
+            }
+
+            function applyBackgroundWavChannel() {
+                bgWavData = bgAudioBuffer.getChannelData(bgWavChannel).slice();
+                bgWavStatus.textContent = `設定中: ${bgWavName} / CH${bgWavChannel + 1} (${Math.round(bgWavFs)} Hz)`;
+                drawBackgroundWaveform(globalTData, bgWavData);
+            }
+
+            async function handleBackgroundWavFile(file) {
+                const fileName = file.name.toLowerCase();
+                if (!fileName.endsWith('.wav')) {
+                    showMessage('環境音はWAVファイルを選択してください。', 'error');
+                    return;
+                }
+                const reader = new FileReader();
+                reader.onload = async (e) => {
+                    try {
+                        const arrayBuffer = e.target.result;
+                        if (!audioCtx) {
+                            const AudioContext = window.AudioContext || window.webkitAudioContext;
+                            audioCtx = new AudioContext();
+                        }
+                        const audioBuffer = await new Promise((resolve, reject) => {
+                            audioCtx.decodeAudioData(arrayBuffer, resolve, reject);
+                        });
+                        bgAudioBuffer = audioBuffer;
+                        bgWavFs = audioBuffer.sampleRate;
+                        bgWavName = file.name;
+                        bgWavChannel = 0;
+                        bgWavChannelSelect.disabled = false;
+                        bgWavChannelSelect.innerHTML = '';
+                        for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
+                            const opt = document.createElement('option');
+                            opt.value = ch;
+                            opt.textContent = `CH${ch + 1}`;
+                            bgWavChannelSelect.appendChild(opt);
+                        }
+                        bgWavChannelSelect.value = '0';
+                        applyBackgroundWavChannel();
+                        showMessage('環境音WAVを読み込みました。', 'success');
+                    } catch (err) {
+                        showMessage('環境音WAVの読み込みに失敗しました: ' + err.message, 'error');
+                    }
+                };
+                reader.onerror = () => showMessage('環境音WAVファイルの読み込みに失敗しました。', 'error');
+                reader.readAsArrayBuffer(file);
+            }
+
             // ファイル読み込み処理
             function handleFile(file) {
                 const fileName = file.name.toLowerCase();
@@ -897,39 +1068,52 @@
                 } else if (isWAV) {
                     const reader = new FileReader();
                     reader.onload = async (e) => {
+                        showMessage('WAVデータをデコード中...', 'loading');
+                        const arrayBuffer = e.target.result;
+
+                        if (!audioCtx) {
+                            const AudioContext = window.AudioContext || window.webkitAudioContext;
+                            audioCtx = new AudioContext();
+                        }
+
+                        let audioBuffer;
                         try {
-                            showMessage('WAVデータをデコード中...', 'loading');
-                            const arrayBuffer = e.target.result;
-                            
-                            if (!audioCtx) {
-                                const AudioContext = window.AudioContext || window.webkitAudioContext;
-                                audioCtx = new AudioContext();
-                            }
-                            
-                            const audioBuffer = await new Promise((resolve, reject) => {
+                            audioBuffer = await new Promise((resolve, reject) => {
                                 audioCtx.decodeAudioData(arrayBuffer, resolve, reject);
                             });
-                            
+                        } catch (err) {
+                            console.error(err);
+                            showMessage('WAV読込後の解析準備でエラーが発生しました: ' + err.message, 'error');
+                            return;
+                        }
+
+                        try {
                             currentDataType = 'wav';
                             globalFs = audioBuffer.sampleRate;
                             globalAudioBuffer = audioBuffer;
                             playAudioBtn.classList.remove('hidden');
 
-                            // WAV時はサンプリング周波数を固定化
+                            // WAV時はサンプリング周波数を固定化し、表示する
                             fsInput.value = globalFs;
                             fsInput.readOnly = true;
                             fsInput.classList.add('bg-slate-100', 'text-slate-500');
+                            xColControl.classList.add('hidden');
+                            yColControl.classList.add('hidden');
+                            colSelectArea.classList.remove('hidden');
+                            colSelectArea.classList.add('flex');
 
-                            // 1ch目の波形データを取得
-                            const channelData = audioBuffer.getChannelData(0);
-                            globalYData = channelData; // Float32Arrayをそのまま利用
-                            globalTData = new Float32Array(channelData.length);
-                            for(let i = 0; i < channelData.length; i++) {
-                                globalTData[i] = i / globalFs;
+                            wavChannelControl.classList.remove('hidden');
+                            wavChannelSelect.innerHTML = '';
+                            for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
+                                const opt = document.createElement('option');
+                                opt.value = ch;
+                                opt.textContent = `CH${ch + 1}`;
+                                wavChannelSelect.appendChild(opt);
                             }
-
-                            drawWaveform(globalTData, globalYData);
-                            initSlider();
+                            mainWavChannel = 0;
+                            wavChannelSelect.value = '0';
+                            applyMainWavChannel();
+                            if (bgWavData) drawBackgroundWaveform(globalTData, bgWavData);
 
                             showMessage('WAVの解析準備が完了しました。範囲を選択してください。', 'success');
                             resultsDiv.classList.remove('hidden');
@@ -949,6 +1133,9 @@
                 currentDataType = 'csv';
                 fsInput.readOnly = false;
                 fsInput.classList.remove('bg-slate-100', 'text-slate-500');
+                xColControl.classList.remove('hidden');
+                yColControl.classList.remove('hidden');
+                wavChannelControl.classList.add('hidden');
 
                 const lines = csvText.trim().split('\n');
                 
@@ -1071,6 +1258,7 @@
                 createAudioBuffer();
                 drawWaveform(globalTData, globalYData);
                 initSlider();
+                if (bgWavData) drawBackgroundWaveform(globalTData, bgWavData);
             }
 
             // スライダーの初期化とイベント設定
@@ -1144,39 +1332,62 @@
             function performFFT(startIdx, endIdx) {
                 const ySliced = globalYData.slice(startIdx, endIdx + 1);
                 const tSliced = globalTData.slice(startIdx, endIdx + 1);
-                const dataLen = ySliced.length;
+                const { freqs, amps } = computeFFT(ySliced, globalFs);
 
-                let N = 1;
-                while (N * 2 <= dataLen && N * 2 <= 65536) {
-                    N *= 2;
-                }
-
-                const real = new Float64Array(N);
-                const imag = new Float64Array(N);
-                for (let i = 0; i < N; i++) {
-                    real[i] = ySliced[i];
-                    imag[i] = 0;
-                }
-
-                fftIterative(real, imag);
-
-                const halfN = N / 2;
-                const freqs = new Float64Array(halfN);
-                const amps = new Float64Array(halfN);
-                
-                for (let k = 0; k < halfN; k++) {
-                    freqs[k] = k * globalFs / N;
-                    const mag = Math.sqrt(real[k]*real[k] + imag[k]*imag[k]);
-                    amps[k] = (k === 0) ? mag / N : 2 * mag / N; 
+                let finalAmps = amps;
+                if (bgWavData && bgWavFs) {
+                    if (Math.abs(bgWavFs - globalFs) > 1e-6) {
+                        showMessage(`環境音WAVのサンプリング周波数(${bgWavFs}Hz)が一致しないため差分FFTは表示されません。`, 'error');
+                    } else if (endIdx >= bgWavData.length) {
+                        showMessage('環境音WAVの長さが不足しているため、この範囲では差分FFTは表示されません。', 'error');
+                    } else {
+                        const bgSlice = bgWavData.slice(startIdx, endIdx + 1);
+                        if (bgSlice.length >= 8) {
+                            const bgFft = computeFFT(bgSlice, globalFs, amps.length * 2);
+                            const n = Math.min(amps.length, bgFft.amps.length);
+                            const diff = new Float64Array(n);
+                            for (let i = 0; i < n; i++) {
+                                const d = amps[i] - bgFft.amps[i];
+                                diff[i] = d > 1e-12 ? d : 0;
+                            }
+                            finalAmps = diff;
+                        }
+                    }
                 }
 
                 exportTData = tSliced;
                 exportYData = ySliced;
-                exportFreqs = Array.from(freqs);
-                exportAmps = Array.from(amps);
+                exportFreqs = Array.from(freqs.slice(0, finalAmps.length));
+                exportAmps = Array.from(finalAmps);
 
-                drawFFT(freqs, amps);
-                findTopFrequencies(freqs, amps);
+                drawFFT(freqs.slice(0, amps.length), amps, 'fft-chart', false);
+                drawFFT(freqs.slice(0, finalAmps.length), finalAmps, 'fft-diff-chart', true);
+                findTopFrequencies(freqs.slice(0, finalAmps.length), finalAmps);
+            }
+
+            function computeFFT(yData, fs, forcedN = null) {
+                const dataLen = yData.length;
+                let N = 1;
+                while (N * 2 <= dataLen && N * 2 <= 65536) N *= 2;
+                if (forcedN && Number.isFinite(forcedN)) {
+                    N = Math.min(65536, Math.max(8, forcedN));
+                }
+                const real = new Float64Array(N);
+                const imag = new Float64Array(N);
+                for (let i = 0; i < N; i++) {
+                    real[i] = yData[i] ?? 0;
+                    imag[i] = 0;
+                }
+                fftIterative(real, imag);
+                const halfN = N / 2;
+                const freqs = new Float64Array(halfN);
+                const amps = new Float64Array(halfN);
+                for (let k = 0; k < halfN; k++) {
+                    freqs[k] = k * fs / N;
+                    const mag = Math.sqrt(real[k]*real[k] + imag[k]*imag[k]);
+                    amps[k] = (k === 0) ? mag / N : 2 * mag / N;
+                }
+                return { freqs, amps };
             }
 
             // --- CSVエクスポート処理 ---
@@ -1372,6 +1583,21 @@
                 }
             };
 
+
+            function drawBackgroundWaveform(t, y) {
+                const ctx = document.getElementById('bg-waveform-chart').getContext('2d');
+                if (bgWaveformChart) bgWaveformChart.destroy();
+                if (!t || t.length === 0 || !y || y.length === 0) {
+                    bgWaveformChart = new Chart(ctx, {type:'line', data:{datasets:[]}, options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});
+                    return;
+                }
+                const n = Math.min(t.length, y.length);
+                const points = [];
+                const step = Math.max(1, Math.floor(n / 2000));
+                for (let i=0;i<n;i+=step) points.push({x:t[i], y:y[i]});
+                bgWaveformChart = new Chart(ctx,{type:'line',plugins:[customCanvasBackgroundColor],data:{datasets:[{data:points,borderColor:'#f59e0b',borderWidth:1.2,pointRadius:0}]},options:{responsive:true,maintainAspectRatio:false,animation:false,plugins:{legend:{display:false}},scales:{x:{type:'linear',title:{display:true,text:'環境音 時間 (s)'}},y:{title:{display:true,text:'環境音 振幅'}}}}});
+            }
+
             function drawWaveform(t, y) {
                 const { t: dsT, y: dsY } = downsampleWaveform(t, y, 2000);
                 const ctx = document.getElementById('waveform-chart').getContext('2d');
@@ -1411,7 +1637,7 @@
                                         xMin: t[0], 
                                         xMax: t[t.length - 1],
                                         backgroundColor: 'rgba(239, 68, 68, 0.12)', 
-                                        borderColor: '#ef4444',
+                                        borderColor: isDiff ? '#7c3aed' : '#ef4444',
                                         borderWidth: 2,
                                         drawTime: 'beforeDatasetsDraw' 
                                     },
@@ -1445,54 +1671,58 @@
                 });
             }
 
-            function drawFFT(freqs, amps) {
+            function drawFFT(freqs, amps, canvasId = 'fft-chart', isDiff = false) {
                 const { x: dsFreqs, y: dsAmps } = downsampleSpectrum(freqs, amps, 2000);
-                const ctx = document.getElementById('fft-chart').getContext('2d');
-                
-                if (fftChart) fftChart.destroy();
-                
+                const ctx = document.getElementById(canvasId).getContext('2d');
+
+                if (canvasId === 'fft-chart' && fftChart) fftChart.destroy();
+                if (canvasId === 'fft-diff-chart' && fftDiffChart) fftDiffChart.destroy();
+
                 const scatterData = dsFreqs.map((f, i) => ({ x: f, y: dsAmps[i] }));
 
                 const xMaxVal = parseFloat(xAxisMaxInput.value);
                 const xMaxOpt = (!isNaN(xMaxVal) && xMaxVal > 0) ? xMaxVal : undefined;
-                
+
                 const yMaxVal = parseFloat(yAxisMaxInput.value);
                 const yMaxOpt = (!isNaN(yMaxVal) && yMaxVal > 0) ? yMaxVal : undefined;
 
-                fftChart = new Chart(ctx, {
+                const chart = new Chart(ctx, {
                     type: 'line',
                     plugins: [customCanvasBackgroundColor],
                     data: {
                         datasets: [{
                             data: scatterData,
-                            borderColor: '#ef4444', // Red-500
-                            backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                            borderColor: isDiff ? '#7c3aed' : '#ef4444',
+                            backgroundColor: isDiff ? 'rgba(124, 58, 237, 0.15)' : 'rgba(239, 68, 68, 0.15)',
                             borderWidth: 1.5,
                             pointRadius: 0,
                             fill: true,
                         }]
                     },
                     options: {
-                        devicePixelRatio: 3, 
+                        devicePixelRatio: 3,
                         responsive: true,
                         maintainAspectRatio: false,
                         animation: false,
                         plugins: { legend: { display: false } },
                         scales: {
-                            x: { 
-                                type: 'linear', 
-                                title: { display: true, text: '周波数 (Hz)' }, 
+                            x: {
+                                type: 'linear',
+                                title: { display: true, text: isDiff ? '周波数 (Hz) - 差し引き後' : '周波数 (Hz) - 差し引き前' },
                                 ticks: { maxTicksLimit: 8, callback: val => val.toFixed(1) },
                                 max: xMaxOpt
                             },
-                            y: { 
-                                title: { display: true, text: '振幅' }, 
+                            y: {
+                                title: { display: true, text: '振幅' },
                                 beginAtZero: true,
                                 max: yMaxOpt
                             }
                         }
                     }
                 });
+
+                if (canvasId === 'fft-chart') fftChart = chart;
+                else fftDiffChart = chart;
             }
 
             // --- ピーク(支配的な周波数)の検出 ---
