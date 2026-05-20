@@ -167,6 +167,14 @@
                     <div class="relative h-64 w-full">
                         <canvas id="waveform-chart"></canvas>
                     </div>
+                    <div class="mt-3 flex items-center gap-4 text-xs text-slate-600">
+                        <label class="flex items-center gap-1"><input type="checkbox" id="mute-main-audio">主音ミュート</label>
+                        <label class="flex items-center gap-1"><input type="checkbox" id="mute-bg-audio">環境音ミュート</label>
+                        <label class="flex items-center gap-1"><input type="checkbox" id="enable-bg-subtract" checked>環境音FFT差し引き</label>
+                    </div>
+                    <div class="relative h-40 w-full mt-3">
+                        <canvas id="bg-waveform-chart"></canvas>
+                    </div>
                     <!-- 範囲選択スライダー -->
                     <div class="mt-10 mb-4 px-6">
                         <div id="time-slider"></div>
@@ -301,6 +309,9 @@
             // --- 音声再生・アニメーション用の要素・変数 ---
             const playAudioBtn = document.getElementById('play-audio-btn');
             const stopAudioBtn = document.getElementById('stop-audio-btn');
+            const muteMainAudio = document.getElementById('mute-main-audio');
+            const muteBgAudio = document.getElementById('mute-bg-audio');
+            const enableBgSubtract = document.getElementById('enable-bg-subtract');
             let audioCtx = null;
             let currentAudioSource = null;
             let globalAudioBuffer = null;
@@ -317,6 +328,7 @@
             const yColSelect = document.getElementById('y-col-select');
 
             let waveformChart = null;
+            let bgWaveformChart = null;
             let fftChart = null;
 
             // グローバルデータ保持用
@@ -332,6 +344,7 @@
             let bgAudioBuffer = null;
             let mainWavChannel = 0;
             let bgWavChannel = 0;
+            let currentBgPlayBuffer = null;
             let rangeSliderInstance = null;
             let lastSelectedYColIdx = null; // 列名ではなくインデックスで記憶する
 
@@ -385,6 +398,7 @@
                 bgWavChannel = 0;
                 bgWavChannelSelect.innerHTML = '';
                 bgWavChannelSelect.disabled = true;
+                drawBackgroundWaveform([], []);
             });
 
             wavChannelSelect.addEventListener('change', () => {
@@ -602,9 +616,24 @@
                     await audioCtx.resume();
                 }
                 
-                currentAudioSource = audioCtx.createBufferSource();
-                currentAudioSource.buffer = globalAudioBuffer;
-                currentAudioSource.connect(audioCtx.destination);
+                const sourceMain = audioCtx.createBufferSource();
+                sourceMain.buffer = globalAudioBuffer;
+                const mainGain = audioCtx.createGain();
+                mainGain.gain.value = muteMainAudio.checked ? 0 : 1;
+                sourceMain.connect(mainGain).connect(audioCtx.destination);
+
+                let sourceBg = null;
+                if (bgWavData && bgWavFs && Math.abs(bgWavFs - globalFs) < 1e-6) {
+                    const bgBuf = audioCtx.createBuffer(1, globalYData.length, globalFs);
+                    const bgCh = bgBuf.getChannelData(0);
+                    for (let i=0;i<globalYData.length;i++) bgCh[i]= bgWavData[i] ?? 0;
+                    sourceBg = audioCtx.createBufferSource();
+                    sourceBg.buffer = bgBuf;
+                    const bgGain = audioCtx.createGain();
+                    bgGain.gain.value = muteBgAudio.checked ? 0 : 1;
+                    sourceBg.connect(bgGain).connect(audioCtx.destination);
+                }
+                currentAudioSource = sourceMain;
                 
                 currentAudioSource.onended = () => {
                     playAudioBtn.classList.remove('hidden');
@@ -618,7 +647,8 @@
                 playEndIdx = eIdx;
                 isPlaying = true;
 
-                currentAudioSource.start(0, startTime, duration);
+                sourceMain.start(0, startTime, duration);
+                if (sourceBg) sourceBg.start(0, startTime, duration);
                 updatePlayhead();
                 
                 playAudioBtn.classList.add('hidden');
@@ -930,12 +960,14 @@
                 for(let i = 0; i < channelData.length; i++) globalTData[i] = i / globalFs;
                 drawWaveform(globalTData, globalYData);
                 initSlider();
+                if (bgWavData) drawBackgroundWaveform(globalTData, bgWavData);
                 bgWavStatus.textContent = bgWavData ? `設定中: ${bgWavName}（差分FFT適用）` : bgWavStatus.textContent;
             }
 
             function applyBackgroundWavChannel() {
                 bgWavData = bgAudioBuffer.getChannelData(bgWavChannel).slice();
                 bgWavStatus.textContent = `設定中: ${bgWavName} / CH${bgWavChannel + 1} (${Math.round(bgWavFs)} Hz)`;
+                drawBackgroundWaveform(globalTData, bgWavData);
             }
 
             async function handleBackgroundWavFile(file) {
@@ -1054,6 +1086,7 @@
                             mainWavChannel = 0;
                             wavChannelSelect.value = '0';
                             applyMainWavChannel();
+                            if (bgWavData) drawBackgroundWaveform(globalTData, bgWavData);
 
                             showMessage('WAVの解析準備が完了しました。範囲を選択してください。', 'success');
                             resultsDiv.classList.remove('hidden');
@@ -1198,6 +1231,7 @@
                 createAudioBuffer();
                 drawWaveform(globalTData, globalYData);
                 initSlider();
+                if (bgWavData) drawBackgroundWaveform(globalTData, bgWavData);
             }
 
             // スライダーの初期化とイベント設定
@@ -1274,7 +1308,7 @@
                 const { freqs, amps } = computeFFT(ySliced, globalFs);
 
                 let finalAmps = amps;
-                if (bgWavData && bgWavFs) {
+                if (enableBgSubtract.checked && bgWavData && bgWavFs) {
                     if (Math.abs(bgWavFs - globalFs) > 1e-6) {
                         showMessage(`環境音WAVのサンプリング周波数(${bgWavFs}Hz)が一致しないため差分FFTを無効化しました。`, 'error');
                     } else {
@@ -1513,6 +1547,21 @@
                     ctx.restore();
                 }
             };
+
+
+            function drawBackgroundWaveform(t, y) {
+                const ctx = document.getElementById('bg-waveform-chart').getContext('2d');
+                if (bgWaveformChart) bgWaveformChart.destroy();
+                if (!t || t.length === 0 || !y || y.length === 0) {
+                    bgWaveformChart = new Chart(ctx, {type:'line', data:{datasets:[]}, options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});
+                    return;
+                }
+                const n = Math.min(t.length, y.length);
+                const points = [];
+                const step = Math.max(1, Math.floor(n / 2000));
+                for (let i=0;i<n;i+=step) points.push({x:t[i], y:y[i]});
+                bgWaveformChart = new Chart(ctx,{type:'line',plugins:[customCanvasBackgroundColor],data:{datasets:[{data:points,borderColor:'#f59e0b',borderWidth:1.2,pointRadius:0}]},options:{responsive:true,maintainAspectRatio:false,animation:false,plugins:{legend:{display:false}},scales:{x:{type:'linear',title:{display:true,text:'環境音 時間 (s)'}},y:{title:{display:true,text:'環境音 振幅'}}}}});
+            }
 
             function drawWaveform(t, y) {
                 const { t: dsT, y: dsY } = downsampleWaveform(t, y, 2000);
