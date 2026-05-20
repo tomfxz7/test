@@ -66,13 +66,13 @@
 
         <!-- 設定・列選択エリア -->
         <div id="column-select-area" class="hidden mt-6 bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex-wrap items-center gap-6 animate-fade-in">
-            <div class="flex items-center gap-2">
+            <div id="x-col-control" class="flex items-center gap-2">
                 <label for="x-col-select" class="font-medium text-slate-700 text-sm">X軸 (時間):</label>
                 <select id="x-col-select" class="border border-slate-300 rounded-md p-1.5 min-w-[120px] text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white">
                     <option value="-1">自動生成 (インデックス)</option>
                 </select>
             </div>
-            <div class="flex items-center gap-2">
+            <div id="y-col-control" class="flex items-center gap-2">
                 <label for="y-col-select" class="font-medium text-slate-700 text-sm">Y軸 (波形データ):</label>
                 <select id="y-col-select" class="border border-slate-300 rounded-md p-1.5 min-w-[120px] text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white">
                 </select>
@@ -249,6 +249,8 @@
             const dropZone = document.getElementById('drop-zone');
             const fileInput = document.getElementById('file-input');
             const fsInput = document.getElementById('fs-input');
+            const xColControl = document.getElementById('x-col-control');
+            const yColControl = document.getElementById('y-col-control');
             const resultsDiv = document.getElementById('results');
             const demoBtn = document.getElementById('demo-btn');
             
@@ -915,10 +917,14 @@
                             globalAudioBuffer = audioBuffer;
                             playAudioBtn.classList.remove('hidden');
 
-                            // WAV時はサンプリング周波数を固定化
+                            // WAV時はサンプリング周波数を固定化し、表示する
                             fsInput.value = globalFs;
                             fsInput.readOnly = true;
                             fsInput.classList.add('bg-slate-100', 'text-slate-500');
+                            xColControl.classList.add('hidden');
+                            yColControl.classList.add('hidden');
+                            colSelectArea.classList.remove('hidden');
+                            colSelectArea.classList.add('flex');
 
                             // 1ch目の波形データを取得
                             const channelData = audioBuffer.getChannelData(0);
@@ -949,6 +955,8 @@
                 currentDataType = 'csv';
                 fsInput.readOnly = false;
                 fsInput.classList.remove('bg-slate-100', 'text-slate-500');
+                xColControl.classList.remove('hidden');
+                yColControl.classList.remove('hidden');
 
                 const lines = csvText.trim().split('\n');
                 
