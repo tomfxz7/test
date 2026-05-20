@@ -1,0 +1,1542 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CSV FFT Analyzer</title>
+    <!-- Tailwind CSS (スタイリング用) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js (グラフ描画用) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Chart.js Annotation Plugin (選択範囲の赤枠描画用) -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@2.2.1/dist/chartjs-plugin-annotation.min.js"></script>
+    <!-- noUiSlider (範囲選択スライダー用) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.7.1/nouislider.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.7.1/nouislider.min.js"></script>
+    <!-- ExcelJS (Excelエクスポート用) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"></script>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans min-h-screen">
+    <div class="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8">
+        <!-- ヘッダー -->
+        <header class="mb-8 text-center">
+            <h1 class="text-3xl font-extrabold text-slate-900 tracking-tight mb-2">CSV / WAV FFT Analyzer</h1>
+            <p class="text-slate-600">CSVデータやWAV音源をドラッグ＆ドロップして、即座に周波数解析（FFT）を行います。</p>
+        </header>
+
+        <!-- メッセージ表示エリア -->
+        <div id="message-box" class="hidden mb-6 p-4 rounded-lg flex items-center gap-3 transition-all">
+            <svg id="loading-icon" class="animate-spin h-5 w-5 hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <span id="message-text" class="font-medium"></span>
+        </div>
+
+        <!-- 入力エリア (ドラッグ＆ドロップ + テキストペースト) -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <!-- ドラッグ＆ドロップエリア -->
+            <div id="drop-zone" class="border-4 border-dashed border-slate-300 bg-white rounded-2xl p-8 text-center cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors shadow-sm relative group flex flex-col justify-center items-center h-64">
+                <svg class="mx-auto h-16 w-16 text-slate-400 group-hover:text-blue-500 transition-colors mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                </svg>
+                <h3 class="text-lg font-semibold text-slate-700 group-hover:text-blue-700">CSV / WAVファイルをドロップ</h3>
+                <p class="mt-1 text-sm text-slate-500">またはクリックしてファイル選択</p>
+                <input type="file" id="file-input" class="hidden" accept=".csv, .wav, audio/wav">
+            </div>
+
+            <!-- テキストペーストエリア -->
+            <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 flex flex-col h-64">
+                <h3 class="text-lg font-semibold text-slate-700 mb-2 flex items-center gap-2">
+                    <svg class="w-5 h-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path></svg>
+                    Excel等からコピペ
+                </h3>
+                <textarea id="paste-area" class="flex-1 w-full border border-slate-300 rounded-lg p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none resize-none font-mono" placeholder="データをここに貼り付け (複数列対応)&#13;&#10;例:&#13;&#10;0.001  0.5&#13;&#10;0.002 -0.2"></textarea>
+                <button type="button" id="paste-btn" class="mt-3 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors shadow-sm flex justify-center items-center gap-2">
+                    貼り付けたデータで解析
+                </button>
+            </div>
+        </div>
+
+        <div class="mt-4 text-center">
+            <button type="button" id="demo-btn" class="text-sm text-blue-600 hover:text-blue-800 underline transition-colors">
+                サンプルデータで試す（前半440Hz / 後半880Hz）
+            </button>
+        </div>
+
+        <!-- 設定・列選択エリア -->
+        <div id="column-select-area" class="hidden mt-6 bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex-wrap items-center gap-6 animate-fade-in">
+            <div class="flex items-center gap-2">
+                <label for="x-col-select" class="font-medium text-slate-700 text-sm">X軸 (時間):</label>
+                <select id="x-col-select" class="border border-slate-300 rounded-md p-1.5 min-w-[120px] text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white">
+                    <option value="-1">自動生成 (インデックス)</option>
+                </select>
+            </div>
+            <div class="flex items-center gap-2">
+                <label for="y-col-select" class="font-medium text-slate-700 text-sm">Y軸 (波形データ):</label>
+                <select id="y-col-select" class="border border-slate-300 rounded-md p-1.5 min-w-[120px] text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white">
+                </select>
+            </div>
+            <div class="flex items-center gap-2">
+                <label for="fs-input" class="font-medium text-slate-700 text-sm">サンプリング周波数 (Hz):</label>
+                <input type="number" id="fs-input" value="1000" class="border border-slate-300 rounded-md p-1.5 w-28 text-center focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none">
+            </div>
+            <p class="text-xs text-slate-500 w-full lg:w-auto">※X軸に時間データを選択した場合、またはWAVファイルの場合は自動設定されます。</p>
+        </div>
+
+        <!-- 解析結果エリア -->
+        <div id="results" class="hidden mt-8 space-y-8 animate-fade-in">
+            <!-- アクションバー (エクスポート等) -->
+            <div class="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+                <h2 class="text-xl font-bold text-slate-800">解析結果</h2>
+                <div class="flex flex-wrap gap-3">
+                    <button type="button" id="export-csv-btn" class="flex items-center gap-2 bg-slate-600 hover:bg-slate-700 text-white font-medium py-2 px-4 rounded-lg transition-colors shadow-sm text-sm">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                        CSV
+                    </button>
+                    <button type="button" id="export-excel-btn" class="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition-colors shadow-sm text-sm">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                        Excel (グラフ付き)
+                    </button>
+                </div>
+            </div>
+
+            <!-- グラフ群 -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <!-- 波形グラフ -->
+                <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex flex-col">
+                    <div class="flex flex-wrap justify-between items-start md:items-center mb-4 gap-2">
+                        <div>
+                            <h2 class="text-lg font-bold text-slate-800 flex items-center gap-2">
+                                <div class="w-3 h-3 rounded-full bg-blue-500"></div>元の波形と解析範囲
+                            </h2>
+                            <div class="flex flex-wrap items-center gap-3 text-sm mt-2">
+                                <div class="flex items-center gap-1" title="時間(横軸)の表示範囲">
+                                    <label class="text-slate-600">X軸:</label>
+                                    <input type="number" id="wave-x-min" placeholder="Min" class="border border-slate-300 rounded p-1 w-16 text-right focus:ring-1 focus:ring-blue-500 outline-none" step="any">
+                                    <span class="text-slate-400">-</span>
+                                    <input type="number" id="wave-x-max" placeholder="Max" class="border border-slate-300 rounded p-1 w-16 text-right focus:ring-1 focus:ring-blue-500 outline-none" step="any">
+                                </div>
+                                <div class="flex items-center gap-1" title="振幅(縦軸)の表示範囲">
+                                    <label class="text-slate-600">Y軸:</label>
+                                    <input type="number" id="wave-y-min" placeholder="Min" class="border border-slate-300 rounded p-1 w-16 text-right focus:ring-1 focus:ring-blue-500 outline-none" step="any">
+                                    <span class="text-slate-400">-</span>
+                                    <input type="number" id="wave-y-max" placeholder="Max" class="border border-slate-300 rounded p-1 w-16 text-right focus:ring-1 focus:ring-blue-500 outline-none" step="any">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="flex gap-2 w-full justify-end mt-2 md:mt-0 md:w-auto flex-wrap">
+                            <!-- 再生・停止ボタン -->
+                            <button type="button" id="play-audio-btn" class="hidden flex items-center gap-1 text-xs text-emerald-600 hover:text-emerald-700 transition-colors px-2 py-1 border border-slate-200 rounded hover:bg-slate-50" title="選択範囲の音声を再生">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                                <span>範囲を再生</span>
+                            </button>
+                            <button type="button" id="stop-audio-btn" class="hidden flex items-center gap-1 text-xs text-rose-500 hover:text-rose-600 transition-colors px-2 py-1 border border-slate-200 rounded hover:bg-slate-50" title="再生を停止">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10h6v4H9z"></path></svg>
+                                <span>停止</span>
+                            </button>
+                            
+                            <button type="button" id="copy-waveform-btn" class="flex items-center gap-1 text-xs text-slate-500 hover:text-blue-600 transition-colors px-2 py-1 border border-slate-200 rounded hover:bg-slate-50" title="グラフ画像をクリップボードにコピー">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                                <span>画像コピー</span>
+                            </button>
+                            <button type="button" id="save-waveform-btn" class="flex items-center gap-1 text-xs text-slate-500 hover:text-blue-600 transition-colors px-2 py-1 border border-slate-200 rounded hover:bg-slate-50" title="グラフ画像をファイルとして保存">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                <span>画像保存</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="relative h-64 w-full">
+                        <canvas id="waveform-chart"></canvas>
+                    </div>
+                    <!-- 範囲選択スライダー -->
+                    <div class="mt-10 mb-4 px-6">
+                        <div id="time-slider"></div>
+                        <div id="range-text" class="text-center text-sm mt-4 text-slate-600 font-medium"></div>
+                    </div>
+                </div>
+                
+                <!-- FFTグラフ -->
+                <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex flex-col">
+                    <div class="flex flex-wrap justify-between items-start md:items-center mb-4 gap-2">
+                        <div>
+                            <h2 class="text-lg font-bold text-slate-800 flex items-center gap-2">
+                                <div class="w-3 h-3 rounded-full bg-red-500"></div>周波数スペクトル
+                            </h2>
+                            <div class="flex flex-wrap items-center gap-3 text-sm mt-2">
+                                <div class="flex items-center gap-1" title="周波数(横軸)の表示上限を設定します">
+                                    <label for="x-axis-max" class="text-slate-600">X軸上限:</label>
+                                    <input type="number" id="x-axis-max" placeholder="自動" class="border border-slate-300 rounded p-1 w-16 text-right focus:ring-1 focus:ring-red-500 outline-none" min="0" step="any">
+                                </div>
+                                <div class="flex items-center gap-1" title="振幅(縦軸)の表示上限を設定します">
+                                    <label for="y-axis-max" class="text-slate-600">Y軸上限:</label>
+                                    <input type="number" id="y-axis-max" placeholder="自動" class="border border-slate-300 rounded p-1 w-16 text-right focus:ring-1 focus:ring-red-500 outline-none" min="0" step="any">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="flex gap-2 w-full justify-end mt-2 md:mt-0 md:w-auto">
+                            <button type="button" id="copy-fft-btn" class="flex items-center gap-1 text-xs text-slate-500 hover:text-red-600 transition-colors px-2 py-1 border border-slate-200 rounded hover:bg-slate-50" title="グラフ画像をクリップボードにコピー">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                                <span>画像コピー</span>
+                            </button>
+                            <button type="button" id="save-fft-btn" class="flex items-center gap-1 text-xs text-slate-500 hover:text-red-600 transition-colors px-2 py-1 border border-slate-200 rounded hover:bg-slate-50" title="グラフ画像をファイルとして保存">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                <span>画像保存</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="relative h-64 w-full">
+                        <canvas id="fft-chart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- トップ5周波数 -->
+            <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                <h2 class="text-xl font-bold text-slate-800 mb-4 border-b pb-2">支配的な周波数 トップ5</h2>
+                <ul id="top-freqs" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <!-- Javascriptで動的にリストが挿入されます -->
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <style>
+        .animate-fade-in {
+            animation: fadeIn 0.5s ease-out forwards;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* noUiSlider カスタムスタイル */
+        .noUi-target {
+            background: #e2e8f0;
+            border-radius: 9999px;
+            border: none;
+            height: 12px;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .noUi-connects {
+            border-radius: 9999px;
+        }
+        .noUi-connect {
+            background: rgba(239, 68, 68, 0.5); /* 選択範囲を赤透明に */
+        }
+        .noUi-handle {
+            border-radius: 50%;
+            background: #ef4444;
+            box-shadow: 0 2px 6px rgba(239, 68, 68, 0.4);
+            cursor: ew-resize;
+            width: 24px !important;
+            height: 24px !important;
+            right: -12px !important;
+            top: -6px !important;
+            border: 2px solid #fff;
+        }
+        .noUi-handle::before, .noUi-handle::after {
+            display: none; /* デフォルトの縦線を消す */
+        }
+        .noUi-handle:hover {
+            transform: scale(1.1);
+            transition: transform 0.1s;
+        }
+    </style>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const dropZone = document.getElementById('drop-zone');
+            const fileInput = document.getElementById('file-input');
+            const fsInput = document.getElementById('fs-input');
+            const resultsDiv = document.getElementById('results');
+            const demoBtn = document.getElementById('demo-btn');
+            
+            const messageBox = document.getElementById('message-box');
+            const messageText = document.getElementById('message-text');
+            const loadingIcon = document.getElementById('loading-icon');
+
+            const pasteArea = document.getElementById('paste-area');
+            const pasteBtn = document.getElementById('paste-btn');
+            const exportCsvBtn = document.getElementById('export-csv-btn');
+            const exportExcelBtn = document.getElementById('export-excel-btn');
+            
+            // FFTグラフ用の軸入力
+            const xAxisMaxInput = document.getElementById('x-axis-max');
+            const yAxisMaxInput = document.getElementById('y-axis-max');
+
+            // 波形グラフ用の軸入力
+            const waveXMinInput = document.getElementById('wave-x-min');
+            const waveXMaxInput = document.getElementById('wave-x-max');
+            const waveYMinInput = document.getElementById('wave-y-min');
+            const waveYMaxInput = document.getElementById('wave-y-max');
+
+            // --- 音声再生・アニメーション用の要素・変数 ---
+            const playAudioBtn = document.getElementById('play-audio-btn');
+            const stopAudioBtn = document.getElementById('stop-audio-btn');
+            let audioCtx = null;
+            let currentAudioSource = null;
+            let globalAudioBuffer = null;
+            
+            let animationFrameId = null;
+            let audioStartTime = 0;
+            let playStartIdx = 0;
+            let playEndIdx = 0;
+            let isPlaying = false;
+
+            // --- 列選択機能用の要素 ---
+            const colSelectArea = document.getElementById('column-select-area');
+            const xColSelect = document.getElementById('x-col-select');
+            const yColSelect = document.getElementById('y-col-select');
+
+            let waveformChart = null;
+            let fftChart = null;
+
+            // グローバルデータ保持用
+            let currentDataType = null; // 'csv' or 'wav'
+            let globalHeaders = [];
+            let globalColumns = [];
+            let globalTData = [];
+            let globalYData = [];
+            let globalFs = 1000;
+            let rangeSliderInstance = null;
+            let lastSelectedYColIdx = null; // 列名ではなくインデックスで記憶する
+
+            // エクスポート用データ保持
+            let exportTData = [];
+            let exportYData = [];
+            let exportFreqs = [];
+            let exportAmps = [];
+            let exportTopFreqs = [];
+
+            // UIイベントリスナー設定
+            dropZone.addEventListener('click', () => fileInput.click());
+
+            dropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                dropZone.classList.add('border-blue-500', 'bg-blue-50');
+            });
+
+            dropZone.addEventListener('dragleave', () => {
+                dropZone.classList.remove('border-blue-500', 'bg-blue-50');
+            });
+
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                dropZone.classList.remove('border-blue-500', 'bg-blue-50');
+                if (e.dataTransfer.files.length > 0) {
+                    handleFile(e.dataTransfer.files[0]);
+                }
+            });
+
+            fileInput.addEventListener('change', (e) => {
+                if (e.target.files.length > 0) {
+                    handleFile(e.target.files[0]);
+                }
+                e.target.value = ''; // 同じファイルを再選択可能にする
+            });
+
+            // ペースト実行ボタン
+            pasteBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                const text = pasteArea.value;
+                if (!text || text.trim() === '') {
+                    showMessage('データを貼り付けてください。', 'error');
+                    return;
+                }
+                
+                showMessage('データを読み込み中...', 'loading');
+                resultsDiv.classList.add('hidden');
+                colSelectArea.classList.add('hidden');
+                colSelectArea.classList.remove('flex');
+                
+                setTimeout(() => {
+                    try {
+                        parseCSV(text);
+                        showMessage('解析の準備が完了しました。範囲を選択してください。', 'success');
+                        resultsDiv.classList.remove('hidden');
+                    } catch (err) {
+                        console.error(err);
+                        showMessage('解析中にエラーが発生しました: ' + err.message, 'error');
+                    }
+                }, 50);
+            });
+
+            // 列の選択変更イベント
+            const applyColumnChanges = () => {
+                if (currentDataType !== 'csv') return;
+
+                showMessage('設定を適用中...', 'loading');
+                
+                // 選択されたY軸のインデックスを変数に記憶
+                const yIdx = parseInt(yColSelect.value);
+                if (!isNaN(yIdx) && yIdx >= 0) {
+                    lastSelectedYColIdx = yIdx;
+                }
+
+                setTimeout(() => {
+                    try {
+                        applySelectedColumns();
+                        showMessage('グラフを更新しました。', 'success');
+                    } catch (err) {
+                        console.error(err);
+                        showMessage('更新中にエラーが発生しました: ' + err.message, 'error');
+                    }
+                }, 10);
+            };
+
+            xColSelect.addEventListener('change', applyColumnChanges);
+            yColSelect.addEventListener('change', applyColumnChanges);
+            fsInput.addEventListener('change', () => {
+                if (currentDataType === 'csv' && xColSelect.value === "-1") {
+                    applyColumnChanges();
+                }
+            });
+
+            // エクスポートボタン
+            exportCsvBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                exportCSV();
+            });
+
+            exportExcelBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                if (exportTData.length === 0 || exportFreqs.length === 0) {
+                    showMessage('エクスポートするデータがありません。', 'error');
+                    return;
+                }
+                
+                showMessage('Excelファイルを作成中...', 'loading');
+                
+                setTimeout(() => {
+                    exportExcel().then(() => {
+                        showMessage('Excelファイルのエクスポートが完了しました。', 'success');
+                    }).catch(err => {
+                        console.error(err);
+                        showMessage('Excelの作成に失敗しました: ' + err.message, 'error');
+                    });
+                }, 50);
+            });
+
+            // -----------------------------
+            // 画像操作ユーティリティ
+            // -----------------------------
+            function isIOSLike() {
+                const ua = navigator.userAgent || '';
+                const platform = navigator.platform || '';
+                const touchMac = platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+                return /iPad|iPhone|iPod/.test(ua) || touchMac;
+            }
+
+            function isSafariLike() {
+                const ua = navigator.userAgent || '';
+                return /Safari/i.test(ua) && !/Chrome|CriOS|Edg|FxiOS|OPiOS/i.test(ua);
+            }
+
+            function isIframe() {
+                try {
+                    return window.self !== window.top;
+                } catch (e) {
+                    return true;
+                }
+            }
+
+            function isSecureClipboardAvailable() {
+                if (isIframe()) return false;
+                return !!(window.ClipboardItem && navigator.clipboard && navigator.clipboard.write && window.isSecureContext);
+            }
+
+            function canvasToBlob(canvas, type = 'image/png', quality = 1) {
+                return new Promise((resolve, reject) => {
+                    if (!canvas) {
+                        reject(new Error('canvasが見つかりません'));
+                        return;
+                    }
+
+                    if (canvas.toBlob) {
+                        canvas.toBlob((blob) => {
+                            if (blob) {
+                                resolve(blob);
+                            } else {
+                                reject(new Error('Blob変換に失敗しました'));
+                            }
+                        }, type, quality);
+                    } else {
+                        try {
+                            const dataUrl = canvas.toDataURL(type, quality);
+                            const arr = dataUrl.split(',');
+                            const mime = arr[0].match(/:(.*?);/)[1];
+                            const bstr = atob(arr[1]);
+                            let n = bstr.length;
+                            const u8arr = new Uint8Array(n);
+                            while (n--) {
+                                u8arr[n] = bstr.charCodeAt(n);
+                            }
+                            resolve(new Blob([u8arr], { type: mime }));
+                        } catch (err) {
+                            reject(err);
+                        }
+                    }
+                });
+            }
+
+            function setTemporaryButtonState(btn, html, ms = 2500) {
+                const originalHtml = btn.dataset.originalHtml || btn.innerHTML;
+                btn.dataset.originalHtml = originalHtml;
+                btn.innerHTML = html;
+                setTimeout(() => {
+                    btn.innerHTML = originalHtml;
+                }, ms);
+            }
+
+            // -----------------------------
+            // 音声再生とアニメーション処理
+            // -----------------------------
+            function createAudioBuffer() {
+                if (currentDataType === 'wav') return; // WAVの場合はデコード時に生成済み
+
+                // Web Audio APIの制約によりサンプリングレート3000Hz未満は弾く
+                if (globalFs < 3000) {
+                    globalAudioBuffer = null;
+                    playAudioBtn.classList.add('hidden');
+                    stopAudioBtn.classList.add('hidden');
+                    return;
+                }
+
+                if (!audioCtx) {
+                    const AudioContext = window.AudioContext || window.webkitAudioContext;
+                    audioCtx = new AudioContext();
+                }
+
+                try {
+                    const buffer = audioCtx.createBuffer(1, globalYData.length, globalFs);
+                    const channelData = buffer.getChannelData(0);
+                    for (let i = 0; i < globalYData.length; i++) {
+                        channelData[i] = globalYData[i];
+                    }
+                    globalAudioBuffer = buffer;
+                    playAudioBtn.classList.remove('hidden');
+                } catch (e) {
+                    console.warn("Audio buffer creation failed:", e);
+                    globalAudioBuffer = null;
+                    playAudioBtn.classList.add('hidden');
+                    stopAudioBtn.classList.add('hidden');
+                }
+            }
+
+            async function playSelectedAudio() {
+                if (!globalAudioBuffer || !audioCtx) return;
+                
+                const sIdx = parseInt(rangeSliderInstance.get()[0]);
+                const eIdx = parseInt(rangeSliderInstance.get()[1]);
+                if (isNaN(sIdx) || isNaN(eIdx) || sIdx >= eIdx) return;
+                
+                const startTime = sIdx / globalFs;
+                const duration = (eIdx - sIdx + 1) / globalFs;
+                
+                stopAudio(); 
+                
+                if (audioCtx.state === 'suspended') {
+                    await audioCtx.resume();
+                }
+                
+                currentAudioSource = audioCtx.createBufferSource();
+                currentAudioSource.buffer = globalAudioBuffer;
+                currentAudioSource.connect(audioCtx.destination);
+                
+                currentAudioSource.onended = () => {
+                    playAudioBtn.classList.remove('hidden');
+                    stopAudioBtn.classList.add('hidden');
+                    stopPlayhead();
+                };
+                
+                // 再生位置トラッキング用変数の初期化
+                audioStartTime = audioCtx.currentTime;
+                playStartIdx = sIdx;
+                playEndIdx = eIdx;
+                isPlaying = true;
+
+                currentAudioSource.start(0, startTime, duration);
+                updatePlayhead();
+                
+                playAudioBtn.classList.add('hidden');
+                stopAudioBtn.classList.remove('hidden');
+            }
+
+            function stopAudio() {
+                if (currentAudioSource) {
+                    currentAudioSource.onended = null;
+                    currentAudioSource.stop();
+                    currentAudioSource.disconnect();
+                    currentAudioSource = null;
+                }
+                stopPlayhead();
+                playAudioBtn.classList.remove('hidden');
+                stopAudioBtn.classList.add('hidden');
+            }
+
+            function updatePlayhead() {
+                if (!isPlaying || !audioCtx || !waveformChart) return;
+                
+                const elapsedTime = audioCtx.currentTime - audioStartTime;
+                const currentIdx = playStartIdx + (elapsedTime * globalFs);
+
+                if (currentIdx > playEndIdx) {
+                    stopPlayhead();
+                    return;
+                }
+
+                // 現在のインデックスからグラフ上のX座標(時間)を取得
+                let xVal = 0;
+                if (globalTData && globalTData.length > 0) {
+                    const clampedIdx = Math.max(0, Math.min(Math.floor(currentIdx), globalTData.length - 1));
+                    xVal = globalTData[clampedIdx];
+                }
+
+                const playLine = waveformChart.options.plugins.annotation.annotations.playLine;
+                if (playLine) {
+                    playLine.xMin = xVal;
+                    playLine.xMax = xVal;
+                    playLine.display = true;
+                    waveformChart.update('none'); // アニメーションなしで即時描画
+                }
+
+                animationFrameId = requestAnimationFrame(updatePlayhead);
+            }
+
+            function stopPlayhead() {
+                isPlaying = false;
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                    animationFrameId = null;
+                }
+                if (waveformChart && waveformChart.options.plugins.annotation.annotations.playLine) {
+                    waveformChart.options.plugins.annotation.annotations.playLine.display = false;
+                    waveformChart.update('none');
+                }
+            }
+
+            playAudioBtn.addEventListener('click', playSelectedAudio);
+            stopAudioBtn.addEventListener('click', stopAudio);
+
+
+            async function copyCanvasImage(canvas) {
+                if (isSecureClipboardAvailable()) {
+                    try {
+                        const blob = await canvasToBlob(canvas, 'image/png');
+                        const item = new ClipboardItem({ 'image/png': blob });
+                        await navigator.clipboard.write([item]);
+                        return { mode: 'image' };
+                    } catch (e) {
+                        console.warn("ClipboardItem write failed, falling back to execCommand...", e);
+                    }
+                }
+
+                const dataUrl = canvas.toDataURL('image/png');
+                const textArea = document.createElement("textarea");
+                textArea.value = dataUrl;
+                textArea.style.top = "0";
+                textArea.style.left = "0";
+                textArea.style.position = "fixed";
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+
+                try {
+                    const successful = document.execCommand('copy');
+                    document.body.removeChild(textArea);
+                    if (successful) {
+                        return { mode: 'text-dataurl' };
+                    } else {
+                        throw new Error('execCommand failed');
+                    }
+                } catch (err) {
+                    if (document.body.contains(textArea)) {
+                        document.body.removeChild(textArea);
+                    }
+                    throw new Error('この環境ではクリップボードコピーに対応していません');
+                }
+            }
+
+            async function saveCanvasImage(canvas, filename) {
+                const blob = await canvasToBlob(canvas, 'image/png');
+                const url = window.URL.createObjectURL(blob);
+                
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.download = filename;
+                
+                document.body.appendChild(a);
+                a.click();
+                
+                setTimeout(() => {
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                }, 200);
+            }
+
+            // -----------------------------
+            // コピー処理設定
+            // -----------------------------
+            function setupCopyButton(btnId, canvasId) {
+                const btn = document.getElementById(btnId);
+                if (!btn) return;
+
+                btn.addEventListener('click', async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    const canvas = document.getElementById(canvasId);
+                    if (!canvas || canvas.width === 0 || canvas.height === 0) {
+                        showMessage('グラフがまだ描画されていません。', 'error');
+                        return;
+                    }
+
+                    btn.dataset.originalHtml = btn.innerHTML;
+                    btn.innerHTML = '<span class="text-xs text-blue-600 font-bold">処理中...</span>';
+
+                    try {
+                        const result = await copyCanvasImage(canvas);
+
+                        if (result.mode === 'image') {
+                            setTemporaryButtonState(
+                                btn,
+                                '<span class="text-xs text-green-600 font-bold">画像コピー完了</span>'
+                            );
+                            showMessage('グラフ画像をクリップボードにコピーしました。', 'success');
+                        } else {
+                            setTemporaryButtonState(
+                                btn,
+                                '<span class="text-xs text-amber-600 font-bold">代替コピー完了</span>'
+                            );
+                            showMessage('プレビュー環境の制限により、画像データ(文字列)をコピーしました。', 'info');
+                        }
+                    } catch (err) {
+                        console.warn('Clipboard copy block handled:', err);
+                        setTemporaryButtonState(
+                            btn,
+                            '<span class="text-xs text-red-500 font-bold">コピー不可</span>'
+                        );
+                        showMessage(err.message + ' 横の「画像保存」をご利用いただくか、ファイルをPCに保存してローカル環境で開いてみてください。', 'error');
+                    }
+                });
+            }
+
+            // -----------------------------
+            // 保存（ダウンロード）処理設定
+            // -----------------------------
+            function setupDownloadButton(btnId, canvasId, filename) {
+                const btn = document.getElementById(btnId);
+                if (!btn) return;
+
+                btn.addEventListener('click', async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    const canvas = document.getElementById(canvasId);
+                    if (!canvas || canvas.width === 0 || canvas.height === 0) {
+                        showMessage('グラフがまだ描画されていません。', 'error');
+                        return;
+                    }
+
+                    btn.dataset.originalHtml = btn.innerHTML;
+                    btn.innerHTML = '<span class="text-xs text-blue-600 font-bold">処理中...</span>';
+
+                    try {
+                        await saveCanvasImage(canvas, filename);
+                        
+                        setTemporaryButtonState(
+                            btn,
+                            '<span class="text-xs text-green-600 font-bold">保存完了</span>'
+                        );
+                        showMessage('画像のダウンロードを開始しました。', 'success');
+                    } catch (err) {
+                        console.error('Save error:', err);
+                        setTemporaryButtonState(
+                            btn,
+                            '<span class="text-xs text-red-500 font-bold">保存失敗</span>'
+                        );
+                        showMessage('画像保存に失敗しました。', 'error');
+                    }
+                });
+            }
+
+            setupCopyButton('copy-waveform-btn', 'waveform-chart');
+            setupDownloadButton('save-waveform-btn', 'waveform-chart', 'waveform_chart.png');
+            
+            setupCopyButton('copy-fft-btn', 'fft-chart');
+            setupDownloadButton('save-fft-btn', 'fft-chart', 'fft_spectrum_chart.png');
+
+
+            // --- FFTグラフの軸範囲変更イベント ---
+            function updateFFTChartScale() {
+                if (!fftChart) return;
+                
+                const xMax = parseFloat(xAxisMaxInput.value);
+                if (!isNaN(xMax) && xMax > 0) {
+                    fftChart.options.scales.x.max = xMax;
+                } else {
+                    delete fftChart.options.scales.x.max;
+                }
+
+                const yMax = parseFloat(yAxisMaxInput.value);
+                if (!isNaN(yMax) && yMax > 0) {
+                    fftChart.options.scales.y.max = yMax;
+                } else {
+                    delete fftChart.options.scales.y.max;
+                }
+
+                fftChart.update('none');
+            }
+
+            xAxisMaxInput.addEventListener('input', updateFFTChartScale);
+            yAxisMaxInput.addEventListener('input', updateFFTChartScale);
+
+            // --- 波形グラフの軸範囲変更イベント ---
+            function updateWaveformChartScale() {
+                if (!waveformChart) return;
+
+                const xMin = parseFloat(waveXMinInput.value);
+                if (!isNaN(xMin)) waveformChart.options.scales.x.min = xMin;
+                else delete waveformChart.options.scales.x.min;
+
+                const xMax = parseFloat(waveXMaxInput.value);
+                if (!isNaN(xMax)) waveformChart.options.scales.x.max = xMax;
+                else delete waveformChart.options.scales.x.max;
+
+                const yMin = parseFloat(waveYMinInput.value);
+                if (!isNaN(yMin)) waveformChart.options.scales.y.min = yMin;
+                else delete waveformChart.options.scales.y.min;
+
+                const yMax = parseFloat(waveYMaxInput.value);
+                if (!isNaN(yMax)) waveformChart.options.scales.y.max = yMax;
+                else delete waveformChart.options.scales.y.max;
+
+                waveformChart.update('none');
+            }
+
+            waveXMinInput.addEventListener('input', updateWaveformChartScale);
+            waveXMaxInput.addEventListener('input', updateWaveformChartScale);
+            waveYMinInput.addEventListener('input', updateWaveformChartScale);
+            waveYMaxInput.addEventListener('input', updateWaveformChartScale);
+
+
+            // デモデータの生成と読み込み
+            demoBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                const fs = 8000;
+                const duration = 3.0; // 3秒間のデータ
+                let csv = "time,value\n";
+                for(let i = 0; i < fs * duration; i++){
+                    const t = i / fs;
+                    let y = (Math.random() - 0.5) * 0.5; // ノイズ
+                    if (t < 1.5) {
+                        y += Math.sin(2 * Math.PI * 440 * t); // 前半は 440Hz
+                    } else {
+                        y += 0.8 * Math.sin(2 * Math.PI * 880 * t); // 後半は 880Hz
+                    }
+                    csv += `${t.toFixed(4)},${y.toFixed(4)}\n`;
+                }
+                const blob = new Blob([csv], { type: 'text/csv' });
+                const file = new File([blob], 'demo_dynamic_freq.csv', { type: 'text/csv' });
+                handleFile(file);
+            });
+
+            // メッセージ表示関数
+            function showMessage(msg, type = 'info') {
+                messageBox.classList.remove('hidden', 'bg-red-100', 'text-red-800', 'bg-green-100', 'text-green-800', 'bg-blue-100', 'text-blue-800');
+                loadingIcon.classList.add('hidden');
+
+                if (type === 'error') {
+                    messageBox.classList.add('bg-red-100', 'text-red-800');
+                } else if (type === 'loading') {
+                    messageBox.classList.add('bg-blue-100', 'text-blue-800');
+                    loadingIcon.classList.remove('hidden');
+                } else {
+                    messageBox.classList.add('bg-green-100', 'text-green-800');
+                }
+                messageText.textContent = msg;
+            }
+
+            // ファイル読み込み処理
+            function handleFile(file) {
+                const fileName = file.name.toLowerCase();
+                const isCSV = fileName.endsWith('.csv');
+                const isWAV = fileName.endsWith('.wav');
+
+                if (!isCSV && !isWAV) {
+                    showMessage('CSVまたはWAVファイルを選択してください。', 'error');
+                    return;
+                }
+                
+                showMessage('データを読み込み中...', 'loading');
+                resultsDiv.classList.add('hidden');
+                colSelectArea.classList.add('hidden');
+                colSelectArea.classList.remove('flex');
+                
+                if (isCSV) {
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        const text = e.target.result;
+                        showMessage('データを読み込み中...', 'loading');
+                        
+                        setTimeout(() => {
+                            try {
+                                parseCSV(text);
+                                showMessage('解析の準備が完了しました。範囲を選択してください。', 'success');
+                                resultsDiv.classList.remove('hidden');
+                            } catch (err) {
+                                console.error(err);
+                                showMessage('解析中にエラーが発生しました: ' + err.message, 'error');
+                            }
+                        }, 50);
+                    };
+                    reader.onerror = () => showMessage('ファイルの読み込みに失敗しました。', 'error');
+                    reader.readAsText(file);
+                } else if (isWAV) {
+                    const reader = new FileReader();
+                    reader.onload = async (e) => {
+                        try {
+                            showMessage('WAVデータをデコード中...', 'loading');
+                            const arrayBuffer = e.target.result;
+                            
+                            if (!audioCtx) {
+                                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                                audioCtx = new AudioContext();
+                            }
+                            
+                            const audioBuffer = await new Promise((resolve, reject) => {
+                                audioCtx.decodeAudioData(arrayBuffer, resolve, reject);
+                            });
+                            
+                            currentDataType = 'wav';
+                            globalFs = audioBuffer.sampleRate;
+                            globalAudioBuffer = audioBuffer;
+                            playAudioBtn.classList.remove('hidden');
+
+                            // WAV時はサンプリング周波数を固定化
+                            fsInput.value = globalFs;
+                            fsInput.readOnly = true;
+                            fsInput.classList.add('bg-slate-100', 'text-slate-500');
+
+                            // 1ch目の波形データを取得
+                            const channelData = audioBuffer.getChannelData(0);
+                            globalYData = channelData; // Float32Arrayをそのまま利用
+                            globalTData = new Float32Array(channelData.length);
+                            for(let i = 0; i < channelData.length; i++) {
+                                globalTData[i] = i / globalFs;
+                            }
+
+                            drawWaveform(globalTData, globalYData);
+                            initSlider();
+
+                            showMessage('WAVの解析準備が完了しました。範囲を選択してください。', 'success');
+                            resultsDiv.classList.remove('hidden');
+
+                        } catch (err) {
+                            console.error(err);
+                            showMessage('WAVファイルのデコードに失敗しました: ' + err.message, 'error');
+                        }
+                    };
+                    reader.onerror = () => showMessage('ファイルの読み込みに失敗しました。', 'error');
+                    reader.readAsArrayBuffer(file);
+                }
+            }
+
+            // --- CSVのパースと複数列データの保持 ---
+            function parseCSV(csvText) {
+                currentDataType = 'csv';
+                fsInput.readOnly = false;
+                fsInput.classList.remove('bg-slate-100', 'text-slate-500');
+
+                const lines = csvText.trim().split('\n');
+                
+                let headers = [];
+                let columns = [];
+                let startIndex = 0;
+
+                // 1行目がヘッダーかどうか判定
+                if (lines.length > 0) {
+                    const firstLineCols = lines[0].split(/[,\t]/).map(s => s.trim()).filter(s => s !== '');
+                    // 数字に変換できない要素が含まれていればヘッダーとみなす
+                    if (firstLineCols.some(c => isNaN(parseFloat(c)))) {
+                        headers = firstLineCols;
+                        startIndex = 1;
+                    } else {
+                        // ヘッダーなしの場合はデフォルトヘッダーを作成
+                        headers = firstLineCols.map((_, i) => `列 ${i + 1}`);
+                    }
+                    
+                    // columnsの初期化
+                    for (let i = 0; i < headers.length; i++) {
+                        columns.push([]);
+                    }
+                }
+
+                if (headers.length === 0) {
+                    throw new Error("データが見つかりません。");
+                }
+
+                for (let i = startIndex; i < lines.length; i++) {
+                    const line = lines[i];
+                    if (!line.trim()) continue;
+                    
+                    const cols = line.split(/[,\t]/).map(s => s.trim());
+                    // 最初の行の列数に合わせてデータを追加
+                    for (let j = 0; j < headers.length; j++) {
+                        const val = parseFloat(cols[j]);
+                        columns[j].push(isNaN(val) ? 0 : val); // 空欄やエラー値は0にする
+                    }
+                }
+
+                if (columns[0].length < 4) {
+                    throw new Error("解析に十分なデータがありません。");
+                }
+
+                globalHeaders = headers;
+                globalColumns = columns;
+
+                updateColumnSelectors();
+                applySelectedColumns();
+            }
+
+            // 列選択UIの更新
+            function updateColumnSelectors() {
+                xColSelect.innerHTML = '<option value="-1">自動生成 (インデックス)</option>';
+                yColSelect.innerHTML = '';
+
+                globalHeaders.forEach((header, index) => {
+                    const optionX = document.createElement('option');
+                    optionX.value = index;
+                    optionX.textContent = header;
+                    xColSelect.appendChild(optionX);
+
+                    const optionY = document.createElement('option');
+                    optionY.value = index;
+                    optionY.textContent = header;
+                    yColSelect.appendChild(optionY);
+                });
+
+                // デフォルト選択設定: X軸は必ず自動生成（-1）
+                xColSelect.value = "-1"; 
+                
+                // Y軸の復元: 前回選択したインデックスがあればそれを選び、なければデフォルト（複数列なら1、1列なら0）にする
+                if (lastSelectedYColIdx !== null && lastSelectedYColIdx < globalHeaders.length) {
+                    yColSelect.value = lastSelectedYColIdx.toString();
+                } else {
+                    if (globalHeaders.length >= 2) {
+                        yColSelect.value = "1"; // 複数列の場合は2列目をY軸デフォルトに
+                    } else {
+                        yColSelect.value = "0"; // 1列の場合は1列目をY軸に
+                    }
+                }
+
+                // 初期状態として現在のY軸のインデックスを保存しておく
+                const currentYIdx = parseInt(yColSelect.value);
+                if (!isNaN(currentYIdx) && currentYIdx >= 0) {
+                    lastSelectedYColIdx = currentYIdx;
+                }
+                
+                colSelectArea.classList.remove('hidden');
+                colSelectArea.classList.add('flex');
+            }
+
+            // 選択された列を解析用データとして適用
+            function applySelectedColumns() {
+                const xIdx = parseInt(xColSelect.value);
+                const yIdx = parseInt(yColSelect.value);
+
+                globalYData = globalColumns[yIdx] || [];
+
+                globalFs = parseFloat(fsInput.value) || 1000;
+                let hasTime = false;
+
+                if (xIdx >= 0) {
+                    globalTData = globalColumns[xIdx];
+                    hasTime = true;
+                }
+
+                if (hasTime && globalTData.length > 1) {
+                    const totalTime = globalTData[globalTData.length - 1] - globalTData[0];
+                    if (totalTime > 0) {
+                        globalFs = (globalTData.length - 1) / totalTime;
+                        fsInput.value = Math.round(globalFs * 100) / 100;
+                    }
+                } else {
+                    globalTData = new Array(globalYData.length);
+                    for(let i = 0; i < globalYData.length; i++) globalTData[i] = i / globalFs;
+                }
+
+                createAudioBuffer();
+                drawWaveform(globalTData, globalYData);
+                initSlider();
+            }
+
+            // スライダーの初期化とイベント設定
+            function initSlider() {
+                const sliderElem = document.getElementById('time-slider');
+                
+                if (rangeSliderInstance) {
+                    rangeSliderInstance.destroy();
+                }
+
+                const maxIdx = globalYData.length - 1;
+                
+                noUiSlider.create(sliderElem, {
+                    start: [0, maxIdx],
+                    connect: true,
+                    range: {
+                        'min': 0,
+                        'max': maxIdx
+                    },
+                    step: 1,
+                    format: {
+                        to: value => Math.round(value),
+                        from: value => Math.round(value)
+                    }
+                });
+
+                rangeSliderInstance = sliderElem.noUiSlider;
+                const rangeTextElem = document.getElementById('range-text');
+
+                rangeSliderInstance.on('slide', (values) => {
+                    const sIdx = values[0];
+                    const eIdx = values[1];
+                    updateWaveformAnnotation(sIdx, eIdx);
+                    rangeTextElem.textContent = `選択範囲: ${globalTData[sIdx].toFixed(3)}s 〜 ${globalTData[eIdx].toFixed(3)}s (${eIdx - sIdx + 1} サンプル)`;
+                });
+
+                rangeSliderInstance.on('set', (values) => {
+                    const sIdx = values[0];
+                    const eIdx = values[1];
+                    updateWaveformAnnotation(sIdx, eIdx);
+                    rangeTextElem.textContent = `選択範囲: ${globalTData[sIdx].toFixed(3)}s 〜 ${globalTData[eIdx].toFixed(3)}s (${eIdx - sIdx + 1} サンプル)`;
+                    
+                    stopAudio(); // 範囲が変わったら音を止める
+
+                    if (eIdx - sIdx < 4) {
+                        showMessage("解析範囲が狭すぎます。", "error");
+                        return;
+                    }
+                    
+                    showMessage("指定範囲でFFT解析中...", "loading");
+                    setTimeout(() => {
+                        performFFT(sIdx, eIdx);
+                        showMessage("解析が完了しました。", "success");
+                    }, 10);
+                });
+
+                rangeTextElem.textContent = `選択範囲: ${globalTData[0].toFixed(3)}s 〜 ${globalTData[maxIdx].toFixed(3)}s (${maxIdx + 1} サンプル)`;
+                performFFT(0, maxIdx);
+                updateWaveformAnnotation(0, maxIdx);
+            }
+
+            // グラフ上の赤い選択枠の更新
+            function updateWaveformAnnotation(startIdx, endIdx) {
+                if (!waveformChart) return;
+                waveformChart.options.plugins.annotation.annotations.selectionBox.xMin = globalTData[startIdx];
+                waveformChart.options.plugins.annotation.annotations.selectionBox.xMax = globalTData[endIdx];
+                waveformChart.update('none');
+            }
+
+            // 指定された範囲のデータでFFTを実行
+            function performFFT(startIdx, endIdx) {
+                const ySliced = globalYData.slice(startIdx, endIdx + 1);
+                const tSliced = globalTData.slice(startIdx, endIdx + 1);
+                const dataLen = ySliced.length;
+
+                let N = 1;
+                while (N * 2 <= dataLen && N * 2 <= 65536) {
+                    N *= 2;
+                }
+
+                const real = new Float64Array(N);
+                const imag = new Float64Array(N);
+                for (let i = 0; i < N; i++) {
+                    real[i] = ySliced[i];
+                    imag[i] = 0;
+                }
+
+                fftIterative(real, imag);
+
+                const halfN = N / 2;
+                const freqs = new Float64Array(halfN);
+                const amps = new Float64Array(halfN);
+                
+                for (let k = 0; k < halfN; k++) {
+                    freqs[k] = k * globalFs / N;
+                    const mag = Math.sqrt(real[k]*real[k] + imag[k]*imag[k]);
+                    amps[k] = (k === 0) ? mag / N : 2 * mag / N; 
+                }
+
+                exportTData = tSliced;
+                exportYData = ySliced;
+                exportFreqs = Array.from(freqs);
+                exportAmps = Array.from(amps);
+
+                drawFFT(freqs, amps);
+                findTopFrequencies(freqs, amps);
+            }
+
+            // --- CSVエクスポート処理 ---
+            function exportCSV() {
+                if (exportTData.length === 0 || exportFreqs.length === 0) {
+                    showMessage('エクスポートするデータがありません。', 'error');
+                    return;
+                }
+
+                let csvContent = "Original_Time(s),Original_Waveform,Sliced_Time(s),Sliced_Waveform,Frequency(Hz),Amplitude,Rank,Top_Frequency(Hz),Top_Amplitude\n";
+                const maxRows = Math.max(globalTData.length, exportTData.length, exportFreqs.length);
+                
+                for (let i = 0; i < maxRows; i++) {
+                    const ot = i < globalTData.length ? globalTData[i] : "";
+                    const oy = i < globalYData.length ? globalYData[i] : "";
+                    const st = i < exportTData.length ? exportTData[i] : "";
+                    const sy = i < exportYData.length ? exportYData[i] : "";
+                    const f = i < exportFreqs.length ? exportFreqs[i] : "";
+                    const a = i < exportAmps.length ? exportAmps[i] : "";
+                    const rank = i < exportTopFreqs.length ? i + 1 : "";
+                    const tf = i < exportTopFreqs.length ? exportTopFreqs[i].freq : "";
+                    const ta = i < exportTopFreqs.length ? exportTopFreqs[i].amp : "";
+                    
+                    csvContent += `${ot},${oy},${st},${sy},${f},${a},${rank},${tf},${ta}\n`;
+                }
+                
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.setAttribute("href", url);
+                link.setAttribute("download", "fft_results.csv");
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }
+
+            // --- Excel(画像付き)エクスポート処理 ---
+            async function exportExcel() {
+                const workbook = new ExcelJS.Workbook();
+                const sheet = workbook.addWorksheet('FFT Results');
+
+                sheet.addRow(["Original_Time(s)", "Original_Waveform", "Sliced_Time(s)", "Sliced_Waveform", "Frequency(Hz)", "Amplitude", "", "Rank", "Top_Frequency(Hz)", "Top_Amplitude"]);
+                
+                sheet.columns = [
+                    { width: 15 }, { width: 18 }, { width: 15 }, { width: 18 }, { width: 15 }, { width: 15 }, { width: 5 }, { width: 8 }, { width: 18 }, { width: 15 }
+                ];
+
+                const maxRows = Math.max(globalTData.length, exportTData.length, exportFreqs.length);
+                for (let i = 0; i < maxRows; i++) {
+                    const row = [
+                        i < globalTData.length ? globalTData[i] : null,
+                        i < globalYData.length ? globalYData[i] : null,
+                        i < exportTData.length ? exportTData[i] : null,
+                        i < exportYData.length ? exportYData[i] : null,
+                        i < exportFreqs.length ? exportFreqs[i] : null,
+                        i < exportAmps.length ? exportAmps[i] : null,
+                        null, 
+                        i < exportTopFreqs.length ? i + 1 : null,
+                        i < exportTopFreqs.length ? exportTopFreqs[i].freq : null,
+                        i < exportTopFreqs.length ? exportTopFreqs[i].amp : null
+                    ];
+                    sheet.addRow(row);
+                }
+
+                const waveformCanvas = document.getElementById('waveform-chart');
+                const waveformBase64 = waveformCanvas.toDataURL('image/png');
+                const waveformImageId = workbook.addImage({
+                    base64: waveformBase64,
+                    extension: 'png',
+                });
+                
+                const fftCanvas = document.getElementById('fft-chart');
+                const fftBase64 = fftCanvas.toDataURL('image/png');
+                const fftImageId = workbook.addImage({
+                    base64: fftBase64,
+                    extension: 'png',
+                });
+
+                sheet.addImage(waveformImageId, {
+                    tl: { col: 11, row: 1 },
+                    ext: { width: 600, height: 300 }
+                });
+                
+                sheet.addImage(fftImageId, {
+                    tl: { col: 11, row: 18 },
+                    ext: { width: 600, height: 300 }
+                });
+
+                const buffer = await workbook.xlsx.writeBuffer();
+                const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = "fft_results.xlsx";
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+            }
+
+            // --- FFT アルゴリズム (反復版 Cooley-Tukey法) ---
+            function bitReverse(num, bits) {
+                let reversed = 0;
+                for (let i = 0; i < bits; i++) {
+                    reversed = (reversed << 1) | (num & 1);
+                    num >>= 1;
+                }
+                return reversed;
+            }
+
+            function fftIterative(real, imag) {
+                const n = real.length;
+                const bits = Math.log2(n);
+                
+                for (let i = 0; i < n; i++) {
+                    const j = bitReverse(i, bits);
+                    if (i < j) {
+                        let tempR = real[i]; real[i] = real[j]; real[j] = tempR;
+                        let tempI = imag[i]; imag[i] = imag[j]; imag[j] = tempI;
+                    }
+                }
+                
+                for (let len = 2; len <= n; len <<= 1) {
+                    const angle = -2 * Math.PI / len;
+                    const wLenR = Math.cos(angle);
+                    const wLenI = Math.sin(angle);
+                    const halfLen = len >> 1;
+                    
+                    for (let i = 0; i < n; i += len) {
+                        let wR = 1;
+                        let wI = 0;
+                        for (let j = 0; j < halfLen; j++) {
+                            const uR = real[i + j];
+                            const uI = imag[i + j];
+                            const vR = real[i + j + halfLen] * wR - imag[i + j + halfLen] * wI;
+                            const vI = real[i + j + halfLen] * wI + imag[i + j + halfLen] * wR;
+                            
+                            real[i + j] = uR + vR;
+                            imag[i + j] = uI + vI;
+                            real[i + j + halfLen] = uR - vR;
+                            imag[i + j + halfLen] = uI - vI;
+                            
+                            const nextWR = wR * wLenR - wI * wLenI;
+                            const nextWI = wR * wLenI + wI * wLenR;
+                            wR = nextWR;
+                            wI = nextWI;
+                        }
+                    }
+                }
+            }
+
+            // --- 描画用ダウンサンプリング (ブラウザフリーズ防止) ---
+            function downsampleWaveform(t, y, maxPoints) {
+                if (t.length <= maxPoints) return { t, y };
+                const step = Math.ceil(t.length / maxPoints);
+                const resT = [], resY = [];
+                for (let i = 0; i < t.length; i += step) {
+                    resT.push(t[i]);
+                    resY.push(y[i]);
+                }
+                return { t: resT, y: resY };
+            }
+
+            function downsampleSpectrum(freqs, amps, maxPoints) {
+                if (freqs.length <= maxPoints) return { x: Array.from(freqs), y: Array.from(amps) };
+                const step = Math.ceil(freqs.length / maxPoints);
+                const resX = [], resY = [];
+                for (let i = 0; i < freqs.length; i += step) {
+                    let maxAmp = -Infinity;
+                    let maxIdx = i;
+                    for(let j = i; j < i + step && j < freqs.length; j++) {
+                        if(amps[j] > maxAmp) {
+                            maxAmp = amps[j];
+                            maxIdx = j;
+                        }
+                    }
+                    resX.push(freqs[maxIdx]);
+                    resY.push(maxAmp);
+                }
+                return { x: resX, y: resY };
+            }
+
+            // --- グラフ描画 ---
+            const customCanvasBackgroundColor = {
+                id: 'customCanvasBackgroundColor',
+                beforeDraw: (chart, args, options) => {
+                    const {ctx} = chart;
+                    ctx.save();
+                    ctx.globalCompositeOperation = 'destination-over';
+                    ctx.fillStyle = options.color || '#ffffff';
+                    ctx.fillRect(0, 0, chart.width, chart.height);
+                    ctx.restore();
+                }
+            };
+
+            function drawWaveform(t, y) {
+                const { t: dsT, y: dsY } = downsampleWaveform(t, y, 2000);
+                const ctx = document.getElementById('waveform-chart').getContext('2d');
+                
+                if (waveformChart) waveformChart.destroy();
+                
+                const scatterData = dsT.map((time, i) => ({ x: time, y: dsY[i] }));
+
+                const xMinVal = parseFloat(waveXMinInput.value);
+                const xMaxVal = parseFloat(waveXMaxInput.value);
+                const yMinVal = parseFloat(waveYMinInput.value);
+                const yMaxVal = parseFloat(waveYMaxInput.value);
+
+                waveformChart = new Chart(ctx, {
+                    type: 'line',
+                    plugins: [customCanvasBackgroundColor],
+                    data: {
+                        datasets: [{
+                            data: scatterData,
+                            borderColor: '#3b82f6', // Blue-500
+                            borderWidth: 1.5,
+                            pointRadius: 0,
+                            tension: 0.1
+                        }]
+                    },
+                    options: {
+                        devicePixelRatio: 3, 
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        animation: false,
+                        plugins: { 
+                            legend: { display: false },
+                            annotation: {
+                                annotations: {
+                                    selectionBox: {
+                                        type: 'box',
+                                        xMin: t[0], 
+                                        xMax: t[t.length - 1],
+                                        backgroundColor: 'rgba(239, 68, 68, 0.12)', 
+                                        borderColor: '#ef4444',
+                                        borderWidth: 2,
+                                        drawTime: 'beforeDatasetsDraw' 
+                                    },
+                                    playLine: { // 再生位置を示すアニメーション用バー
+                                        type: 'line',
+                                        xMin: 0,
+                                        xMax: 0,
+                                        borderColor: '#10b981', // Emerald-500
+                                        borderWidth: 2,
+                                        display: false,
+                                        drawTime: 'afterDatasetsDraw'
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: { 
+                                type: 'linear', 
+                                title: { display: true, text: '時間 (s)' }, 
+                                ticks: { maxTicksLimit: 8, callback: val => val.toFixed(3) },
+                                min: !isNaN(xMinVal) ? xMinVal : undefined,
+                                max: !isNaN(xMaxVal) ? xMaxVal : undefined
+                            },
+                            y: { 
+                                title: { display: true, text: '振幅' },
+                                min: !isNaN(yMinVal) ? yMinVal : undefined,
+                                max: !isNaN(yMaxVal) ? yMaxVal : undefined
+                            }
+                        }
+                    }
+                });
+            }
+
+            function drawFFT(freqs, amps) {
+                const { x: dsFreqs, y: dsAmps } = downsampleSpectrum(freqs, amps, 2000);
+                const ctx = document.getElementById('fft-chart').getContext('2d');
+                
+                if (fftChart) fftChart.destroy();
+                
+                const scatterData = dsFreqs.map((f, i) => ({ x: f, y: dsAmps[i] }));
+
+                const xMaxVal = parseFloat(xAxisMaxInput.value);
+                const xMaxOpt = (!isNaN(xMaxVal) && xMaxVal > 0) ? xMaxVal : undefined;
+                
+                const yMaxVal = parseFloat(yAxisMaxInput.value);
+                const yMaxOpt = (!isNaN(yMaxVal) && yMaxVal > 0) ? yMaxVal : undefined;
+
+                fftChart = new Chart(ctx, {
+                    type: 'line',
+                    plugins: [customCanvasBackgroundColor],
+                    data: {
+                        datasets: [{
+                            data: scatterData,
+                            borderColor: '#ef4444', // Red-500
+                            backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                            borderWidth: 1.5,
+                            pointRadius: 0,
+                            fill: true,
+                        }]
+                    },
+                    options: {
+                        devicePixelRatio: 3, 
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        animation: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            x: { 
+                                type: 'linear', 
+                                title: { display: true, text: '周波数 (Hz)' }, 
+                                ticks: { maxTicksLimit: 8, callback: val => val.toFixed(1) },
+                                max: xMaxOpt
+                            },
+                            y: { 
+                                title: { display: true, text: '振幅' }, 
+                                beginAtZero: true,
+                                max: yMaxOpt
+                            }
+                        }
+                    }
+                });
+            }
+
+            // --- ピーク(支配的な周波数)の検出 ---
+            function findTopFrequencies(freqs, amps) {
+                const peaks = [];
+                for (let i = 1; i < amps.length - 1; i++) {
+                    if (amps[i] > amps[i - 1] && amps[i] > amps[i + 1]) {
+                        peaks.push({ freq: freqs[i], amp: amps[i] });
+                    }
+                }
+                
+                peaks.sort((a, b) => b.amp - a.amp);
+                
+                const top5 = peaks.slice(0, 5);
+                exportTopFreqs = top5; 
+                
+                const listContainer = document.getElementById('top-freqs');
+                listContainer.innerHTML = '';
+                
+                if (top5.length === 0) {
+                    listContainer.innerHTML = '<li class="col-span-full text-slate-500 text-center py-4">明確なピークが見つかりませんでした。</li>';
+                    return;
+                }
+                
+                top5.forEach((p, index) => {
+                    const li = document.createElement('li');
+                    li.className = "flex items-center gap-4 p-4 bg-slate-50 rounded-xl border border-slate-200 hover:bg-slate-100 transition-colors";
+                    li.innerHTML = `
+                        <div class="flex-shrink-0 w-10 h-10 flex items-center justify-center rounded-full bg-blue-100 text-blue-700 font-bold text-lg">
+                            ${index + 1}
+                        </div>
+                        <div class="flex-1">
+                            <div class="text-xl font-bold text-slate-800">
+                                ${p.freq.toFixed(2)} <span class="text-sm font-normal text-slate-500">Hz</span>
+                            </div>
+                            <div class="text-sm text-slate-500 mt-0.5">
+                                振幅: <span class="font-medium text-slate-700">${p.amp.toFixed(4)}</span>
+                            </div>
+                        </div>
+                    `;
+                    listContainer.appendChild(li);
+                });
+            }
+        });
+    </script>
+</body>
+</html>
