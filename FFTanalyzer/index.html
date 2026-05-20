@@ -1083,7 +1083,7 @@
                             });
                         } catch (err) {
                             console.error(err);
-                            showMessage('WAV読込後の解析準備でエラーが発生しました: ' + err.message, 'error');
+                            showMessage('WAVファイルのデコードに失敗しました: ' + err.message, 'error');
                             return;
                         }
 
@@ -1120,7 +1120,7 @@
 
                         } catch (err) {
                             console.error(err);
-                            showMessage('WAVファイルのデコードに失敗しました: ' + err.message, 'error');
+                            showMessage('WAV読込後の解析準備でエラーが発生しました: ' + err.message, 'error');
                         }
                     };
                     reader.onerror = () => showMessage('ファイルの読み込みに失敗しました。', 'error');
