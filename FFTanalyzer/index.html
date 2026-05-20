@@ -173,6 +173,14 @@
                         <button type="button" id="mute-bg-audio-btn" class="px-2 text-xs border border-slate-300 rounded bg-white hover:bg-slate-50">環境音MUTE</button>
                         <div class="relative h-40 w-full"><canvas id="bg-waveform-chart"></canvas></div>
                     </div>
+                    <div class="mt-3 flex items-center gap-4 text-xs text-slate-600">
+                        <label class="flex items-center gap-1"><input type="checkbox" id="mute-main-audio">主音ミュート</label>
+                        <label class="flex items-center gap-1"><input type="checkbox" id="mute-bg-audio">環境音ミュート</label>
+                        <label class="flex items-center gap-1"><input type="checkbox" id="enable-bg-subtract" checked>環境音FFT差し引き</label>
+                    </div>
+                    <div class="relative h-40 w-full mt-3">
+                        <canvas id="bg-waveform-chart"></canvas>
+                    </div>
                     <!-- 範囲選択スライダー -->
                     <div class="mt-10 mb-4 px-6">
                         <div id="time-slider"></div>
