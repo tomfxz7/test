@@ -58,6 +58,18 @@
             </div>
         </div>
 
+        <div class="mt-4 bg-white border border-slate-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+                <p class="font-medium text-slate-700">環境音WAV（任意）</p>
+                <p id="bg-wav-status" class="text-xs text-slate-500">未設定（通常FFT）</p>
+            </div>
+            <div class="flex items-center gap-2">
+                <input type="file" id="bg-wav-input" class="hidden" accept=".wav,audio/wav">
+                <button type="button" id="bg-wav-btn" class="bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium py-2 px-3 rounded-lg">環境音WAVを読み込む</button>
+                <button type="button" id="clear-bg-wav-btn" class="text-sm text-slate-600 hover:text-slate-800 underline">解除</button>
+            </div>
+        </div>
+
         <div class="mt-4 text-center">
             <button type="button" id="demo-btn" class="text-sm text-blue-600 hover:text-blue-800 underline transition-colors">
                 サンプルデータで試す（前半440Hz / 後半880Hz）
@@ -66,13 +78,13 @@
 
         <!-- 設定・列選択エリア -->
         <div id="column-select-area" class="hidden mt-6 bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex-wrap items-center gap-6 animate-fade-in">
-            <div class="flex items-center gap-2">
+            <div id="x-col-control" class="flex items-center gap-2">
                 <label for="x-col-select" class="font-medium text-slate-700 text-sm">X軸 (時間):</label>
                 <select id="x-col-select" class="border border-slate-300 rounded-md p-1.5 min-w-[120px] text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white">
                     <option value="-1">自動生成 (インデックス)</option>
                 </select>
             </div>
-            <div class="flex items-center gap-2">
+            <div id="y-col-control" class="flex items-center gap-2">
                 <label for="y-col-select" class="font-medium text-slate-700 text-sm">Y軸 (波形データ):</label>
                 <select id="y-col-select" class="border border-slate-300 rounded-md p-1.5 min-w-[120px] text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white">
                 </select>
@@ -249,6 +261,8 @@
             const dropZone = document.getElementById('drop-zone');
             const fileInput = document.getElementById('file-input');
             const fsInput = document.getElementById('fs-input');
+            const xColControl = document.getElementById('x-col-control');
+            const yColControl = document.getElementById('y-col-control');
             const resultsDiv = document.getElementById('results');
             const demoBtn = document.getElementById('demo-btn');
             
@@ -258,6 +272,10 @@
 
             const pasteArea = document.getElementById('paste-area');
             const pasteBtn = document.getElementById('paste-btn');
+            const bgWavInput = document.getElementById('bg-wav-input');
+            const bgWavBtn = document.getElementById('bg-wav-btn');
+            const clearBgWavBtn = document.getElementById('clear-bg-wav-btn');
+            const bgWavStatus = document.getElementById('bg-wav-status');
             const exportCsvBtn = document.getElementById('export-csv-btn');
             const exportExcelBtn = document.getElementById('export-excel-btn');
             
@@ -299,6 +317,9 @@
             let globalTData = [];
             let globalYData = [];
             let globalFs = 1000;
+            let bgWavData = null;
+            let bgWavFs = null;
+            let bgWavName = '';
             let rangeSliderInstance = null;
             let lastSelectedYColIdx = null; // 列名ではなくインデックスで記憶する
 
@@ -334,6 +355,20 @@
                     handleFile(e.target.files[0]);
                 }
                 e.target.value = ''; // 同じファイルを再選択可能にする
+            });
+
+            bgWavBtn.addEventListener('click', () => bgWavInput.click());
+            bgWavInput.addEventListener('change', (e) => {
+                if (e.target.files.length > 0) {
+                    handleBackgroundWavFile(e.target.files[0]);
+                }
+                e.target.value = '';
+            });
+            clearBgWavBtn.addEventListener('click', () => {
+                bgWavData = null;
+                bgWavFs = null;
+                bgWavName = '';
+                bgWavStatus.textContent = '未設定（通常FFT）';
             });
 
             // ペースト実行ボタン
@@ -859,6 +894,37 @@
                 messageText.textContent = msg;
             }
 
+
+            async function handleBackgroundWavFile(file) {
+                const fileName = file.name.toLowerCase();
+                if (!fileName.endsWith('.wav')) {
+                    showMessage('環境音はWAVファイルを選択してください。', 'error');
+                    return;
+                }
+                const reader = new FileReader();
+                reader.onload = async (e) => {
+                    try {
+                        const arrayBuffer = e.target.result;
+                        if (!audioCtx) {
+                            const AudioContext = window.AudioContext || window.webkitAudioContext;
+                            audioCtx = new AudioContext();
+                        }
+                        const audioBuffer = await new Promise((resolve, reject) => {
+                            audioCtx.decodeAudioData(arrayBuffer, resolve, reject);
+                        });
+                        bgWavData = audioBuffer.getChannelData(0).slice();
+                        bgWavFs = audioBuffer.sampleRate;
+                        bgWavName = file.name;
+                        bgWavStatus.textContent = `設定中: ${bgWavName} (${Math.round(bgWavFs)} Hz)`;
+                        showMessage('環境音WAVを読み込みました。', 'success');
+                    } catch (err) {
+                        showMessage('環境音WAVの読み込みに失敗しました: ' + err.message, 'error');
+                    }
+                };
+                reader.onerror = () => showMessage('環境音WAVファイルの読み込みに失敗しました。', 'error');
+                reader.readAsArrayBuffer(file);
+            }
+
             // ファイル読み込み処理
             function handleFile(file) {
                 const fileName = file.name.toLowerCase();
@@ -915,10 +981,14 @@
                             globalAudioBuffer = audioBuffer;
                             playAudioBtn.classList.remove('hidden');
 
-                            // WAV時はサンプリング周波数を固定化
+                            // WAV時はサンプリング周波数を固定化し、表示する
                             fsInput.value = globalFs;
                             fsInput.readOnly = true;
                             fsInput.classList.add('bg-slate-100', 'text-slate-500');
+                            xColControl.classList.add('hidden');
+                            yColControl.classList.add('hidden');
+                            colSelectArea.classList.remove('hidden');
+                            colSelectArea.classList.add('flex');
 
                             // 1ch目の波形データを取得
                             const channelData = audioBuffer.getChannelData(0);
@@ -949,6 +1019,8 @@
                 currentDataType = 'csv';
                 fsInput.readOnly = false;
                 fsInput.classList.remove('bg-slate-100', 'text-slate-500');
+                xColControl.classList.remove('hidden');
+                yColControl.classList.remove('hidden');
 
                 const lines = csvText.trim().split('\n');
                 
@@ -1144,39 +1216,54 @@
             function performFFT(startIdx, endIdx) {
                 const ySliced = globalYData.slice(startIdx, endIdx + 1);
                 const tSliced = globalTData.slice(startIdx, endIdx + 1);
-                const dataLen = ySliced.length;
+                const { freqs, amps } = computeFFT(ySliced, globalFs);
 
-                let N = 1;
-                while (N * 2 <= dataLen && N * 2 <= 65536) {
-                    N *= 2;
-                }
-
-                const real = new Float64Array(N);
-                const imag = new Float64Array(N);
-                for (let i = 0; i < N; i++) {
-                    real[i] = ySliced[i];
-                    imag[i] = 0;
-                }
-
-                fftIterative(real, imag);
-
-                const halfN = N / 2;
-                const freqs = new Float64Array(halfN);
-                const amps = new Float64Array(halfN);
-                
-                for (let k = 0; k < halfN; k++) {
-                    freqs[k] = k * globalFs / N;
-                    const mag = Math.sqrt(real[k]*real[k] + imag[k]*imag[k]);
-                    amps[k] = (k === 0) ? mag / N : 2 * mag / N; 
+                let finalAmps = amps;
+                if (bgWavData && bgWavFs) {
+                    if (Math.abs(bgWavFs - globalFs) > 1e-6) {
+                        showMessage(`環境音WAVのサンプリング周波数(${bgWavFs}Hz)が一致しないため差分FFTを無効化しました。`, 'error');
+                    } else {
+                        const bgSlice = bgWavData.slice(startIdx, Math.min(endIdx + 1, bgWavData.length));
+                        if (bgSlice.length >= 8) {
+                            const bgFft = computeFFT(bgSlice, globalFs);
+                            const n = Math.min(amps.length, bgFft.amps.length);
+                            const diff = new Float64Array(n);
+                            for (let i = 0; i < n; i++) diff[i] = Math.max(amps[i] - bgFft.amps[i], 0);
+                            finalAmps = diff;
+                            bgWavStatus.textContent = `設定中: ${bgWavName}（差分FFT適用）`;
+                        }
+                    }
                 }
 
                 exportTData = tSliced;
                 exportYData = ySliced;
-                exportFreqs = Array.from(freqs);
-                exportAmps = Array.from(amps);
+                exportFreqs = Array.from(freqs.slice(0, finalAmps.length));
+                exportAmps = Array.from(finalAmps);
 
-                drawFFT(freqs, amps);
-                findTopFrequencies(freqs, amps);
+                drawFFT(freqs.slice(0, finalAmps.length), finalAmps);
+                findTopFrequencies(freqs.slice(0, finalAmps.length), finalAmps);
+            }
+
+            function computeFFT(yData, fs) {
+                const dataLen = yData.length;
+                let N = 1;
+                while (N * 2 <= dataLen && N * 2 <= 65536) N *= 2;
+                const real = new Float64Array(N);
+                const imag = new Float64Array(N);
+                for (let i = 0; i < N; i++) {
+                    real[i] = yData[i] ?? 0;
+                    imag[i] = 0;
+                }
+                fftIterative(real, imag);
+                const halfN = N / 2;
+                const freqs = new Float64Array(halfN);
+                const amps = new Float64Array(halfN);
+                for (let k = 0; k < halfN; k++) {
+                    freqs[k] = k * fs / N;
+                    const mag = Math.sqrt(real[k]*real[k] + imag[k]*imag[k]);
+                    amps[k] = (k === 0) ? mag / N : 2 * mag / N;
+                }
+                return { freqs, amps };
             }
 
             // --- CSVエクスポート処理 ---
