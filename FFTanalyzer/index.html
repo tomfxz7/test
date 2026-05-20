@@ -1360,8 +1360,8 @@
                 exportFreqs = Array.from(freqs.slice(0, finalAmps.length));
                 exportAmps = Array.from(finalAmps);
 
-                drawFFT(freqs.slice(0, amps.length), amps, 'fft-chart', false);
-                drawFFT(freqs.slice(0, finalAmps.length), finalAmps, 'fft-diff-chart', true);
+                drawFFT(freqs.slice(0, amps.length), amps, 'fft-chart');
+                drawFFT(freqs.slice(0, finalAmps.length), finalAmps, 'fft-diff-chart');
                 findTopFrequencies(freqs.slice(0, finalAmps.length), finalAmps);
             }
 
@@ -1671,7 +1671,8 @@
                 });
             }
 
-            function drawFFT(freqs, amps, canvasId = 'fft-chart', isDiff = false) {
+            function drawFFT(freqs, amps, canvasId = 'fft-chart') {
+                const isDiff = canvasId === 'fft-diff-chart';
                 const { x: dsFreqs, y: dsAmps } = downsampleSpectrum(freqs, amps, 2000);
                 const ctx = document.getElementById(canvasId).getContext('2d');
 
