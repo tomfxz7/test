@@ -1068,19 +1068,26 @@
                 } else if (isWAV) {
                     const reader = new FileReader();
                     reader.onload = async (e) => {
+                        showMessage('WAVデータをデコード中...', 'loading');
+                        const arrayBuffer = e.target.result;
+
+                        if (!audioCtx) {
+                            const AudioContext = window.AudioContext || window.webkitAudioContext;
+                            audioCtx = new AudioContext();
+                        }
+
+                        let audioBuffer;
                         try {
-                            showMessage('WAVデータをデコード中...', 'loading');
-                            const arrayBuffer = e.target.result;
-                            
-                            if (!audioCtx) {
-                                const AudioContext = window.AudioContext || window.webkitAudioContext;
-                                audioCtx = new AudioContext();
-                            }
-                            
-                            const audioBuffer = await new Promise((resolve, reject) => {
+                            audioBuffer = await new Promise((resolve, reject) => {
                                 audioCtx.decodeAudioData(arrayBuffer, resolve, reject);
                             });
-                            
+                        } catch (err) {
+                            console.error(err);
+                            showMessage('WAV読込後の解析準備でエラーが発生しました: ' + err.message, 'error');
+                            return;
+                        }
+
+                        try {
                             currentDataType = 'wav';
                             globalFs = audioBuffer.sampleRate;
                             globalAudioBuffer = audioBuffer;
