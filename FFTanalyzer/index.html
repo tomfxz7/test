@@ -1073,6 +1073,7 @@
                 const idx = parseInt(wavChannelSelect.value) || 0;
                 const channelData = globalWavBuffer.getChannelData(idx);
                 globalYData = channelData;
+                globalAudioBuffer = createMonoPlaybackBuffer(channelData, globalFs);
                 globalTData = new Float32Array(channelData.length);
                 for (let i = 0; i < channelData.length; i++) globalTData[i] = i / globalFs;
                 drawWaveform(globalTData, globalYData);
@@ -1083,6 +1084,7 @@
                 if (!globalAmbientBuffer) return;
                 const idx = parseInt(ambientChannelSelect.value) || 0;
                 globalAmbientYData = globalAmbientBuffer.getChannelData(idx);
+                ambientAudioBuffer = createMonoPlaybackBuffer(globalAmbientYData, globalFs);
                 drawAmbientWaveform(globalTData, globalAmbientYData);
                 const sIdx = parseInt(rangeSliderInstance.get()[0]);
                 const eIdx = parseInt(rangeSliderInstance.get()[1]);
@@ -1113,6 +1115,7 @@
                     }
                     ambientChannelSelect.value = '0';
                     globalAmbientYData = buffer.getChannelData(0);
+                    ambientAudioBuffer = createMonoPlaybackBuffer(globalAmbientYData, globalFs);
                     ambientChannelGroup.classList.remove('hidden');
                     ambientChannelGroup.classList.add('flex');
                     ambientSubtractGroup.classList.remove('hidden');
@@ -1383,6 +1386,14 @@
                     amps[k] = (k === 0) ? mag / N : 2 * mag / N;
                 }
                 return { freqs, amps };
+            }
+
+            function createMonoPlaybackBuffer(signal, sampleRate) {
+                if (!audioCtx) return null;
+                const monoBuffer = audioCtx.createBuffer(1, signal.length, sampleRate);
+                const monoData = monoBuffer.getChannelData(0);
+                for (let i = 0; i < signal.length; i++) monoData[i] = signal[i];
+                return monoBuffer;
             }
 
             // --- CSVエクスポート処理 ---
