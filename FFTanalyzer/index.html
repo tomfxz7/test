@@ -179,6 +179,15 @@
                             </div>
                         </div>
                     </div>
+                    <div id="ambient-wave-wrap" class="hidden mt-4">
+                        <div class="flex justify-between items-center mb-1">
+                            <span class="text-sm text-slate-600">環境音波形</span>
+                            <button type="button" id="mute-ambient-btn" class="px-2 py-1 text-xs border rounded text-slate-700">環境音ミュート</button>
+                        </div>
+                        <div class="relative h-48 w-full">
+                            <canvas id="ambient-waveform-chart"></canvas>
+                        </div>
+                    </div>
                     <!-- 範囲選択スライダー -->
                     <div class="mt-10 mb-4 px-6">
                         <div id="time-slider"></div>
