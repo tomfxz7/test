@@ -93,6 +93,10 @@
                 <label for="ambient-channel-select" class="font-medium text-slate-700 text-sm">環境音チャンネル:</label>
                 <select id="ambient-channel-select" class="border border-slate-300 rounded-md p-1.5 min-w-[100px] text-sm bg-white"></select>
             </div>
+            <label id="ambient-subtract-group" class="hidden items-center gap-2 text-sm text-slate-700">
+                <input type="checkbox" id="ambient-subtract-toggle" class="accent-red-500" checked>
+                環境音スペクトル差し引き
+            </label>
             <p class="text-xs text-slate-500 w-full lg:w-auto">※X軸に時間データを選択した場合、またはWAVファイルの場合は自動設定されます。</p>
         </div>
 
@@ -177,15 +181,6 @@
                                     <canvas id="ambient-waveform-chart"></canvas>
                                 </div>
                             </div>
-                        </div>
-                    </div>
-                    <div id="ambient-wave-wrap" class="hidden mt-4">
-                        <div class="flex justify-between items-center mb-1">
-                            <span class="text-sm text-slate-600">環境音波形</span>
-                            <button type="button" id="mute-ambient-btn" class="px-2 py-1 text-xs border rounded text-slate-700">環境音ミュート</button>
-                        </div>
-                        <div class="relative h-48 w-full">
-                            <canvas id="ambient-waveform-chart"></canvas>
                         </div>
                     </div>
                     <!-- 範囲選択スライダー -->
@@ -292,10 +287,12 @@
             const wavChannelSelect = document.getElementById('wav-channel-select');
             const ambientLoadGroup = document.getElementById('ambient-load-group');
             const ambientChannelGroup = document.getElementById('ambient-channel-group');
+            const ambientSubtractGroup = document.getElementById('ambient-subtract-group');
             const ambientLoadBtn = document.getElementById('ambient-load-btn');
             const ambientFileInput = document.getElementById('ambient-file-input');
             const ambientChannelSelect = document.getElementById('ambient-channel-select');
             const ambientWaveWrap = document.getElementById('ambient-wave-wrap');
+            const ambientSubtractToggle = document.getElementById('ambient-subtract-toggle');
             const muteAmbientBtn = document.getElementById('mute-ambient-btn');
             const muteMainBtn = document.getElementById('mute-main-btn');
             const resultsDiv = document.getElementById('results');
@@ -360,6 +357,7 @@
             let globalWavBuffer = null;
             let globalAmbientYData = [];
             let globalAmbientBuffer = null;
+            let ambientSubtractEnabled = true;
             let rangeSliderInstance = null;
             let lastSelectedYColIdx = null; // 列名ではなくインデックスで記憶する
 
@@ -408,6 +406,14 @@
             });
             wavChannelSelect.addEventListener('change', () => applyWavChannelSelection());
             ambientChannelSelect.addEventListener('change', () => applyAmbientChannelSelection());
+            ambientSubtractToggle.addEventListener('change', () => {
+                ambientSubtractEnabled = ambientSubtractToggle.checked;
+                if (rangeSliderInstance) {
+                    const sIdx = parseInt(rangeSliderInstance.get()[0]);
+                    const eIdx = parseInt(rangeSliderInstance.get()[1]);
+                    if (!isNaN(sIdx) && !isNaN(eIdx)) performFFT(sIdx, eIdx);
+                }
+            });
             muteAmbientBtn.addEventListener('click', () => {
                 ambientMuted = !ambientMuted;
                 muteAmbientBtn.textContent = ambientMuted ? '環境音ミュート解除' : '環境音ミュート';
@@ -1027,6 +1033,7 @@
                             ambientLoadGroup.classList.remove('hidden');
                             ambientLoadGroup.classList.add('flex');
                             ambientChannelGroup.classList.add('hidden');
+                            ambientSubtractGroup.classList.add('hidden');
                             colSelectArea.classList.remove('hidden');
                             colSelectArea.classList.add('flex');
 
@@ -1108,6 +1115,8 @@
                     globalAmbientYData = buffer.getChannelData(0);
                     ambientChannelGroup.classList.remove('hidden');
                     ambientChannelGroup.classList.add('flex');
+                    ambientSubtractGroup.classList.remove('hidden');
+                    ambientSubtractGroup.classList.add('flex');
                     ambientWaveWrap.classList.remove('hidden');
                     drawAmbientWaveform(globalTData, globalAmbientYData);
                     showMessage('環境音を追加しました。', 'success');
@@ -1129,6 +1138,8 @@
                 ambientLoadGroup.classList.remove('flex');
                 ambientChannelGroup.classList.add('hidden');
                 ambientChannelGroup.classList.remove('flex');
+                ambientSubtractGroup.classList.add('hidden');
+                ambientSubtractGroup.classList.remove('flex');
                 ambientWaveWrap.classList.add('hidden');
 
                 const lines = csvText.trim().split('\n');
@@ -1339,7 +1350,7 @@
 
                 const { freqs, amps: mainAmps } = computeSpectrum(ySliced, N);
                 let amps = mainAmps;
-                if (globalAmbientYData.length > endIdx) {
+                if (ambientSubtractEnabled && globalAmbientYData.length > endIdx) {
                     const ambSliced = globalAmbientYData.slice(startIdx, endIdx + 1);
                     const { amps: ambientAmps } = computeSpectrum(ambSliced, N);
                     amps = new Float64Array(mainAmps.length);
