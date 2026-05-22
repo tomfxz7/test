@@ -401,7 +401,12 @@
                 e.preventDefault();
                 dropZone.classList.remove('border-blue-500', 'bg-blue-50');
                 if (e.dataTransfer.files.length > 0) {
-                    handleFile(e.dataTransfer.files[0]);
+                    const f = e.dataTransfer.files[0];
+                    if (currentDataType === 'wav' && f.name.toLowerCase().endsWith('.wav') && globalWavBuffer) {
+                        handleAmbientFile(f);
+                    } else {
+                        handleFile(f);
+                    }
                 }
             });
             ambientDropZone.addEventListener('dragover', (e) => {
