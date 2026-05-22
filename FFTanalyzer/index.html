@@ -45,6 +45,12 @@
                 <input type="file" id="file-input" class="hidden" accept=".csv, .wav, audio/wav">
             </div>
 
+            <!-- 環境音用ドラッグ＆ドロップエリア -->
+            <div id="ambient-drop-zone" class="hidden border-4 border-dashed border-slate-300 bg-white rounded-2xl p-8 text-center cursor-pointer hover:border-slate-500 hover:bg-slate-50 transition-colors shadow-sm relative group flex-col justify-center items-center h-64">
+                <h3 class="text-lg font-semibold text-slate-700">環境音WAVをドロップ</h3>
+                <p class="mt-1 text-sm text-slate-500">主音とは別の場所に追加します</p>
+            </div>
+
             <!-- テキストペーストエリア -->
             <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 flex flex-col h-64">
                 <h3 class="text-lg font-semibold text-slate-700 mb-2 flex items-center gap-2">
@@ -88,6 +94,7 @@
             <div id="ambient-load-group" class="hidden items-center gap-2">
                 <button type="button" id="ambient-load-btn" class="text-sm bg-slate-600 hover:bg-slate-700 text-white font-medium py-1.5 px-3 rounded-md">環境音WAV追加</button>
                 <input type="file" id="ambient-file-input" class="hidden" accept=".wav,audio/wav">
+                <button type="button" id="ambient-from-main-btn" class="text-sm bg-slate-500 hover:bg-slate-600 text-white font-medium py-1.5 px-3 rounded-md">主音チャンネルを環境音に設定</button>
             </div>
             <div id="ambient-channel-group" class="hidden items-center gap-2">
                 <label for="ambient-channel-select" class="font-medium text-slate-700 text-sm">環境音チャンネル:</label>
@@ -281,6 +288,7 @@
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const dropZone = document.getElementById('drop-zone');
+            const ambientDropZone = document.getElementById('ambient-drop-zone');
             const fileInput = document.getElementById('file-input');
             const fsInput = document.getElementById('fs-input');
             const wavChannelGroup = document.getElementById('wav-channel-group');
@@ -289,6 +297,7 @@
             const ambientChannelGroup = document.getElementById('ambient-channel-group');
             const ambientSubtractGroup = document.getElementById('ambient-subtract-group');
             const ambientLoadBtn = document.getElementById('ambient-load-btn');
+            const ambientFromMainBtn = document.getElementById('ambient-from-main-btn');
             const ambientFileInput = document.getElementById('ambient-file-input');
             const ambientChannelSelect = document.getElementById('ambient-channel-select');
             const ambientWaveWrap = document.getElementById('ambient-wave-wrap');
@@ -392,6 +401,18 @@
                     }
                 }
             });
+            ambientDropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                ambientDropZone.classList.add('border-slate-500', 'bg-slate-50');
+            });
+            ambientDropZone.addEventListener('dragleave', () => {
+                ambientDropZone.classList.remove('border-slate-500', 'bg-slate-50');
+            });
+            ambientDropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                ambientDropZone.classList.remove('border-slate-500', 'bg-slate-50');
+                if (e.dataTransfer.files.length > 0) handleAmbientFile(e.dataTransfer.files[0]);
+            });
 
             fileInput.addEventListener('change', (e) => {
                 if (e.target.files.length > 0) {
@@ -400,6 +421,7 @@
                 e.target.value = ''; // 同じファイルを再選択可能にする
             });
             ambientLoadBtn.addEventListener('click', () => ambientFileInput.click());
+            ambientFromMainBtn.addEventListener('click', () => setAmbientFromMainChannel());
             ambientFileInput.addEventListener('change', (e) => {
                 if (e.target.files.length > 0) handleAmbientFile(e.target.files[0]);
                 e.target.value = '';
@@ -1032,6 +1054,8 @@
                             wavChannelGroup.classList.add('flex');
                             ambientLoadGroup.classList.remove('hidden');
                             ambientLoadGroup.classList.add('flex');
+                            ambientDropZone.classList.remove('hidden');
+                            ambientDropZone.classList.add('flex');
                             ambientChannelGroup.classList.add('hidden');
                             ambientSubtractGroup.classList.add('hidden');
                             colSelectArea.classList.remove('hidden');
@@ -1092,6 +1116,10 @@
             }
 
             async function handleAmbientFile(file) {
+                if (!globalWavBuffer) {
+                    showMessage('先に主音WAVを読み込んでください。', 'error');
+                    return;
+                }
                 const fileName = file.name.toLowerCase();
                 if (!fileName.endsWith('.wav')) {
                     showMessage('環境音はWAVファイルのみ対応です。', 'error');
@@ -1128,6 +1156,41 @@
                 }
             }
 
+            function setAmbientFromMainChannel() {
+                if (!globalWavBuffer) {
+                    showMessage('先に主音WAVを読み込んでください。', 'error');
+                    return;
+                }
+                const ambientIdx = parseInt(ambientChannelSelect.value);
+                const selectedMainIdx = parseInt(wavChannelSelect.value) || 0;
+                const useIdx = Number.isFinite(ambientIdx) ? ambientIdx : selectedMainIdx;
+
+                globalAmbientBuffer = globalWavBuffer;
+                globalAmbientYData = globalWavBuffer.getChannelData(Math.max(0, Math.min(useIdx, globalWavBuffer.numberOfChannels - 1)));
+                ambientAudioBuffer = createMonoPlaybackBuffer(globalAmbientYData, globalFs);
+
+                ambientChannelSelect.innerHTML = '';
+                for (let ch = 0; ch < globalWavBuffer.numberOfChannels; ch++) {
+                    const opt = document.createElement('option');
+                    opt.value = String(ch);
+                    opt.textContent = `CH ${ch + 1} (主音)`;
+                    ambientChannelSelect.appendChild(opt);
+                }
+                ambientChannelSelect.value = String(Math.max(0, Math.min(useIdx, globalWavBuffer.numberOfChannels - 1)));
+                ambientChannelGroup.classList.remove('hidden');
+                ambientChannelGroup.classList.add('flex');
+                ambientSubtractGroup.classList.remove('hidden');
+                ambientSubtractGroup.classList.add('flex');
+                ambientWaveWrap.classList.remove('hidden');
+                drawAmbientWaveform(globalTData, globalAmbientYData);
+                if (rangeSliderInstance) {
+                    const sIdx = parseInt(rangeSliderInstance.get()[0]);
+                    const eIdx = parseInt(rangeSliderInstance.get()[1]);
+                    if (!isNaN(sIdx) && !isNaN(eIdx)) performFFT(sIdx, eIdx);
+                }
+                showMessage('主音チャンネルを環境音として設定しました。', 'success');
+            }
+
             // --- CSVのパースと複数列データの保持 ---
             function parseCSV(csvText) {
                 currentDataType = 'csv';
@@ -1144,6 +1207,8 @@
                 ambientSubtractGroup.classList.add('hidden');
                 ambientSubtractGroup.classList.remove('flex');
                 ambientWaveWrap.classList.add('hidden');
+                ambientDropZone.classList.add('hidden');
+                ambientDropZone.classList.remove('flex');
 
                 const lines = csvText.trim().split('\n');
                 
