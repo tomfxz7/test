@@ -42,6 +42,7 @@
                 </svg>
                 <h3 class="text-lg font-semibold text-slate-700 group-hover:text-blue-700">主音 CSV / WAVファイルをドロップ</h3>
                 <p class="mt-1 text-sm text-slate-500">またはクリックしてファイル選択</p>
+                <button type="button" id="main-load-btn" class="mt-3 text-sm bg-blue-600 hover:bg-blue-700 text-white font-medium py-1.5 px-3 rounded-md">主音ファイルを選択</button>
                 <input type="file" id="file-input" class="hidden" accept=".csv, .wav, audio/wav">
             </div>
 
@@ -289,6 +290,7 @@
         document.addEventListener('DOMContentLoaded', () => {
             const dropZone = document.getElementById('drop-zone');
             const ambientDropZone = document.getElementById('ambient-drop-zone');
+            const mainLoadBtn = document.getElementById('main-load-btn');
             const fileInput = document.getElementById('file-input');
             const fsInput = document.getElementById('fs-input');
             const wavChannelGroup = document.getElementById('wav-channel-group');
@@ -379,6 +381,12 @@
 
             // UIイベントリスナー設定
             dropZone.addEventListener('click', () => fileInput.click());
+            mainLoadBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                fileInput.click();
+            });
+            window.addEventListener('dragover', (e) => e.preventDefault());
+            window.addEventListener('drop', (e) => e.preventDefault());
 
             dropZone.addEventListener('dragover', (e) => {
                 e.preventDefault();
@@ -1080,108 +1088,6 @@
                         }
                     })();
                 }
-                return await new Promise((resolve, reject) => {
-                    audioCtx.decodeAudioData(arrayBuffer, resolve, reject);
-                });
-            }
-
-            function applyWavChannelSelection() {
-                if (!globalWavBuffer) return;
-                const idx = parseInt(wavChannelSelect.value) || 0;
-                const channelData = globalWavBuffer.getChannelData(idx);
-                globalYData = channelData;
-                globalAudioBuffer = createMonoPlaybackBuffer(channelData, globalFs);
-                globalTData = new Float32Array(channelData.length);
-                for (let i = 0; i < channelData.length; i++) globalTData[i] = i / globalFs;
-                drawWaveform(globalTData, globalYData);
-                if (globalAmbientYData.length > 0) drawAmbientWaveform(globalTData, globalAmbientYData);
-                initSlider();
-            }
-            function applyAmbientChannelSelection() {
-                if (!globalAmbientBuffer) return;
-                const idx = parseInt(ambientChannelSelect.value) || 0;
-                globalAmbientYData = globalAmbientBuffer.getChannelData(idx);
-                ambientAudioBuffer = createMonoPlaybackBuffer(globalAmbientYData, globalFs);
-                drawAmbientWaveform(globalTData, globalAmbientYData);
-                const sIdx = parseInt(rangeSliderInstance.get()[0]);
-                const eIdx = parseInt(rangeSliderInstance.get()[1]);
-                if (!isNaN(sIdx) && !isNaN(eIdx)) performFFT(sIdx, eIdx);
-            }
-
-            async function handleAmbientFile(file) {
-                if (!globalWavBuffer) {
-                    showMessage('先に主音WAVを読み込んでください。', 'error');
-                    return;
-                }
-                const fileName = file.name.toLowerCase();
-                if (!fileName.endsWith('.wav')) {
-                    showMessage('環境音はWAVファイルのみ対応です。', 'error');
-                    return;
-                }
-                try {
-                    showMessage('環境音WAVデータをデコード中...', 'loading');
-                    const buffer = await decodeWavFile(file);
-                    if (Math.abs(buffer.sampleRate - globalFs) > 1) {
-                        showMessage('環境音のサンプリング周波数が主音と異なります。', 'error');
-                        return;
-                    }
-                    ambientAudioBuffer = buffer;
-                    globalAmbientBuffer = buffer;
-                    ambientChannelSelect.innerHTML = '';
-                    for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
-                        const opt = document.createElement('option');
-                        opt.value = String(ch);
-                        opt.textContent = `CH ${ch + 1}`;
-                        ambientChannelSelect.appendChild(opt);
-                    }
-                    ambientChannelSelect.value = '0';
-                    globalAmbientYData = buffer.getChannelData(0);
-                    ambientAudioBuffer = createMonoPlaybackBuffer(globalAmbientYData, globalFs);
-                    ambientChannelGroup.classList.remove('hidden');
-                    ambientChannelGroup.classList.add('flex');
-                    ambientSubtractGroup.classList.remove('hidden');
-                    ambientSubtractGroup.classList.add('flex');
-                    ambientWaveWrap.classList.remove('hidden');
-                    drawAmbientWaveform(globalTData, globalAmbientYData);
-                    showMessage('環境音を追加しました。', 'success');
-                } catch (err) {
-                    showMessage('環境音WAVのデコードに失敗しました: ' + err.message, 'error');
-                }
-            }
-
-            function setAmbientFromMainChannel() {
-                if (!globalWavBuffer) {
-                    showMessage('先に主音WAVを読み込んでください。', 'error');
-                    return;
-                }
-                const ambientIdx = parseInt(ambientChannelSelect.value);
-                const selectedMainIdx = parseInt(wavChannelSelect.value) || 0;
-                const useIdx = Number.isFinite(ambientIdx) ? ambientIdx : selectedMainIdx;
-
-                globalAmbientBuffer = globalWavBuffer;
-                globalAmbientYData = globalWavBuffer.getChannelData(Math.max(0, Math.min(useIdx, globalWavBuffer.numberOfChannels - 1)));
-                ambientAudioBuffer = createMonoPlaybackBuffer(globalAmbientYData, globalFs);
-
-                ambientChannelSelect.innerHTML = '';
-                for (let ch = 0; ch < globalWavBuffer.numberOfChannels; ch++) {
-                    const opt = document.createElement('option');
-                    opt.value = String(ch);
-                    opt.textContent = `CH ${ch + 1} (主音)`;
-                    ambientChannelSelect.appendChild(opt);
-                }
-                ambientChannelSelect.value = String(Math.max(0, Math.min(useIdx, globalWavBuffer.numberOfChannels - 1)));
-                ambientChannelGroup.classList.remove('hidden');
-                ambientChannelGroup.classList.add('flex');
-                ambientSubtractGroup.classList.remove('hidden');
-                ambientSubtractGroup.classList.add('flex');
-                ambientWaveWrap.classList.remove('hidden');
-                drawAmbientWaveform(globalTData, globalAmbientYData);
-                if (rangeSliderInstance) {
-                    const sIdx = parseInt(rangeSliderInstance.get()[0]);
-                    const eIdx = parseInt(rangeSliderInstance.get()[1]);
-                    if (!isNaN(sIdx) && !isNaN(eIdx)) performFFT(sIdx, eIdx);
-                }
-                showMessage('主音チャンネルを環境音として設定しました。', 'success');
             }
 
             async function decodeWavFile(file) {
