@@ -40,9 +40,16 @@
                 <svg class="mx-auto h-16 w-16 text-slate-400 group-hover:text-blue-500 transition-colors mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
                 </svg>
-                <h3 class="text-lg font-semibold text-slate-700 group-hover:text-blue-700">CSV / WAVファイルをドロップ</h3>
+                <h3 class="text-lg font-semibold text-slate-700 group-hover:text-blue-700">主音 CSV / WAVファイルをドロップ</h3>
                 <p class="mt-1 text-sm text-slate-500">またはクリックしてファイル選択</p>
+                <button type="button" id="main-load-btn" class="mt-3 text-sm bg-blue-600 hover:bg-blue-700 text-white font-medium py-1.5 px-3 rounded-md">主音ファイルを選択</button>
                 <input type="file" id="file-input" class="hidden" accept=".csv, .wav, audio/wav">
+            </div>
+
+            <!-- 環境音用ドラッグ＆ドロップエリア -->
+            <div id="ambient-drop-zone" class="hidden border-4 border-dashed border-slate-300 bg-white rounded-2xl p-8 text-center cursor-pointer hover:border-slate-500 hover:bg-slate-50 transition-colors shadow-sm relative group flex-col justify-center items-center h-64">
+                <h3 class="text-lg font-semibold text-slate-700">環境音WAV専用ドロップ</h3>
+                <p class="mt-1 text-sm text-slate-500">主音とは別の場所に追加します</p>
             </div>
 
             <!-- テキストペーストエリア -->
@@ -66,13 +73,13 @@
 
         <!-- 設定・列選択エリア -->
         <div id="column-select-area" class="hidden mt-6 bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex-wrap items-center gap-6 animate-fade-in">
-            <div class="flex items-center gap-2">
+            <div id="x-col-group" class="flex items-center gap-2">
                 <label for="x-col-select" class="font-medium text-slate-700 text-sm">X軸 (時間):</label>
                 <select id="x-col-select" class="border border-slate-300 rounded-md p-1.5 min-w-[120px] text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white">
                     <option value="-1">自動生成 (インデックス)</option>
                 </select>
             </div>
-            <div class="flex items-center gap-2">
+            <div id="y-col-group" class="flex items-center gap-2">
                 <label for="y-col-select" class="font-medium text-slate-700 text-sm">Y軸 (波形データ):</label>
                 <select id="y-col-select" class="border border-slate-300 rounded-md p-1.5 min-w-[120px] text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white">
                 </select>
@@ -81,6 +88,23 @@
                 <label for="fs-input" class="font-medium text-slate-700 text-sm">サンプリング周波数 (Hz):</label>
                 <input type="number" id="fs-input" value="1000" class="border border-slate-300 rounded-md p-1.5 w-28 text-center focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none">
             </div>
+            <div id="wav-channel-group" class="hidden items-center gap-2">
+                <label for="wav-channel-select" class="font-medium text-slate-700 text-sm">WAVチャンネル:</label>
+                <select id="wav-channel-select" class="border border-slate-300 rounded-md p-1.5 min-w-[100px] text-sm bg-white"></select>
+            </div>
+            <div id="ambient-load-group" class="hidden items-center gap-2">
+                <button type="button" id="ambient-load-btn" class="text-sm bg-slate-600 hover:bg-slate-700 text-white font-medium py-1.5 px-3 rounded-md">環境音WAV追加</button>
+                <input type="file" id="ambient-file-input" class="hidden" accept=".wav,audio/wav">
+                <button type="button" id="ambient-from-main-btn" class="text-sm bg-slate-500 hover:bg-slate-600 text-white font-medium py-1.5 px-3 rounded-md">主音チャンネルを環境音に設定</button>
+            </div>
+            <div id="ambient-channel-group" class="hidden items-center gap-2">
+                <label for="ambient-channel-select" class="font-medium text-slate-700 text-sm">環境音チャンネル:</label>
+                <select id="ambient-channel-select" class="border border-slate-300 rounded-md p-1.5 min-w-[100px] text-sm bg-white"></select>
+            </div>
+            <label id="ambient-subtract-group" class="hidden items-center gap-2 text-sm text-slate-700">
+                <input type="checkbox" id="ambient-subtract-toggle" class="accent-red-500" checked>
+                環境音スペクトル差し引き
+            </label>
             <p class="text-xs text-slate-500 w-full lg:w-auto">※X軸に時間データを選択した場合、またはWAVファイルの場合は自動設定されます。</p>
         </div>
 
@@ -146,8 +170,26 @@
                             </button>
                         </div>
                     </div>
-                    <div class="relative h-64 w-full">
-                        <canvas id="waveform-chart"></canvas>
+                    <div class="flex gap-2 items-stretch">
+                        <div class="flex items-center">
+                            <button type="button" id="mute-main-btn" class="px-2 py-1 text-xs border rounded text-slate-700">主音ミュート</button>
+                        </div>
+                        <div class="relative h-64 w-full">
+                            <canvas id="waveform-chart"></canvas>
+                        </div>
+                    </div>
+                    <div id="ambient-wave-wrap" class="hidden mt-4">
+                        <div class="flex gap-2 items-stretch">
+                            <div class="flex items-center">
+                                <button type="button" id="mute-ambient-btn" class="px-2 py-1 text-xs border rounded text-slate-700">環境音ミュート</button>
+                            </div>
+                            <div class="w-full">
+                                <div class="text-sm text-slate-600 mb-1">環境音波形</div>
+                                <div class="relative h-48 w-full">
+                                    <canvas id="ambient-waveform-chart"></canvas>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                     <!-- 範囲選択スライダー -->
                     <div class="mt-10 mb-4 px-6">
@@ -247,8 +289,23 @@
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const dropZone = document.getElementById('drop-zone');
+            const ambientDropZone = document.getElementById('ambient-drop-zone');
+            const mainLoadBtn = document.getElementById('main-load-btn');
             const fileInput = document.getElementById('file-input');
             const fsInput = document.getElementById('fs-input');
+            const wavChannelGroup = document.getElementById('wav-channel-group');
+            const wavChannelSelect = document.getElementById('wav-channel-select');
+            const ambientLoadGroup = document.getElementById('ambient-load-group');
+            const ambientChannelGroup = document.getElementById('ambient-channel-group');
+            const ambientSubtractGroup = document.getElementById('ambient-subtract-group');
+            const ambientLoadBtn = document.getElementById('ambient-load-btn');
+            const ambientFromMainBtn = document.getElementById('ambient-from-main-btn');
+            const ambientFileInput = document.getElementById('ambient-file-input');
+            const ambientChannelSelect = document.getElementById('ambient-channel-select');
+            const ambientWaveWrap = document.getElementById('ambient-wave-wrap');
+            const ambientSubtractToggle = document.getElementById('ambient-subtract-toggle');
+            const muteAmbientBtn = document.getElementById('mute-ambient-btn');
+            const muteMainBtn = document.getElementById('mute-main-btn');
             const resultsDiv = document.getElementById('results');
             const demoBtn = document.getElementById('demo-btn');
             
@@ -276,7 +333,13 @@
             const stopAudioBtn = document.getElementById('stop-audio-btn');
             let audioCtx = null;
             let currentAudioSource = null;
+            let currentAmbientAudioSource = null;
             let globalAudioBuffer = null;
+            let ambientAudioBuffer = null;
+            let mainGainNode = null;
+            let ambientGainNode = null;
+            let ambientMuted = false;
+            let mainMuted = false;
             
             let animationFrameId = null;
             let audioStartTime = 0;
@@ -286,10 +349,13 @@
 
             // --- 列選択機能用の要素 ---
             const colSelectArea = document.getElementById('column-select-area');
+            const xColGroup = document.getElementById('x-col-group');
+            const yColGroup = document.getElementById('y-col-group');
             const xColSelect = document.getElementById('x-col-select');
             const yColSelect = document.getElementById('y-col-select');
 
             let waveformChart = null;
+            let ambientWaveformChart = null;
             let fftChart = null;
 
             // グローバルデータ保持用
@@ -299,6 +365,10 @@
             let globalTData = [];
             let globalYData = [];
             let globalFs = 1000;
+            let globalWavBuffer = null;
+            let globalAmbientYData = [];
+            let globalAmbientBuffer = null;
+            let ambientSubtractEnabled = true;
             let rangeSliderInstance = null;
             let lastSelectedYColIdx = null; // 列名ではなくインデックスで記憶する
 
@@ -311,6 +381,12 @@
 
             // UIイベントリスナー設定
             dropZone.addEventListener('click', () => fileInput.click());
+            mainLoadBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                fileInput.click();
+            });
+            window.addEventListener('dragover', (e) => e.preventDefault());
+            window.addEventListener('drop', (e) => e.preventDefault());
 
             dropZone.addEventListener('dragover', (e) => {
                 e.preventDefault();
@@ -328,12 +404,51 @@
                     handleFile(e.dataTransfer.files[0]);
                 }
             });
+            ambientDropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                ambientDropZone.classList.add('border-slate-500', 'bg-slate-50');
+            });
+            ambientDropZone.addEventListener('dragleave', () => {
+                ambientDropZone.classList.remove('border-slate-500', 'bg-slate-50');
+            });
+            ambientDropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                ambientDropZone.classList.remove('border-slate-500', 'bg-slate-50');
+                if (e.dataTransfer.files.length > 0) handleAmbientFile(e.dataTransfer.files[0], 'ambient-drop-zone');
+            });
 
             fileInput.addEventListener('change', (e) => {
                 if (e.target.files.length > 0) {
                     handleFile(e.target.files[0]);
                 }
                 e.target.value = ''; // 同じファイルを再選択可能にする
+            });
+            ambientLoadBtn.addEventListener('click', () => ambientFileInput.click());
+            ambientFromMainBtn.addEventListener('click', () => setAmbientFromMainChannel());
+            ambientFileInput.addEventListener('change', (e) => {
+                if (e.target.files.length > 0) handleAmbientFile(e.target.files[0], 'ambient-file-input');
+                e.target.value = '';
+            });
+            wavChannelSelect.addEventListener('change', () => applyWavChannelSelection());
+            ambientChannelSelect.addEventListener('change', () => applyAmbientChannelSelection());
+            ambientSubtractToggle.addEventListener('change', () => {
+                ambientSubtractEnabled = ambientSubtractToggle.checked;
+                if (rangeSliderInstance) {
+                    const sIdx = parseInt(rangeSliderInstance.get()[0]);
+                    const eIdx = parseInt(rangeSliderInstance.get()[1]);
+                    if (!isNaN(sIdx) && !isNaN(eIdx)) performFFT(sIdx, eIdx);
+                }
+            });
+            muteAmbientBtn.addEventListener('click', () => {
+                ambientMuted = !ambientMuted;
+                muteAmbientBtn.textContent = ambientMuted ? '環境音ミュート解除' : '環境音ミュート';
+                if (ambientGainNode) ambientGainNode.gain.value = ambientMuted ? 0 : 1;
+            });
+            muteMainBtn.addEventListener('click', () => {
+                mainMuted = !mainMuted;
+                muteMainBtn.textContent = mainMuted ? '主音ミュート解除' : '主音ミュート';
+                if (mainGainNode) mainGainNode.gain.value = mainMuted ? 0 : 1;
             });
 
             // ペースト実行ボタン
@@ -540,9 +655,20 @@
                     await audioCtx.resume();
                 }
                 
+                mainGainNode = audioCtx.createGain();
+                mainGainNode.gain.value = mainMuted ? 0 : 1;
+                mainGainNode.connect(audioCtx.destination);
                 currentAudioSource = audioCtx.createBufferSource();
                 currentAudioSource.buffer = globalAudioBuffer;
-                currentAudioSource.connect(audioCtx.destination);
+                currentAudioSource.connect(mainGainNode);
+                if (ambientAudioBuffer) {
+                    ambientGainNode = audioCtx.createGain();
+                    ambientGainNode.gain.value = ambientMuted ? 0 : 1;
+                    ambientGainNode.connect(audioCtx.destination);
+                    currentAmbientAudioSource = audioCtx.createBufferSource();
+                    currentAmbientAudioSource.buffer = ambientAudioBuffer;
+                    currentAmbientAudioSource.connect(ambientGainNode);
+                }
                 
                 currentAudioSource.onended = () => {
                     playAudioBtn.classList.remove('hidden');
@@ -557,6 +683,7 @@
                 isPlaying = true;
 
                 currentAudioSource.start(0, startTime, duration);
+                if (currentAmbientAudioSource) currentAmbientAudioSource.start(0, startTime, duration);
                 updatePlayhead();
                 
                 playAudioBtn.classList.add('hidden');
@@ -569,6 +696,11 @@
                     currentAudioSource.stop();
                     currentAudioSource.disconnect();
                     currentAudioSource = null;
+                }
+                if (currentAmbientAudioSource) {
+                    currentAmbientAudioSource.stop();
+                    currentAmbientAudioSource.disconnect();
+                    currentAmbientAudioSource = null;
                 }
                 stopPlayhead();
                 playAudioBtn.classList.remove('hidden');
@@ -593,13 +725,7 @@
                     xVal = globalTData[clampedIdx];
                 }
 
-                const playLine = waveformChart.options.plugins.annotation.annotations.playLine;
-                if (playLine) {
-                    playLine.xMin = xVal;
-                    playLine.xMax = xVal;
-                    playLine.display = true;
-                    waveformChart.update('none'); // アニメーションなしで即時描画
-                }
+                updatePlayLineForCharts(xVal);
 
                 animationFrameId = requestAnimationFrame(updatePlayhead);
             }
@@ -613,6 +739,20 @@
                 if (waveformChart && waveformChart.options.plugins.annotation.annotations.playLine) {
                     waveformChart.options.plugins.annotation.annotations.playLine.display = false;
                     waveformChart.update('none');
+                }
+                if (ambientWaveformChart && ambientWaveformChart.options.plugins.annotation.annotations.playLine) {
+                    ambientWaveformChart.options.plugins.annotation.annotations.playLine.display = false;
+                    ambientWaveformChart.update('none');
+                }
+            }
+            function updatePlayLineForCharts(xVal) {
+                if (waveformChart?.options?.plugins?.annotation?.annotations?.playLine) {
+                    const p = waveformChart.options.plugins.annotation.annotations.playLine;
+                    p.xMin = xVal; p.xMax = xVal; p.display = true; waveformChart.update('none');
+                }
+                if (ambientWaveformChart?.options?.plugins?.annotation?.annotations?.playLine) {
+                    const p2 = ambientWaveformChart.options.plugins.annotation.annotations.playLine;
+                    p2.xMin = xVal; p2.xMax = xVal; p2.display = true; ambientWaveformChart.update('none');
                 }
             }
 
@@ -895,53 +1035,169 @@
                     reader.onerror = () => showMessage('ファイルの読み込みに失敗しました。', 'error');
                     reader.readAsText(file);
                 } else if (isWAV) {
-                    const reader = new FileReader();
-                    reader.onload = async (e) => {
+                    (async () => {
                         try {
                             showMessage('WAVデータをデコード中...', 'loading');
-                            const arrayBuffer = e.target.result;
-                            
-                            if (!audioCtx) {
-                                const AudioContext = window.AudioContext || window.webkitAudioContext;
-                                audioCtx = new AudioContext();
-                            }
-                            
-                            const audioBuffer = await new Promise((resolve, reject) => {
-                                audioCtx.decodeAudioData(arrayBuffer, resolve, reject);
-                            });
-                            
+                            const audioBuffer = await decodeWavFile(file);
                             currentDataType = 'wav';
+                            globalWavBuffer = audioBuffer;
                             globalFs = audioBuffer.sampleRate;
                             globalAudioBuffer = audioBuffer;
+                            ambientAudioBuffer = null;
+                            globalAmbientYData = [];
+                            ambientWaveWrap.classList.add('hidden');
                             playAudioBtn.classList.remove('hidden');
 
-                            // WAV時はサンプリング周波数を固定化
                             fsInput.value = globalFs;
                             fsInput.readOnly = true;
                             fsInput.classList.add('bg-slate-100', 'text-slate-500');
 
-                            // 1ch目の波形データを取得
-                            const channelData = audioBuffer.getChannelData(0);
-                            globalYData = channelData; // Float32Arrayをそのまま利用
-                            globalTData = new Float32Array(channelData.length);
-                            for(let i = 0; i < channelData.length; i++) {
-                                globalTData[i] = i / globalFs;
-                            }
+                            xColGroup.classList.add('hidden');
+                            yColGroup.classList.add('hidden');
+                            wavChannelGroup.classList.remove('hidden');
+                            wavChannelGroup.classList.add('flex');
+                            ambientLoadGroup.classList.remove('hidden');
+                            ambientLoadGroup.classList.add('flex');
+                            ambientDropZone.classList.remove('hidden');
+                            ambientDropZone.classList.add('flex');
+                            ambientChannelGroup.classList.add('hidden');
+                            ambientSubtractGroup.classList.add('hidden');
+                            colSelectArea.classList.remove('hidden');
+                            colSelectArea.classList.add('flex');
 
-                            drawWaveform(globalTData, globalYData);
-                            initSlider();
+                            wavChannelSelect.innerHTML = '';
+                            for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
+                                const opt = document.createElement('option');
+                                opt.value = String(ch);
+                                opt.textContent = `CH ${ch + 1}`;
+                                wavChannelSelect.appendChild(opt);
+                            }
+                            wavChannelSelect.value = '0';
+                            applyWavChannelSelection();
 
                             showMessage('WAVの解析準備が完了しました。範囲を選択してください。', 'success');
                             resultsDiv.classList.remove('hidden');
-
                         } catch (err) {
                             console.error(err);
                             showMessage('WAVファイルのデコードに失敗しました: ' + err.message, 'error');
                         }
-                    };
-                    reader.onerror = () => showMessage('ファイルの読み込みに失敗しました。', 'error');
-                    reader.readAsArrayBuffer(file);
+                    })();
                 }
+            }
+
+            async function decodeWavFile(file) {
+                const arrayBuffer = await file.arrayBuffer();
+                if (!audioCtx) {
+                    const AudioContext = window.AudioContext || window.webkitAudioContext;
+                    audioCtx = new AudioContext();
+                }
+                return await new Promise((resolve, reject) => {
+                    audioCtx.decodeAudioData(arrayBuffer, resolve, reject);
+                });
+            }
+
+            function applyWavChannelSelection() {
+                if (!globalWavBuffer) return;
+                const idx = parseInt(wavChannelSelect.value) || 0;
+                const channelData = globalWavBuffer.getChannelData(idx);
+                globalYData = channelData;
+                globalAudioBuffer = createMonoPlaybackBuffer(channelData, globalFs);
+                globalTData = new Float32Array(channelData.length);
+                for (let i = 0; i < channelData.length; i++) globalTData[i] = i / globalFs;
+                drawWaveform(globalTData, globalYData);
+                if (globalAmbientYData.length > 0) drawAmbientWaveform(globalTData, globalAmbientYData);
+                initSlider();
+            }
+            function applyAmbientChannelSelection() {
+                if (!globalAmbientBuffer) return;
+                const idx = parseInt(ambientChannelSelect.value) || 0;
+                globalAmbientYData = globalAmbientBuffer.getChannelData(idx);
+                ambientAudioBuffer = createMonoPlaybackBuffer(globalAmbientYData, globalFs);
+                drawAmbientWaveform(globalTData, globalAmbientYData);
+                const sIdx = parseInt(rangeSliderInstance.get()[0]);
+                const eIdx = parseInt(rangeSliderInstance.get()[1]);
+                if (!isNaN(sIdx) && !isNaN(eIdx)) performFFT(sIdx, eIdx);
+            }
+
+            async function handleAmbientFile(file, source = '') {
+                if (!globalWavBuffer) {
+                    showMessage('先に主音WAVを読み込んでください。', 'error');
+                    return;
+                }
+                if (source !== 'ambient-drop-zone' && source !== 'ambient-file-input') {
+                    // 想定外の経路で来た場合は、主音としての差し替え意図を優先して主音ロードにフォールバック
+                    handleFile(file);
+                    return;
+                }
+                const fileName = file.name.toLowerCase();
+                if (!fileName.endsWith('.wav')) {
+                    showMessage('環境音はWAVファイルのみ対応です。', 'error');
+                    return;
+                }
+                try {
+                    showMessage('環境音WAVデータをデコード中...', 'loading');
+                    const buffer = await decodeWavFile(file);
+                    if (Math.abs(buffer.sampleRate - globalFs) > 1) {
+                        showMessage('環境音のサンプリング周波数が主音と異なります。', 'error');
+                        return;
+                    }
+                    ambientAudioBuffer = buffer;
+                    globalAmbientBuffer = buffer;
+                    ambientChannelSelect.innerHTML = '';
+                    for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+                        const opt = document.createElement('option');
+                        opt.value = String(ch);
+                        opt.textContent = `CH ${ch + 1}`;
+                        ambientChannelSelect.appendChild(opt);
+                    }
+                    ambientChannelSelect.value = '0';
+                    globalAmbientYData = buffer.getChannelData(0);
+                    ambientAudioBuffer = createMonoPlaybackBuffer(globalAmbientYData, globalFs);
+                    ambientChannelGroup.classList.remove('hidden');
+                    ambientChannelGroup.classList.add('flex');
+                    ambientSubtractGroup.classList.remove('hidden');
+                    ambientSubtractGroup.classList.add('flex');
+                    ambientWaveWrap.classList.remove('hidden');
+                    drawAmbientWaveform(globalTData, globalAmbientYData);
+                    showMessage('環境音を追加しました。', 'success');
+                } catch (err) {
+                    showMessage('環境音WAVのデコードに失敗しました: ' + err.message, 'error');
+                }
+            }
+
+            function setAmbientFromMainChannel() {
+                if (!globalWavBuffer) {
+                    showMessage('先に主音WAVを読み込んでください。', 'error');
+                    return;
+                }
+                const ambientIdx = parseInt(ambientChannelSelect.value);
+                const selectedMainIdx = parseInt(wavChannelSelect.value) || 0;
+                const useIdx = Number.isFinite(ambientIdx) ? ambientIdx : selectedMainIdx;
+
+                globalAmbientBuffer = globalWavBuffer;
+                globalAmbientYData = globalWavBuffer.getChannelData(Math.max(0, Math.min(useIdx, globalWavBuffer.numberOfChannels - 1)));
+                ambientAudioBuffer = createMonoPlaybackBuffer(globalAmbientYData, globalFs);
+
+                ambientChannelSelect.innerHTML = '';
+                for (let ch = 0; ch < globalWavBuffer.numberOfChannels; ch++) {
+                    const opt = document.createElement('option');
+                    opt.value = String(ch);
+                    opt.textContent = `CH ${ch + 1} (主音)`;
+                    ambientChannelSelect.appendChild(opt);
+                }
+                ambientChannelSelect.value = String(Math.max(0, Math.min(useIdx, globalWavBuffer.numberOfChannels - 1)));
+                ambientChannelGroup.classList.remove('hidden');
+                ambientChannelGroup.classList.add('flex');
+                ambientSubtractGroup.classList.remove('hidden');
+                ambientSubtractGroup.classList.add('flex');
+                ambientWaveWrap.classList.remove('hidden');
+                drawAmbientWaveform(globalTData, globalAmbientYData);
+                if (rangeSliderInstance) {
+                    const sIdx = parseInt(rangeSliderInstance.get()[0]);
+                    const eIdx = parseInt(rangeSliderInstance.get()[1]);
+                    if (!isNaN(sIdx) && !isNaN(eIdx)) performFFT(sIdx, eIdx);
+                }
+                showMessage('主音チャンネルを環境音として設定しました。', 'success');
             }
 
             // --- CSVのパースと複数列データの保持 ---
@@ -949,6 +1205,19 @@
                 currentDataType = 'csv';
                 fsInput.readOnly = false;
                 fsInput.classList.remove('bg-slate-100', 'text-slate-500');
+                xColGroup.classList.remove('hidden');
+                yColGroup.classList.remove('hidden');
+                wavChannelGroup.classList.add('hidden');
+                wavChannelGroup.classList.remove('flex');
+                ambientLoadGroup.classList.add('hidden');
+                ambientLoadGroup.classList.remove('flex');
+                ambientChannelGroup.classList.add('hidden');
+                ambientChannelGroup.classList.remove('flex');
+                ambientSubtractGroup.classList.add('hidden');
+                ambientSubtractGroup.classList.remove('flex');
+                ambientWaveWrap.classList.add('hidden');
+                ambientDropZone.classList.add('hidden');
+                ambientDropZone.classList.remove('flex');
 
                 const lines = csvText.trim().split('\n');
                 
@@ -1138,6 +1407,11 @@
                 waveformChart.options.plugins.annotation.annotations.selectionBox.xMin = globalTData[startIdx];
                 waveformChart.options.plugins.annotation.annotations.selectionBox.xMax = globalTData[endIdx];
                 waveformChart.update('none');
+                if (ambientWaveformChart?.options?.plugins?.annotation?.annotations?.selectionBox) {
+                    ambientWaveformChart.options.plugins.annotation.annotations.selectionBox.xMin = globalTData[startIdx];
+                    ambientWaveformChart.options.plugins.annotation.annotations.selectionBox.xMax = globalTData[endIdx];
+                    ambientWaveformChart.update('none');
+                }
             }
 
             // 指定された範囲のデータでFFTを実行
@@ -1151,23 +1425,13 @@
                     N *= 2;
                 }
 
-                const real = new Float64Array(N);
-                const imag = new Float64Array(N);
-                for (let i = 0; i < N; i++) {
-                    real[i] = ySliced[i];
-                    imag[i] = 0;
-                }
-
-                fftIterative(real, imag);
-
-                const halfN = N / 2;
-                const freqs = new Float64Array(halfN);
-                const amps = new Float64Array(halfN);
-                
-                for (let k = 0; k < halfN; k++) {
-                    freqs[k] = k * globalFs / N;
-                    const mag = Math.sqrt(real[k]*real[k] + imag[k]*imag[k]);
-                    amps[k] = (k === 0) ? mag / N : 2 * mag / N; 
+                const { freqs, amps: mainAmps } = computeSpectrum(ySliced, N);
+                let amps = mainAmps;
+                if (ambientSubtractEnabled && globalAmbientYData.length > endIdx) {
+                    const ambSliced = globalAmbientYData.slice(startIdx, endIdx + 1);
+                    const { amps: ambientAmps } = computeSpectrum(ambSliced, N);
+                    amps = new Float64Array(mainAmps.length);
+                    for (let i = 0; i < mainAmps.length; i++) amps[i] = Math.max(0, mainAmps[i] - ambientAmps[i]);
                 }
 
                 exportTData = tSliced;
@@ -1177,6 +1441,33 @@
 
                 drawFFT(freqs, amps);
                 findTopFrequencies(freqs, amps);
+            }
+
+            function computeSpectrum(signal, N) {
+                const real = new Float64Array(N);
+                const imag = new Float64Array(N);
+                for (let i = 0; i < N; i++) {
+                    real[i] = signal[i] ?? 0;
+                    imag[i] = 0;
+                }
+                fftIterative(real, imag);
+                const halfN = N / 2;
+                const freqs = new Float64Array(halfN);
+                const amps = new Float64Array(halfN);
+                for (let k = 0; k < halfN; k++) {
+                    freqs[k] = k * globalFs / N;
+                    const mag = Math.sqrt(real[k] * real[k] + imag[k] * imag[k]);
+                    amps[k] = (k === 0) ? mag / N : 2 * mag / N;
+                }
+                return { freqs, amps };
+            }
+
+            function createMonoPlaybackBuffer(signal, sampleRate) {
+                if (!audioCtx) return null;
+                const monoBuffer = audioCtx.createBuffer(1, signal.length, sampleRate);
+                const monoData = monoBuffer.getChannelData(0);
+                for (let i = 0; i < signal.length; i++) monoData[i] = signal[i];
+                return monoBuffer;
             }
 
             // --- CSVエクスポート処理 ---
@@ -1441,6 +1732,32 @@
                                 max: !isNaN(yMaxVal) ? yMaxVal : undefined
                             }
                         }
+                    }
+                });
+            }
+
+            function drawAmbientWaveform(t, y) {
+                const len = Math.min(t.length, y.length);
+                const tCut = t.slice(0, len);
+                const yCut = y.slice(0, len);
+                const { t: dsT, y: dsY } = downsampleWaveform(tCut, yCut, 2000);
+                const ctx = document.getElementById('ambient-waveform-chart').getContext('2d');
+                if (ambientWaveformChart) ambientWaveformChart.destroy();
+                const scatterData = dsT.map((time, i) => ({ x: time, y: dsY[i] }));
+                ambientWaveformChart = new Chart(ctx, {
+                    type: 'line',
+                    plugins: [customCanvasBackgroundColor],
+                    data: { datasets: [{ data: scatterData, borderColor: '#64748b', borderWidth: 1.2, pointRadius: 0, tension: 0.1 }] },
+                    options: {
+                        responsive: true, maintainAspectRatio: false, animation: false,
+                        plugins: {
+                            legend: { display: false },
+                            annotation: { annotations: {
+                                selectionBox: { type: 'box', xMin: tCut[0], xMax: tCut[tCut.length - 1], backgroundColor: 'rgba(239, 68, 68, 0.12)', borderColor: '#ef4444', borderWidth: 2, drawTime: 'beforeDatasetsDraw' },
+                                playLine: { type: 'line', xMin: 0, xMax: 0, borderColor: '#10b981', borderWidth: 2, display: false, drawTime: 'afterDatasetsDraw' }
+                            } }
+                        },
+                        scales: { x: { type: 'linear' }, y: { } }
                     }
                 });
             }
