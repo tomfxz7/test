@@ -1130,7 +1130,8 @@
                     return;
                 }
                 if (source !== 'ambient-drop-zone' && source !== 'ambient-file-input') {
-                    showMessage('環境音は専用の環境音ゾーンまたは環境音追加ボタンから追加してください。', 'error');
+                    // 想定外の経路で来た場合は、主音としての差し替え意図を優先して主音ロードにフォールバック
+                    handleFile(file);
                     return;
                 }
                 const fileName = file.name.toLowerCase();
