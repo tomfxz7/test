@@ -76,6 +76,7 @@
   let analyzedData = [];
   let selectedIndex = -1;
   let audioCtx = null;
+  let currentSource = null;
   let waveChart = null;
   let fftChart = null;
 
@@ -194,15 +195,29 @@
 
   function selectFile(idx) {
     selectedIndex = idx;
-    const d = analyzedData[idx];
-    const max = Math.max(0, d.duration);
-    rangeStartInput.max = max; rangeEndInput.max = max;
-    rangeStartSlider.max = max; rangeEndSlider.max = max;
-    rangeStartInput.value = 0;
-    rangeEndInput.value = max.toFixed(3);
-    rangeStartSlider.value = 0;
-    rangeEndSlider.value = max;
+    syncSliderToInputs();
     updatePreview();
+  }
+
+  function getGlobalMaxDuration() {
+    let max = 0;
+    for (const d of analyzedData) {
+      if (!d.error && Number.isFinite(d.duration)) max = Math.max(max, d.duration);
+    }
+    return max;
+  }
+
+  function syncSliderToInputs() {
+    const globalMax = getGlobalMaxDuration();
+    rangeStartInput.max = globalMax;
+    rangeEndInput.max = globalMax;
+    rangeStartSlider.max = globalMax;
+    rangeEndSlider.max = globalMax;
+
+    const s = parseFloat(rangeStartInput.value || '0');
+    const e = parseFloat(rangeEndInput.value || '0');
+    if (Number.isFinite(s)) rangeStartSlider.value = Math.max(0, Math.min(globalMax, s));
+    if (Number.isFinite(e)) rangeEndSlider.value = Math.max(0, Math.min(globalMax, e));
   }
 
   function syncRange(from, commit = false) {
@@ -286,6 +301,7 @@
     results.forEach((r, i) => appendRow(r, analyzedData[i].error ? -1 : i));
     const success = results.filter(r => r.maxFreq !== 'ERROR').length;
     statusText.textContent = `完了: ${success} 件成功 / ${results.length} 件`;
+    syncSliderToInputs();
     if (selectedIndex < 0) {
       const firstValidIdx = analyzedData.findIndex(d => !d.error);
       if (firstValidIdx >= 0) selectFile(firstValidIdx);
@@ -318,18 +334,25 @@
   async function playSelectedRange() {
     if (selectedIndex < 0) return;
     const d = analyzedData[selectedIndex];
-    const s = parseFloat(rangeStartInput.value || '0');
-    const e = parseFloat(rangeEndInput.value || '0');
+    const { s, e } = getCurrentRangeForDetail(d);
     const sIdx = Math.floor(s * d.fs);
-    const eIdx = Math.max(sIdx + 1, Math.floor(e * d.fs));
+    const eIdx = Math.min(d.len, Math.max(sIdx + 1, Math.floor(e * d.fs)));
     const len = eIdx - sIdx;
+    if (len <= 1) return;
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === 'suspended') await audioCtx.resume();
+    if (currentSource) {
+      try { currentSource.stop(); } catch (_) {}
+      currentSource.disconnect();
+      currentSource = null;
+    }
     const buf = audioCtx.createBuffer(1, len, d.fs);
     const ch = buf.getChannelData(0);
     for (let i = 0; i < len; i++) ch[i] = d.main[sIdx + i] ?? 0;
     const src = audioCtx.createBufferSource();
     src.buffer = buf; src.connect(audioCtx.destination); src.start();
+    src.onended = () => { if (currentSource === src) currentSource = null; };
+    currentSource = src;
   }
 
   rangeStartInput.addEventListener('input', () => syncRange('si', false));
