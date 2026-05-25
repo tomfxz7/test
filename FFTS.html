@@ -296,7 +296,7 @@
     const eIdx = Math.min(d.len, Math.max(sIdx + 8, Math.floor(e * d.fs)));
     const mainSlice = d.main.slice(sIdx, eIdx);
     const ambSlice = d.ambient.slice(sIdx, eIdx);
-    let N = 1; while (N * 2 <= mainSlice.length && N * 2 <= 65536) N *= 2;
+    let N = 1; while (N * 2 <= mainSlice.length) N *= 2;
     const m = computeSpectrum(mainSlice, N, d.fs);
     const a = computeSpectrum(ambSlice, N, d.fs);
     let pIdx = 1, pAmp = -Infinity;
@@ -328,7 +328,7 @@
     const eIdx = Math.min(d.len, Math.max(sIdx + 8, Math.floor(e * d.fs)));
     const mainSlice = d.main.slice(sIdx, eIdx);
     const ambSlice = d.ambient.slice(sIdx, eIdx);
-    let N = 1; while (N * 2 <= mainSlice.length && N * 2 <= 65536) N *= 2;
+    let N = 1; while (N * 2 <= mainSlice.length) N *= 2;
     const m = computeSpectrum(mainSlice, N, d.fs);
     const a = computeSpectrum(ambSlice, N, d.fs);
     let pIdx = 1, pAmp = -Infinity;
