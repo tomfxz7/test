@@ -8,54 +8,67 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body class="bg-slate-50 text-slate-800 min-h-screen">
-  <div class="max-w-5xl mx-auto p-6">
+  <div class="max-w-7xl mx-auto p-6">
     <h1 class="text-2xl font-bold mb-2">FFTS Batch Analyzer</h1>
     <p class="text-sm text-slate-600 mb-6">複数WAVをドロップすると、1ch=環境音 / 2ch=主音としてFFTし、(主音-環境音)の最大周波数成分を一覧化します。</p>
 
-    <div id="drop-zone" class="border-4 border-dashed border-slate-300 bg-white rounded-xl p-10 text-center cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors">
-      <p class="text-lg font-semibold">WAVファイルを複数ドロップ</p>
-      <p class="text-sm text-slate-500 mt-1">またはクリックして複数選択</p>
-      <input id="file-input" class="hidden" type="file" accept=".wav,audio/wav" multiple />
-    </div>
+    <div class="grid grid-cols-1 lg:grid-cols-5 gap-6">
+      <div class="lg:col-span-3 space-y-6">
+        <div id="drop-zone" class="border-4 border-dashed border-slate-300 bg-white rounded-xl p-10 text-center cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors">
+          <p class="text-lg font-semibold">WAVファイルを複数ドロップ</p>
+          <p class="text-sm text-slate-500 mt-1">またはクリックして複数選択</p>
+          <input id="file-input" class="hidden" type="file" accept=".wav,audio/wav" multiple />
+        </div>
 
-    <div class="mt-6 flex items-center gap-3">
-      <button id="download-btn" type="button" class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-medium">CSVダウンロード</button>
-      <span id="status" class="text-sm text-slate-600"></span>
-    </div>
+        <div class="flex items-center gap-3">
+          <button id="download-btn" type="button" class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-medium">CSVダウンロード</button>
+          <span id="status" class="text-sm text-slate-600"></span>
+        </div>
 
-
-    <div class="mt-6 bg-white border border-slate-200 rounded-xl p-4">
-      <h2 class="font-semibold mb-3">選択ファイルのプレビュー（差し引き後FFT）</h2>
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
-        <div><label class="text-xs">開始秒</label><input id="range-start" type="number" step="0.001" value="0" class="w-full border rounded p-2"></div>
-        <div><label class="text-xs">終了秒</label><input id="range-end" type="number" step="0.001" value="0" class="w-full border rounded p-2"></div>
-        <div><label class="text-xs">開始スライダー</label><input id="range-start-slider" type="range" min="0" max="0" step="0.001" value="0" class="w-full"></div>
-        <div><label class="text-xs">終了スライダー</label><input id="range-end-slider" type="range" min="0" max="0" step="0.001" value="0" class="w-full"></div>
+        <div class="bg-white border border-slate-200 rounded-xl p-4">
+          <h2 class="font-semibold mb-3">選択ファイルのプレビュー（差し引き後FFT）</h2>
+          <div class="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+            <div><label class="text-xs">開始秒</label><input id="range-start" type="number" step="0.001" value="0" class="w-full border rounded p-2"></div>
+            <div><label class="text-xs">終了秒</label><input id="range-end" type="number" step="0.001" value="0" class="w-full border rounded p-2"></div>
+            <div><label class="text-xs">開始スライダー</label><input id="range-start-slider" type="range" min="0" max="0" step="0.001" value="0" class="w-full"></div>
+            <div><label class="text-xs">終了スライダー</label><input id="range-end-slider" type="range" min="0" max="0" step="0.001" value="0" class="w-full"></div>
+          </div>
+          <div class="mt-3 flex flex-wrap items-center gap-3">
+            <button id="play-btn" type="button" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm">波形再生</button>
+            <button id="reanalyze-btn" type="button" class="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded text-sm">再解析</button>
+            <label class="text-xs">FFT X上限(Hz)<input id="fft-x-max" type="number" min="0" step="1" class="ml-1 w-24 border rounded p-1"></label>
+            <label class="text-xs">FFT Y上限<input id="fft-y-max" type="number" min="0" step="0.0001" class="ml-1 w-24 border rounded p-1"></label>
+            <span id="preview-text" class="text-sm text-slate-700">未選択</span>
+          </div>
+          <div class="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div class="border rounded p-2"><p class="text-xs font-medium mb-1">範囲1(Hz)</p><div class="flex items-center gap-2"><input id="peak-range1-start" type="number" min="0" step="0.1" placeholder="start" class="w-full border rounded p-1 text-sm"><span class="text-xs">-</span><input id="peak-range1-end" type="number" min="0" step="0.1" placeholder="end" class="w-full border rounded p-1 text-sm"></div></div>
+            <div class="border rounded p-2"><p class="text-xs font-medium mb-1">範囲2(Hz)</p><div class="flex items-center gap-2"><input id="peak-range2-start" type="number" min="0" step="0.1" placeholder="start" class="w-full border rounded p-1 text-sm"><span class="text-xs">-</span><input id="peak-range2-end" type="number" min="0" step="0.1" placeholder="end" class="w-full border rounded p-1 text-sm"></div></div>
+            <div class="border rounded p-2"><p class="text-xs font-medium mb-1">範囲3(Hz)</p><div class="flex items-center gap-2"><input id="peak-range3-start" type="number" min="0" step="0.1" placeholder="start" class="w-full border rounded p-1 text-sm"><span class="text-xs">-</span><input id="peak-range3-end" type="number" min="0" step="0.1" placeholder="end" class="w-full border rounded p-1 text-sm"></div></div>
+          </div>
+          <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="bg-slate-50 border border-slate-200 rounded p-2 h-56"><canvas id="wave-preview"></canvas></div>
+            <div class="bg-slate-50 border border-slate-200 rounded p-2 h-56"><canvas id="fft-preview"></canvas></div>
+          </div>
+        </div>
       </div>
-      <div class="mt-3 flex items-center gap-3">
-        <button id="play-btn" type="button" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm">波形再生</button>
-        <button id="reanalyze-btn" type="button" class="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded text-sm">再解析</button>
-        <label class="text-xs">FFT X上限(Hz)<input id="fft-x-max" type="number" min="0" step="1" class="ml-1 w-24 border rounded p-1"></label>
-        <label class="text-xs">FFT Y上限<input id="fft-y-max" type="number" min="0" step="0.0001" class="ml-1 w-24 border rounded p-1"></label>
-        <span id="preview-text" class="text-sm text-slate-700">未選択</span>
-      </div>
-      <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div class="bg-slate-50 border border-slate-200 rounded p-2 h-56"><canvas id="wave-preview"></canvas></div>
-        <div class="bg-slate-50 border border-slate-200 rounded p-2 h-56"><canvas id="fft-preview"></canvas></div>
-      </div>
-    </div>
 
-    <div class="mt-6 overflow-x-auto bg-white border border-slate-200 rounded-xl">
-      <table class="min-w-full text-sm">
-        <thead class="bg-slate-100">
-          <tr>
-            <th id="sort-name" class="text-left p-3 cursor-pointer">ファイル名 ↕</th>
-            <th id="sort-freq" class="text-right p-3 cursor-pointer">最大周波数 (Hz) ↕</th>
-            <th id="sort-amp" class="text-right p-3 cursor-pointer">振幅 ↕</th>
-          </tr>
-        </thead>
-        <tbody id="result-body"></tbody>
-      </table>
+      <div class="lg:col-span-2 bg-white border border-slate-200 rounded-xl overflow-hidden h-[72vh] min-h-[480px] flex flex-col">
+        <div class="px-4 py-3 border-b border-slate-200 bg-slate-50">
+          <h2 class="font-semibold">解析結果テーブル</h2>
+        </div>
+        <div class="overflow-auto flex-1">
+          <table class="min-w-full text-sm">
+            <thead class="bg-slate-100 sticky top-0 z-10">
+              <tr>
+                <th id="sort-name" class="text-left p-3 cursor-pointer">ファイル名 ↕</th>
+                <th id="sort-freq" class="text-right p-3 cursor-pointer">最大周波数 (Hz) ↕</th>
+                <th id="sort-amp" class="text-right p-3 cursor-pointer">振幅 ↕</th>
+              </tr>
+            </thead>
+            <tbody id="result-body"></tbody>
+          </table>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -78,8 +91,14 @@
   const sortName = document.getElementById('sort-name');
   const sortFreq = document.getElementById('sort-freq');
   const sortAmp = document.getElementById('sort-amp');
+  const tableHeadRow = document.querySelector('thead tr');
   const wavePreviewCanvas = document.getElementById('wave-preview');
   const fftPreviewCanvas = document.getElementById('fft-preview');
+  const peakRangeInputs = [
+    { start: document.getElementById('peak-range1-start'), end: document.getElementById('peak-range1-end') },
+    { start: document.getElementById('peak-range2-start'), end: document.getElementById('peak-range2-end') },
+    { start: document.getElementById('peak-range3-start'), end: document.getElementById('peak-range3-end') }
+  ];
 
   let results = [];
   let analyzedData = [];
@@ -116,8 +135,15 @@
 
   downloadBtn.addEventListener('click', () => {
     if (results.length === 0) return;
-    const header = 'name,max_frequency_hz,amplitude\n';
-    const rows = getSortedResults().map(r => `${escapeCsv(r.name)},${r.maxFreq},${r.maxAmp}`);
+    const ranges = getConfiguredPeakRanges();
+    const headerCols = ['name','max_frequency_hz','amplitude'];
+    for (let i = 0; i < ranges.length; i++) headerCols.push(`range${i + 1}_label_hz`, `range${i + 1}_max_frequency_hz`, `range${i + 1}_amplitude`);
+    const rows = getSortedResults().map(r => {
+      const cols = [escapeCsv(r.name), r.maxFreq, r.maxAmp];
+      for (const p of (r.rangePeaks || [])) cols.push(escapeCsv(p.label), p.maxFreq, p.maxAmp);
+      return cols.join(',');
+    });
+    const header = headerCols.join(',') + '\n';
     const blob = new Blob([header + rows.join('\n')], { type: 'text/csv' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -160,10 +186,12 @@
   function appendRow(r, idx = -1) {
     const tr = document.createElement('tr');
     tr.className = 'border-t border-slate-100 cursor-pointer hover:bg-slate-50';
+    const rangeCols = (r.rangePeaks || []).map(p => `<td class="p-3 text-right">${p.maxFreq && p.maxAmp ? `${p.maxFreq} Hz / ${p.maxAmp}` : '-'}</td>`).join('');
     tr.innerHTML = `
       <td class="p-3">${r.name}</td>
       <td class="p-3 text-right">${r.maxFreq}</td>
       <td class="p-3 text-right">${r.maxAmp}</td>
+      ${rangeCols}
     `;
     if (idx >= 0) tr.addEventListener('click', () => selectFile(idx));
     resultBody.appendChild(tr);
@@ -220,6 +248,10 @@
   sortAmp.addEventListener('click', () => toggleSort('maxAmp'));
   fftXMaxInput.addEventListener('input', () => { if (selectedIndex >= 0) updatePreview(); });
   fftYMaxInput.addEventListener('input', () => { if (selectedIndex >= 0) updatePreview(); });
+  for (const pair of peakRangeInputs) {
+    pair.start.addEventListener('change', recalculateAllResults);
+    pair.end.addEventListener('change', recalculateAllResults);
+  }
 
   function toggleSort(key) {
     if (sortKey === key) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
@@ -240,8 +272,22 @@
   }
 
   function renderResultTable() {
+    renderTableHeader();
     resultBody.innerHTML = '';
     getSortedResults().forEach((r) => appendRow(r, analyzedData[r._idx].error ? -1 : r._idx));
+  }
+
+  function renderTableHeader() {
+    const ranges = getConfiguredPeakRanges();
+    tableHeadRow.innerHTML = `
+      <th id="sort-name" class="text-left p-3 cursor-pointer">ファイル名 ↕</th>
+      <th id="sort-freq" class="text-right p-3 cursor-pointer">最大周波数 (Hz) ↕</th>
+      <th id="sort-amp" class="text-right p-3 cursor-pointer">振幅 ↕</th>
+      ${ranges.map((r, i) => `<th class="text-right p-3">範囲${i + 1} ${r.start.toFixed(1)}-${r.end.toFixed(1)}Hz 最大</th>`).join('')}
+    `;
+    document.getElementById('sort-name').addEventListener('click', () => toggleSort('name'));
+    document.getElementById('sort-freq').addEventListener('click', () => toggleSort('maxFreq'));
+    document.getElementById('sort-amp').addEventListener('click', () => toggleSort('maxAmp'));
   }
 
   function getGlobalMaxDuration() {
@@ -335,7 +381,35 @@
       const v = Math.max(0, m.amps[i] - a.amps[i]);
       if (v > pAmp) { pAmp = v; pIdx = i; }
     }
-    return { name: d.name, maxFreq: m.freqs[pIdx].toFixed(2), maxAmp: pAmp.toFixed(6) };
+    const rangePeaks = getConfiguredPeakRanges().map(r => findPeakInFrequencyRange(m.freqs, m.amps, a.amps, r.start, r.end));
+    return { name: d.name, maxFreq: m.freqs[pIdx].toFixed(2), maxAmp: pAmp.toFixed(6), rangePeaks };
+  }
+
+  function getConfiguredPeakRanges() {
+    const ranges = [];
+    for (const pair of peakRangeInputs) {
+      const s = parseFloat(pair.start.value || '');
+      const e = parseFloat(pair.end.value || '');
+      if (!Number.isFinite(s) || !Number.isFinite(e)) continue;
+      const start = Math.max(0, Math.min(s, e));
+      const end = Math.max(0, Math.max(s, e));
+      if (end > start) ranges.push({ start, end });
+    }
+    return ranges;
+  }
+
+  function findPeakInFrequencyRange(freqs, mainAmps, ambAmps, startHz, endHz) {
+    let bestIdx = -1;
+    let bestAmp = -Infinity;
+    for (let i = 1; i < freqs.length; i++) {
+      const f = freqs[i];
+      if (f < startHz || f > endHz) continue;
+      const v = Math.max(0, mainAmps[i] - ambAmps[i]);
+      if (v > bestAmp) { bestAmp = v; bestIdx = i; }
+    }
+    const label = `${startHz.toFixed(1)}-${endHz.toFixed(1)}Hz`;
+    if (bestIdx < 0) return { label, maxFreq: '', maxAmp: '' };
+    return { label, maxFreq: freqs[bestIdx].toFixed(2), maxAmp: bestAmp.toFixed(6) };
   }
 
   function recalculateAllResults() {
@@ -362,9 +436,7 @@
       data: { datasets: [{ data: wave, borderColor: '#3b82f6', pointRadius: 0, borderWidth: 1 }] },
       options: { animation: false, responsive: true, maintainAspectRatio: false, parsing: false, scales: { x: { type: 'linear' } } }
     });
-    const fft = [];
-    const fftStep = Math.max(1, Math.floor(freqs.length / 1500));
-    for (let i = 0; i < freqs.length; i += fftStep) fft.push({ x: freqs[i], y: subAmps[i] ?? 0 });
+    const fft = buildPeakPreservingFftSeries(freqs, subAmps, 1500);
     if (fftChart) fftChart.destroy();
     const fftXMax = parseFloat(fftXMaxInput.value);
     const fftYMax = parseFloat(fftYMaxInput.value);
@@ -383,6 +455,32 @@
         }
       }
     });
+  }
+
+  function buildPeakPreservingFftSeries(freqs, amps, maxPoints = 1500) {
+    const n = freqs.length;
+    if (n <= maxPoints) {
+      const full = [];
+      for (let i = 0; i < n; i++) full.push({ x: freqs[i], y: amps[i] ?? 0 });
+      return full;
+    }
+
+    const bucketSize = Math.ceil(n / maxPoints);
+    const points = [];
+    for (let start = 0; start < n; start += bucketSize) {
+      const end = Math.min(n, start + bucketSize);
+      let peakIdx = start;
+      let peakAmp = -Infinity;
+      for (let i = start; i < end; i++) {
+        const amp = amps[i] ?? 0;
+        if (amp > peakAmp) {
+          peakAmp = amp;
+          peakIdx = i;
+        }
+      }
+      points.push({ x: freqs[peakIdx], y: peakAmp });
+    }
+    return points;
   }
 
   async function playSelectedRange() {
