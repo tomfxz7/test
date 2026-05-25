@@ -132,15 +132,12 @@
     for (const file of files) {
       try {
         const res = await analyzeWav(file);
-        results.push(res.summary);
         analyzedData.push(res.detail);
-        appendRow(res.summary, analyzedData.length - 1);
       } catch (err) {
-        appendRow({ name: file.name, maxFreq: 'ERROR', maxAmp: err.message });
+        analyzedData.push({ name: file.name, error: err.message, fs: 0, main: new Float32Array(), ambient: new Float32Array(), len: 0, duration: 0 });
       }
     }
-
-    statusText.textContent = `完了: ${results.length} 件成功`;
+    recalculateAllResults();
   }
 
   function appendRow(r, idx = -1) {
@@ -222,6 +219,7 @@
       rangeEndInput.value = e;
       rangeStartSlider.value = s;
       rangeEndSlider.value = e;
+      recalculateAllResults();
       updatePreview();
     } else {
       if (from === 'si') rangeStartSlider.value = Math.max(0, Math.min(max, s || 0));
@@ -249,6 +247,44 @@
     }
     previewText.textContent = `${d.name} | ${s.toFixed(3)}s〜${e.toFixed(3)}s | Peak ${m.freqs[pIdx].toFixed(2)} Hz / ${pAmp.toFixed(6)}`;
     renderCharts(d, sIdx, eIdx, m.freqs, sub);
+  }
+
+  function getCurrentRangeForDetail(d) {
+    const max = d.duration;
+    let s = parseFloat(rangeStartInput.value || '0');
+    let e = parseFloat(rangeEndInput.value || String(max));
+    if (!Number.isFinite(s)) s = 0;
+    if (!Number.isFinite(e)) e = max;
+    if (e < s) [s, e] = [e, s];
+    s = Math.max(0, Math.min(max, s));
+    e = Math.max(0, Math.min(max, e));
+    return { s, e };
+  }
+
+  function analyzeRangeDetail(d) {
+    if (d.error) return { name: d.name, maxFreq: 'ERROR', maxAmp: d.error };
+    const { s, e } = getCurrentRangeForDetail(d);
+    const sIdx = Math.floor(s * d.fs);
+    const eIdx = Math.min(d.len, Math.max(sIdx + 8, Math.floor(e * d.fs)));
+    const mainSlice = d.main.slice(sIdx, eIdx);
+    const ambSlice = d.ambient.slice(sIdx, eIdx);
+    let N = 1; while (N * 2 <= mainSlice.length && N * 2 <= 65536) N *= 2;
+    const m = computeSpectrum(mainSlice, N, d.fs);
+    const a = computeSpectrum(ambSlice, N, d.fs);
+    let pIdx = 1, pAmp = -Infinity;
+    for (let i = 1; i < m.amps.length; i++) {
+      const v = Math.max(0, m.amps[i] - a.amps[i]);
+      if (v > pAmp) { pAmp = v; pIdx = i; }
+    }
+    return { name: d.name, maxFreq: m.freqs[pIdx].toFixed(2), maxAmp: pAmp.toFixed(6) };
+  }
+
+  function recalculateAllResults() {
+    results = analyzedData.map(d => analyzeRangeDetail(d));
+    resultBody.innerHTML = '';
+    results.forEach((r, i) => appendRow(r, analyzedData[i].error ? -1 : i));
+    const success = results.filter(r => r.maxFreq !== 'ERROR').length;
+    statusText.textContent = `完了: ${success} 件成功 / ${results.length} 件`;
   }
 
   function renderCharts(d, sIdx, eIdx, freqs, subAmps) {
