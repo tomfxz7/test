@@ -34,6 +34,7 @@
       </div>
       <div class="mt-3 flex items-center gap-3">
         <button id="play-btn" type="button" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm">波形再生</button>
+        <button id="reanalyze-btn" type="button" class="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded text-sm">再解析</button>
         <label class="text-xs">FFT X上限(Hz)<input id="fft-x-max" type="number" min="0" step="1" class="ml-1 w-24 border rounded p-1"></label>
         <label class="text-xs">FFT Y上限<input id="fft-y-max" type="number" min="0" step="0.0001" class="ml-1 w-24 border rounded p-1"></label>
         <span id="preview-text" class="text-sm text-slate-700">未選択</span>
@@ -70,6 +71,7 @@
   const rangeStartSlider = document.getElementById('range-start-slider');
   const rangeEndSlider = document.getElementById('range-end-slider');
   const playBtn = document.getElementById('play-btn');
+  const reanalyzeBtn = document.getElementById('reanalyze-btn');
   const previewText = document.getElementById('preview-text');
   const fftXMaxInput = document.getElementById('fft-x-max');
   const fftYMaxInput = document.getElementById('fft-y-max');
@@ -278,7 +280,6 @@
       rangeEndInput.value = e;
       rangeStartSlider.value = s;
       rangeEndSlider.value = e;
-      recalculateAllResults();
       updatePreview();
     } else {
       if (from === 'si') rangeStartSlider.value = Math.max(0, Math.min(max, s || 0));
@@ -418,6 +419,11 @@
   rangeStartSlider.addEventListener('input', () => syncRange('ss', true));
   rangeEndSlider.addEventListener('input', () => syncRange('es', true));
   playBtn.addEventListener('click', playSelectedRange);
+  reanalyzeBtn.addEventListener('click', () => {
+    if (analyzedData.length === 0) return;
+    recalculateAllResults();
+    if (selectedIndex >= 0) updatePreview();
+  });
 
   function computeSpectrum(signal, N, fs) {
     const real = new Float64Array(N);
