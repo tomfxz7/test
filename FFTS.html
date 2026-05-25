@@ -370,8 +370,18 @@
     const fftYMax = parseFloat(fftYMaxInput.value);
     fftChart = new Chart(fftPreviewCanvas.getContext('2d'), {
       type: 'line',
-      data: { datasets: [{ data: fft, borderColor: '#ef4444', pointRadius: 0, borderWidth: 1, fill: true, backgroundColor: 'rgba(239,68,68,0.12)' }] },
-      options: { animation: false, responsive: true, maintainAspectRatio: false, parsing: false, scales: { x: { type: 'linear', max: Number.isFinite(fftXMax) && fftXMax > 0 ? fftXMax : undefined }, y: { max: Number.isFinite(fftYMax) && fftYMax > 0 ? fftYMax : undefined } } }
+      data: { datasets: [{ label: 'subtracted spectrum', data: fft.filter(p => p.x > 0), borderColor: '#ef4444', pointRadius: 0, borderWidth: 1, fill: true, backgroundColor: 'rgba(239,68,68,0.12)' }] },
+      options: {
+        animation: false,
+        responsive: true,
+        maintainAspectRatio: false,
+        parsing: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { type: 'linear', max: Number.isFinite(fftXMax) && fftXMax > 0 ? fftXMax : undefined },
+          y: { max: Number.isFinite(fftYMax) && fftYMax > 0 ? fftYMax : undefined }
+        }
+      }
     });
   }
 
