@@ -290,8 +290,7 @@
   function updatePreview() {
     if (selectedIndex < 0) return;
     const d = analyzedData[selectedIndex];
-    const s = parseFloat(rangeStartInput.value || '0');
-    const e = parseFloat(rangeEndInput.value || '0');
+    const { s, e } = getCurrentRangeForDetail(d);
     const sIdx = Math.floor(s * d.fs);
     const eIdx = Math.min(d.len, Math.max(sIdx + 8, Math.floor(e * d.fs)));
     const mainSlice = d.main.slice(sIdx, eIdx);
