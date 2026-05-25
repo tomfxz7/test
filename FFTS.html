@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FFTS Batch Analyzer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen">
+  <div class="max-w-5xl mx-auto p-6">
+    <h1 class="text-2xl font-bold mb-2">FFTS Batch Analyzer</h1>
+    <p class="text-sm text-slate-600 mb-6">複数WAVをドロップすると、1ch=環境音 / 2ch=主音としてFFTし、(主音-環境音)の最大周波数成分を一覧化します。</p>
+
+    <div id="drop-zone" class="border-4 border-dashed border-slate-300 bg-white rounded-xl p-10 text-center cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors">
+      <p class="text-lg font-semibold">WAVファイルを複数ドロップ</p>
+      <p class="text-sm text-slate-500 mt-1">またはクリックして複数選択</p>
+      <input id="file-input" class="hidden" type="file" accept=".wav,audio/wav" multiple />
+    </div>
+
+    <div class="mt-6 flex items-center gap-3">
+      <button id="download-btn" type="button" class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-medium">CSVダウンロード</button>
+      <span id="status" class="text-sm text-slate-600"></span>
+    </div>
+
+
+    <div class="mt-6 bg-white border border-slate-200 rounded-xl p-4">
+      <h2 class="font-semibold mb-3">選択ファイルのプレビュー（差し引き後FFT）</h2>
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+        <div><label class="text-xs">開始秒</label><input id="range-start" type="number" step="0.001" value="0" class="w-full border rounded p-2"></div>
+        <div><label class="text-xs">終了秒</label><input id="range-end" type="number" step="0.001" value="0" class="w-full border rounded p-2"></div>
+        <div><label class="text-xs">開始スライダー</label><input id="range-start-slider" type="range" min="0" max="0" step="0.001" value="0" class="w-full"></div>
+        <div><label class="text-xs">終了スライダー</label><input id="range-end-slider" type="range" min="0" max="0" step="0.001" value="0" class="w-full"></div>
+      </div>
+      <div class="mt-3 flex items-center gap-3">
+        <button id="play-btn" type="button" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm">波形再生</button>
+        <span id="preview-text" class="text-sm text-slate-700">未選択</span>
+      </div>
+      <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="bg-slate-50 border border-slate-200 rounded p-2 h-56"><canvas id="wave-preview"></canvas></div>
+        <div class="bg-slate-50 border border-slate-200 rounded p-2 h-56"><canvas id="fft-preview"></canvas></div>
+      </div>
+    </div>
+
+    <div class="mt-6 overflow-x-auto bg-white border border-slate-200 rounded-xl">
+      <table class="min-w-full text-sm">
+        <thead class="bg-slate-100">
+          <tr>
+            <th class="text-left p-3">ファイル名</th>
+            <th class="text-right p-3">最大周波数 (Hz)</th>
+            <th class="text-right p-3">振幅</th>
+          </tr>
+        </thead>
+        <tbody id="result-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const dropZone = document.getElementById('drop-zone');
+  const fileInput = document.getElementById('file-input');
+  const resultBody = document.getElementById('result-body');
+  const downloadBtn = document.getElementById('download-btn');
+  const statusText = document.getElementById('status');
+  const rangeStartInput = document.getElementById('range-start');
+  const rangeEndInput = document.getElementById('range-end');
+  const rangeStartSlider = document.getElementById('range-start-slider');
+  const rangeEndSlider = document.getElementById('range-end-slider');
+  const playBtn = document.getElementById('play-btn');
+  const previewText = document.getElementById('preview-text');
+  const wavePreviewCanvas = document.getElementById('wave-preview');
+  const fftPreviewCanvas = document.getElementById('fft-preview');
+
+  let results = [];
+  let analyzedData = [];
+  let selectedIndex = -1;
+  let audioCtx = null;
+  let waveChart = null;
+  let fftChart = null;
+
+  dropZone.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async (e) => {
+    if (e.target.files.length > 0) await processFiles(Array.from(e.target.files));
+    e.target.value = '';
+  });
+
+  dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropZone.classList.add('border-blue-500', 'bg-blue-50');
+  });
+  dropZone.addEventListener('dragleave', () => {
+    dropZone.classList.remove('border-blue-500', 'bg-blue-50');
+  });
+  dropZone.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('border-blue-500', 'bg-blue-50');
+    const wavs = Array.from(e.dataTransfer.files).filter(f => f.name.toLowerCase().endsWith('.wav'));
+    if (wavs.length > 0) await processFiles(wavs);
+  });
+
+  window.addEventListener('dragover', (e) => e.preventDefault());
+  window.addEventListener('drop', (e) => e.preventDefault());
+
+  downloadBtn.addEventListener('click', () => {
+    if (results.length === 0) return;
+    const header = 'name,max_frequency_hz,amplitude\n';
+    const rows = results.map(r => `${escapeCsv(r.name)},${r.maxFreq},${r.maxAmp}`);
+    const blob = new Blob([header + rows.join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'ffts_batch_results.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  function escapeCsv(s) {
+    const t = String(s);
+    if (t.includes(',') || t.includes('"') || t.includes('\n')) {
+      return '"' + t.replace(/"/g, '""') + '"';
+    }
+    return t;
+  }
+
+  async function processFiles(files) {
+    results = [];
+    analyzedData = [];
+    selectedIndex = -1;
+    resultBody.innerHTML = '';
+    statusText.textContent = `処理中... (${files.length} files)`;
+
+    for (const file of files) {
+      try {
+        const res = await analyzeWav(file);
+        analyzedData.push(res.detail);
+      } catch (err) {
+        analyzedData.push({ name: file.name, error: err.message, fs: 0, main: new Float32Array(), ambient: new Float32Array(), len: 0, duration: 0 });
+      }
+    }
+    recalculateAllResults();
+  }
+
+  function appendRow(r, idx = -1) {
+    const tr = document.createElement('tr');
+    tr.className = 'border-t border-slate-100 cursor-pointer hover:bg-slate-50';
+    tr.innerHTML = `
+      <td class="p-3">${r.name}</td>
+      <td class="p-3 text-right">${r.maxFreq}</td>
+      <td class="p-3 text-right">${r.maxAmp}</td>
+    `;
+    if (idx >= 0) tr.addEventListener('click', () => selectFile(idx));
+    resultBody.appendChild(tr);
+  }
+
+  async function analyzeWav(file) {
+    const arrayBuffer = await file.arrayBuffer();
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const audioBuffer = await new Promise((resolve, reject) => audioCtx.decodeAudioData(arrayBuffer, resolve, reject));
+
+    if (audioBuffer.numberOfChannels < 2) {
+      throw new Error('2ch未満のため解析不可');
+    }
+
+    const fs = audioBuffer.sampleRate;
+    const ambient = audioBuffer.getChannelData(0);
+    const main = audioBuffer.getChannelData(1);
+    const len = Math.min(ambient.length, main.length);
+
+    let N = 1;
+    while (N * 2 <= len && N * 2 <= 65536) N *= 2;
+
+    const mainSpec = computeSpectrum(main, N, fs);
+    const ambientSpec = computeSpectrum(ambient, N, fs);
+
+    const amps = new Float64Array(mainSpec.amps.length);
+    for (let i = 0; i < amps.length; i++) amps[i] = Math.max(0, mainSpec.amps[i] - ambientSpec.amps[i]);
+
+    let peakIdx = 0;
+    let peakAmp = -Infinity;
+    for (let i = 1; i < amps.length; i++) {
+      if (amps[i] > peakAmp) {
+        peakAmp = amps[i];
+        peakIdx = i;
+      }
+    }
+
+    return {
+      summary: { name: file.name, maxFreq: mainSpec.freqs[peakIdx].toFixed(2), maxAmp: peakAmp.toFixed(6) },
+      detail: { name: file.name, fs, main, ambient, len, duration: len / fs }
+    };
+  }
+
+
+
+  function selectFile(idx) {
+    selectedIndex = idx;
+    const d = analyzedData[idx];
+    const max = Math.max(0, d.duration);
+    rangeStartInput.max = max; rangeEndInput.max = max;
+    rangeStartSlider.max = max; rangeEndSlider.max = max;
+    rangeStartInput.value = 0;
+    rangeEndInput.value = max.toFixed(3);
+    rangeStartSlider.value = 0;
+    rangeEndSlider.value = max;
+    updatePreview();
+  }
+
+  function syncRange(from, commit = false) {
+    const max = selectedIndex >= 0 ? analyzedData[selectedIndex].duration : 0;
+    let s = parseFloat(rangeStartInput.value || '0');
+    let e = parseFloat(rangeEndInput.value || '0');
+    if (from === 'ss') s = parseFloat(rangeStartSlider.value || '0');
+    if (from === 'es') e = parseFloat(rangeEndSlider.value || '0');
+    if (commit) {
+      if (e < s) [s, e] = [e, s];
+      s = Math.max(0, Math.min(max, s));
+      e = Math.max(0, Math.min(max, e));
+      rangeStartInput.value = s;
+      rangeEndInput.value = e;
+      rangeStartSlider.value = s;
+      rangeEndSlider.value = e;
+      recalculateAllResults();
+      updatePreview();
+    } else {
+      if (from === 'si') rangeStartSlider.value = Math.max(0, Math.min(max, s || 0));
+      if (from === 'ei') rangeEndSlider.value = Math.max(0, Math.min(max, e || 0));
+    }
+  }
+
+  function updatePreview() {
+    if (selectedIndex < 0) return;
+    const d = analyzedData[selectedIndex];
+    const s = parseFloat(rangeStartInput.value || '0');
+    const e = parseFloat(rangeEndInput.value || '0');
+    const sIdx = Math.floor(s * d.fs);
+    const eIdx = Math.min(d.len, Math.max(sIdx + 8, Math.floor(e * d.fs)));
+    const mainSlice = d.main.slice(sIdx, eIdx);
+    const ambSlice = d.ambient.slice(sIdx, eIdx);
+    let N = 1; while (N * 2 <= mainSlice.length && N * 2 <= 65536) N *= 2;
+    const m = computeSpectrum(mainSlice, N, d.fs);
+    const a = computeSpectrum(ambSlice, N, d.fs);
+    let pIdx = 1, pAmp = -Infinity;
+    const sub = new Float64Array(m.amps.length);
+    for (let i = 1; i < m.amps.length; i++) {
+      const v = Math.max(0, m.amps[i] - a.amps[i]); sub[i] = v;
+      if (v > pAmp) { pAmp = v; pIdx = i; }
+    }
+    previewText.textContent = `${d.name} | ${s.toFixed(3)}s〜${e.toFixed(3)}s | Peak ${m.freqs[pIdx].toFixed(2)} Hz / ${pAmp.toFixed(6)}`;
+    renderCharts(d, sIdx, eIdx, m.freqs, sub);
+  }
+
+  function getCurrentRangeForDetail(d) {
+    const max = d.duration;
+    let s = parseFloat(rangeStartInput.value || '0');
+    let e = parseFloat(rangeEndInput.value || String(max));
+    if (!Number.isFinite(s)) s = 0;
+    if (!Number.isFinite(e)) e = max;
+    if (e < s) [s, e] = [e, s];
+    s = Math.max(0, Math.min(max, s));
+    e = Math.max(0, Math.min(max, e));
+    return { s, e };
+  }
+
+  function analyzeRangeDetail(d) {
+    if (d.error) return { name: d.name, maxFreq: 'ERROR', maxAmp: d.error };
+    const { s, e } = getCurrentRangeForDetail(d);
+    const sIdx = Math.floor(s * d.fs);
+    const eIdx = Math.min(d.len, Math.max(sIdx + 8, Math.floor(e * d.fs)));
+    const mainSlice = d.main.slice(sIdx, eIdx);
+    const ambSlice = d.ambient.slice(sIdx, eIdx);
+    let N = 1; while (N * 2 <= mainSlice.length && N * 2 <= 65536) N *= 2;
+    const m = computeSpectrum(mainSlice, N, d.fs);
+    const a = computeSpectrum(ambSlice, N, d.fs);
+    let pIdx = 1, pAmp = -Infinity;
+    for (let i = 1; i < m.amps.length; i++) {
+      const v = Math.max(0, m.amps[i] - a.amps[i]);
+      if (v > pAmp) { pAmp = v; pIdx = i; }
+    }
+    return { name: d.name, maxFreq: m.freqs[pIdx].toFixed(2), maxAmp: pAmp.toFixed(6) };
+  }
+
+  function recalculateAllResults() {
+    results = analyzedData.map(d => analyzeRangeDetail(d));
+    resultBody.innerHTML = '';
+    results.forEach((r, i) => appendRow(r, analyzedData[i].error ? -1 : i));
+    const success = results.filter(r => r.maxFreq !== 'ERROR').length;
+    statusText.textContent = `完了: ${success} 件成功 / ${results.length} 件`;
+  }
+
+  function renderCharts(d, sIdx, eIdx, freqs, subAmps) {
+    const step = Math.max(1, Math.floor((eIdx - sIdx) / 1500));
+    const wave = [];
+    for (let i = sIdx; i < eIdx; i += step) wave.push({ x: i / d.fs, y: d.main[i] ?? 0 });
+    if (waveChart) waveChart.destroy();
+    waveChart = new Chart(wavePreviewCanvas.getContext('2d'), {
+      type: 'line',
+      data: { datasets: [{ data: wave, borderColor: '#3b82f6', pointRadius: 0, borderWidth: 1 }] },
+      options: { animation: false, responsive: true, maintainAspectRatio: false, parsing: false, scales: { x: { type: 'linear' } } }
+    });
+    const fft = [];
+    const fftStep = Math.max(1, Math.floor(freqs.length / 1500));
+    for (let i = 0; i < freqs.length; i += fftStep) fft.push({ x: freqs[i], y: subAmps[i] ?? 0 });
+    if (fftChart) fftChart.destroy();
+    fftChart = new Chart(fftPreviewCanvas.getContext('2d'), {
+      type: 'line',
+      data: { datasets: [{ data: fft, borderColor: '#ef4444', pointRadius: 0, borderWidth: 1, fill: true, backgroundColor: 'rgba(239,68,68,0.12)' }] },
+      options: { animation: false, responsive: true, maintainAspectRatio: false, parsing: false, scales: { x: { type: 'linear' } } }
+    });
+  }
+
+  async function playSelectedRange() {
+    if (selectedIndex < 0) return;
+    const d = analyzedData[selectedIndex];
+    const s = parseFloat(rangeStartInput.value || '0');
+    const e = parseFloat(rangeEndInput.value || '0');
+    const sIdx = Math.floor(s * d.fs);
+    const eIdx = Math.max(sIdx + 1, Math.floor(e * d.fs));
+    const len = eIdx - sIdx;
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    const buf = audioCtx.createBuffer(1, len, d.fs);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) ch[i] = d.main[sIdx + i] ?? 0;
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf; src.connect(audioCtx.destination); src.start();
+  }
+
+  rangeStartInput.addEventListener('input', () => syncRange('si', false));
+  rangeEndInput.addEventListener('input', () => syncRange('ei', false));
+  rangeStartInput.addEventListener('change', () => syncRange('si', true));
+  rangeEndInput.addEventListener('change', () => syncRange('ei', true));
+  rangeStartSlider.addEventListener('input', () => syncRange('ss', true));
+  rangeEndSlider.addEventListener('input', () => syncRange('es', true));
+  playBtn.addEventListener('click', playSelectedRange);
+
+  function computeSpectrum(signal, N, fs) {
+    const real = new Float64Array(N);
+    const imag = new Float64Array(N);
+    for (let i = 0; i < N; i++) real[i] = signal[i] ?? 0;
+
+    fftIterative(real, imag);
+
+    const halfN = N / 2;
+    const freqs = new Float64Array(halfN);
+    const amps = new Float64Array(halfN);
+    for (let k = 0; k < halfN; k++) {
+      freqs[k] = k * fs / N;
+      const mag = Math.sqrt(real[k] * real[k] + imag[k] * imag[k]);
+      amps[k] = (k === 0) ? mag / N : 2 * mag / N;
+    }
+    return { freqs, amps };
+  }
+
+  function fftIterative(real, imag) {
+    const n = real.length;
+    let j = 0;
+    for (let i = 1; i < n; i++) {
+      let bit = n >> 1;
+      while (j & bit) {
+        j ^= bit;
+        bit >>= 1;
+      }
+      j |= bit;
+      if (i < j) {
+        [real[i], real[j]] = [real[j], real[i]];
+        [imag[i], imag[j]] = [imag[j], imag[i]];
+      }
+    }
+
+    for (let len = 2; len <= n; len <<= 1) {
+      const ang = -2 * Math.PI / len;
+      const wlenCos = Math.cos(ang);
+      const wlenSin = Math.sin(ang);
+
+      for (let i = 0; i < n; i += len) {
+        let wCos = 1;
+        let wSin = 0;
+        for (let k = 0; k < len / 2; k++) {
+          const uRe = real[i + k];
+          const uIm = imag[i + k];
+          const vRe = real[i + k + len / 2] * wCos - imag[i + k + len / 2] * wSin;
+          const vIm = real[i + k + len / 2] * wSin + imag[i + k + len / 2] * wCos;
+
+          real[i + k] = uRe + vRe;
+          imag[i + k] = uIm + vIm;
+          real[i + k + len / 2] = uRe - vRe;
+          imag[i + k + len / 2] = uIm - vIm;
+
+          const nextCos = wCos * wlenCos - wSin * wlenSin;
+          wSin = wCos * wlenSin + wSin * wlenCos;
+          wCos = nextCos;
+        }
+      }
+    }
+  }
+})();
+</script>
+</body>
+</html>
