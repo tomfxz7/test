@@ -34,6 +34,8 @@
       </div>
       <div class="mt-3 flex items-center gap-3">
         <button id="play-btn" type="button" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm">波形再生</button>
+        <label class="text-xs">FFT X上限(Hz)<input id="fft-x-max" type="number" min="0" step="1" class="ml-1 w-24 border rounded p-1"></label>
+        <label class="text-xs">FFT Y上限<input id="fft-y-max" type="number" min="0" step="0.0001" class="ml-1 w-24 border rounded p-1"></label>
         <span id="preview-text" class="text-sm text-slate-700">未選択</span>
       </div>
       <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -46,9 +48,9 @@
       <table class="min-w-full text-sm">
         <thead class="bg-slate-100">
           <tr>
-            <th class="text-left p-3">ファイル名</th>
-            <th class="text-right p-3">最大周波数 (Hz)</th>
-            <th class="text-right p-3">振幅</th>
+            <th id="sort-name" class="text-left p-3 cursor-pointer">ファイル名 ↕</th>
+            <th id="sort-freq" class="text-right p-3 cursor-pointer">最大周波数 (Hz) ↕</th>
+            <th id="sort-amp" class="text-right p-3 cursor-pointer">振幅 ↕</th>
           </tr>
         </thead>
         <tbody id="result-body"></tbody>
@@ -69,6 +71,11 @@
   const rangeEndSlider = document.getElementById('range-end-slider');
   const playBtn = document.getElementById('play-btn');
   const previewText = document.getElementById('preview-text');
+  const fftXMaxInput = document.getElementById('fft-x-max');
+  const fftYMaxInput = document.getElementById('fft-y-max');
+  const sortName = document.getElementById('sort-name');
+  const sortFreq = document.getElementById('sort-freq');
+  const sortAmp = document.getElementById('sort-amp');
   const wavePreviewCanvas = document.getElementById('wave-preview');
   const fftPreviewCanvas = document.getElementById('fft-preview');
 
@@ -77,6 +84,8 @@
   let selectedIndex = -1;
   let audioCtx = null;
   let currentSource = null;
+  let sortKey = 'name';
+  let sortDir = 'asc';
   let waveChart = null;
   let fftChart = null;
 
@@ -106,7 +115,7 @@
   downloadBtn.addEventListener('click', () => {
     if (results.length === 0) return;
     const header = 'name,max_frequency_hz,amplitude\n';
-    const rows = results.map(r => `${escapeCsv(r.name)},${r.maxFreq},${r.maxAmp}`);
+    const rows = getSortedResults().map(r => `${escapeCsv(r.name)},${r.maxFreq},${r.maxAmp}`);
     const blob = new Blob([header + rows.join('\n')], { type: 'text/csv' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -137,6 +146,11 @@
       } catch (err) {
         analyzedData.push({ name: file.name, error: err.message, fs: 0, main: new Float32Array(), ambient: new Float32Array(), len: 0, duration: 0 });
       }
+    }
+    const firstValid = analyzedData.find(d => !d.error);
+    if (firstValid) {
+      rangeStartInput.value = 0;
+      rangeEndInput.value = firstValid.duration.toFixed(3);
     }
     recalculateAllResults();
   }
@@ -197,6 +211,35 @@
     selectedIndex = idx;
     syncSliderToInputs();
     updatePreview();
+  }
+
+  sortName.addEventListener('click', () => toggleSort('name'));
+  sortFreq.addEventListener('click', () => toggleSort('maxFreq'));
+  sortAmp.addEventListener('click', () => toggleSort('maxAmp'));
+  fftXMaxInput.addEventListener('input', () => { if (selectedIndex >= 0) updatePreview(); });
+  fftYMaxInput.addEventListener('input', () => { if (selectedIndex >= 0) updatePreview(); });
+
+  function toggleSort(key) {
+    if (sortKey === key) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+    else { sortKey = key; sortDir = 'asc'; }
+    renderResultTable();
+  }
+
+  function getSortedResults() {
+    const arr = results.map((r, i) => ({ ...r, _idx: i }));
+    const mul = sortDir === 'asc' ? 1 : -1;
+    arr.sort((a, b) => {
+      const ae = a.maxFreq === 'ERROR', be = b.maxFreq === 'ERROR';
+      if (ae || be) return ae === be ? 0 : 1;
+      if (sortKey === 'name') return a.name.localeCompare(b.name) * mul;
+      return ((parseFloat(a[sortKey]) - parseFloat(b[sortKey])) * mul);
+    });
+    return arr;
+  }
+
+  function renderResultTable() {
+    resultBody.innerHTML = '';
+    getSortedResults().forEach((r) => appendRow(r, analyzedData[r._idx].error ? -1 : r._idx));
   }
 
   function getGlobalMaxDuration() {
@@ -297,8 +340,7 @@
 
   function recalculateAllResults() {
     results = analyzedData.map(d => analyzeRangeDetail(d));
-    resultBody.innerHTML = '';
-    results.forEach((r, i) => appendRow(r, analyzedData[i].error ? -1 : i));
+    renderResultTable();
     const success = results.filter(r => r.maxFreq !== 'ERROR').length;
     statusText.textContent = `完了: ${success} 件成功 / ${results.length} 件`;
     syncSliderToInputs();
@@ -324,10 +366,12 @@
     const fftStep = Math.max(1, Math.floor(freqs.length / 1500));
     for (let i = 0; i < freqs.length; i += fftStep) fft.push({ x: freqs[i], y: subAmps[i] ?? 0 });
     if (fftChart) fftChart.destroy();
+    const fftXMax = parseFloat(fftXMaxInput.value);
+    const fftYMax = parseFloat(fftYMaxInput.value);
     fftChart = new Chart(fftPreviewCanvas.getContext('2d'), {
       type: 'line',
       data: { datasets: [{ data: fft, borderColor: '#ef4444', pointRadius: 0, borderWidth: 1, fill: true, backgroundColor: 'rgba(239,68,68,0.12)' }] },
-      options: { animation: false, responsive: true, maintainAspectRatio: false, parsing: false, scales: { x: { type: 'linear' } } }
+      options: { animation: false, responsive: true, maintainAspectRatio: false, parsing: false, scales: { x: { type: 'linear', max: Number.isFinite(fftXMax) && fftXMax > 0 ? fftXMax : undefined }, y: { max: Number.isFinite(fftYMax) && fftYMax > 0 ? fftYMax : undefined } } }
     });
   }
 
