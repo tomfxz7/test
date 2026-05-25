@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>FFTS Batch Analyzer</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body class="bg-slate-50 text-slate-800 min-h-screen">
   <div class="max-w-5xl mx-auto p-6">
@@ -35,6 +36,10 @@
         <button id="play-btn" type="button" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm">波形再生</button>
         <span id="preview-text" class="text-sm text-slate-700">未選択</span>
       </div>
+      <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="bg-slate-50 border border-slate-200 rounded p-2 h-56"><canvas id="wave-preview"></canvas></div>
+        <div class="bg-slate-50 border border-slate-200 rounded p-2 h-56"><canvas id="fft-preview"></canvas></div>
+      </div>
     </div>
 
     <div class="mt-6 overflow-x-auto bg-white border border-slate-200 rounded-xl">
@@ -64,11 +69,15 @@
   const rangeEndSlider = document.getElementById('range-end-slider');
   const playBtn = document.getElementById('play-btn');
   const previewText = document.getElementById('preview-text');
+  const wavePreviewCanvas = document.getElementById('wave-preview');
+  const fftPreviewCanvas = document.getElementById('fft-preview');
 
   let results = [];
   let analyzedData = [];
   let selectedIndex = -1;
   let audioCtx = null;
+  let waveChart = null;
+  let fftChart = null;
 
   dropZone.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', async (e) => {
@@ -199,20 +208,25 @@
     updatePreview();
   }
 
-  function syncRange(from) {
+  function syncRange(from, commit = false) {
     const max = selectedIndex >= 0 ? analyzedData[selectedIndex].duration : 0;
     let s = parseFloat(rangeStartInput.value || '0');
     let e = parseFloat(rangeEndInput.value || '0');
     if (from === 'ss') s = parseFloat(rangeStartSlider.value || '0');
     if (from === 'es') e = parseFloat(rangeEndSlider.value || '0');
-    if (e < s) [s, e] = [e, s];
-    s = Math.max(0, Math.min(max, s));
-    e = Math.max(0, Math.min(max, e));
-    rangeStartInput.value = s.toFixed(3);
-    rangeEndInput.value = e.toFixed(3);
-    rangeStartSlider.value = s;
-    rangeEndSlider.value = e;
-    updatePreview();
+    if (commit) {
+      if (e < s) [s, e] = [e, s];
+      s = Math.max(0, Math.min(max, s));
+      e = Math.max(0, Math.min(max, e));
+      rangeStartInput.value = s;
+      rangeEndInput.value = e;
+      rangeStartSlider.value = s;
+      rangeEndSlider.value = e;
+      updatePreview();
+    } else {
+      if (from === 'si') rangeStartSlider.value = Math.max(0, Math.min(max, s || 0));
+      if (from === 'ei') rangeEndSlider.value = Math.max(0, Math.min(max, e || 0));
+    }
   }
 
   function updatePreview() {
@@ -221,18 +235,41 @@
     const s = parseFloat(rangeStartInput.value || '0');
     const e = parseFloat(rangeEndInput.value || '0');
     const sIdx = Math.floor(s * d.fs);
-    const eIdx = Math.max(sIdx + 8, Math.floor(e * d.fs));
+    const eIdx = Math.min(d.len, Math.max(sIdx + 8, Math.floor(e * d.fs)));
     const mainSlice = d.main.slice(sIdx, eIdx);
     const ambSlice = d.ambient.slice(sIdx, eIdx);
     let N = 1; while (N * 2 <= mainSlice.length && N * 2 <= 65536) N *= 2;
     const m = computeSpectrum(mainSlice, N, d.fs);
     const a = computeSpectrum(ambSlice, N, d.fs);
     let pIdx = 1, pAmp = -Infinity;
+    const sub = new Float64Array(m.amps.length);
     for (let i = 1; i < m.amps.length; i++) {
-      const v = Math.max(0, m.amps[i] - a.amps[i]);
+      const v = Math.max(0, m.amps[i] - a.amps[i]); sub[i] = v;
       if (v > pAmp) { pAmp = v; pIdx = i; }
     }
     previewText.textContent = `${d.name} | ${s.toFixed(3)}s〜${e.toFixed(3)}s | Peak ${m.freqs[pIdx].toFixed(2)} Hz / ${pAmp.toFixed(6)}`;
+    renderCharts(d, sIdx, eIdx, m.freqs, sub);
+  }
+
+  function renderCharts(d, sIdx, eIdx, freqs, subAmps) {
+    const step = Math.max(1, Math.floor((eIdx - sIdx) / 1500));
+    const wave = [];
+    for (let i = sIdx; i < eIdx; i += step) wave.push({ x: i / d.fs, y: d.main[i] ?? 0 });
+    if (waveChart) waveChart.destroy();
+    waveChart = new Chart(wavePreviewCanvas.getContext('2d'), {
+      type: 'line',
+      data: { datasets: [{ data: wave, borderColor: '#3b82f6', pointRadius: 0, borderWidth: 1 }] },
+      options: { animation: false, responsive: true, maintainAspectRatio: false, parsing: false, scales: { x: { type: 'linear' } } }
+    });
+    const fft = [];
+    const fftStep = Math.max(1, Math.floor(freqs.length / 1500));
+    for (let i = 0; i < freqs.length; i += fftStep) fft.push({ x: freqs[i], y: subAmps[i] ?? 0 });
+    if (fftChart) fftChart.destroy();
+    fftChart = new Chart(fftPreviewCanvas.getContext('2d'), {
+      type: 'line',
+      data: { datasets: [{ data: fft, borderColor: '#ef4444', pointRadius: 0, borderWidth: 1, fill: true, backgroundColor: 'rgba(239,68,68,0.12)' }] },
+      options: { animation: false, responsive: true, maintainAspectRatio: false, parsing: false, scales: { x: { type: 'linear' } } }
+    });
   }
 
   async function playSelectedRange() {
@@ -252,10 +289,12 @@
     src.buffer = buf; src.connect(audioCtx.destination); src.start();
   }
 
-  rangeStartInput.addEventListener('input', () => syncRange('si'));
-  rangeEndInput.addEventListener('input', () => syncRange('ei'));
-  rangeStartSlider.addEventListener('input', () => syncRange('ss'));
-  rangeEndSlider.addEventListener('input', () => syncRange('es'));
+  rangeStartInput.addEventListener('input', () => syncRange('si', false));
+  rangeEndInput.addEventListener('input', () => syncRange('ei', false));
+  rangeStartInput.addEventListener('change', () => syncRange('si', true));
+  rangeEndInput.addEventListener('change', () => syncRange('ei', true));
+  rangeStartSlider.addEventListener('input', () => syncRange('ss', true));
+  rangeEndSlider.addEventListener('input', () => syncRange('es', true));
   playBtn.addEventListener('click', playSelectedRange);
 
   function computeSpectrum(signal, N, fs) {
