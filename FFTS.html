@@ -206,7 +206,8 @@
   }
 
   function syncRange(from, commit = false) {
-    const max = selectedIndex >= 0 ? analyzedData[selectedIndex].duration : 0;
+    if (selectedIndex < 0) return;
+    const max = analyzedData[selectedIndex].duration;
     let s = parseFloat(rangeStartInput.value || '0');
     let e = parseFloat(rangeEndInput.value || '0');
     if (from === 'ss') s = parseFloat(rangeStartSlider.value || '0');
@@ -285,6 +286,12 @@
     results.forEach((r, i) => appendRow(r, analyzedData[i].error ? -1 : i));
     const success = results.filter(r => r.maxFreq !== 'ERROR').length;
     statusText.textContent = `完了: ${success} 件成功 / ${results.length} 件`;
+    if (selectedIndex < 0) {
+      const firstValidIdx = analyzedData.findIndex(d => !d.error);
+      if (firstValidIdx >= 0) selectFile(firstValidIdx);
+    } else {
+      updatePreview();
+    }
   }
 
   function renderCharts(d, sIdx, eIdx, freqs, subAmps) {
