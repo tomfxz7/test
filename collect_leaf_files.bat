@@ -12,14 +12,18 @@ if "%~1"=="" (
     exit /b 1
 )
 
-for %%R in (%*) do (
-    if exist "%%~fR\" (
-        call :PROCESS_ROOT "%%~fR"
-    ) else (
-        echo [SKIP] フォルダではないためスキップ: %%~fR
-    )
-)
+:ARG_LOOP
+if "%~1"=="" goto AFTER_ARGS
 
+if exist "%~1\*" (
+    call :PROCESS_ROOT "%~1"
+) else (
+    echo [SKIP] フォルダではないためスキップ: %~1
+)
+shift
+goto ARG_LOOP
+
+:AFTER_ARGS
 echo.
 echo 完了しました。
 pause
@@ -28,8 +32,9 @@ exit /b 0
 :PROCESS_ROOT
 set "ROOT=%~1"
 for /r "%ROOT%" %%D in (.) do (
-    dir /b /ad "%%~fD" >nul 2>&1
-    if errorlevel 1 (
+    set "HAS_SUBDIR=0"
+    for /d %%S in ("%%~fD\*") do set "HAS_SUBDIR=1"
+    if "!HAS_SUBDIR!"=="0" (
         call :COPY_FILES "%%~fD"
     )
 )
