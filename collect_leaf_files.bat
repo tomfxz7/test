@@ -1,0 +1,70 @@
+@echo off
+setlocal EnableExtensions EnableDelayedExpansion
+
+rem このバッチにD&Dされたフォルダ配下の「最下層フォルダ」にあるファイルを
+rem このバッチと同じフォルダへコピーします。
+
+set "DEST=%~dp0"
+
+if "%~1"=="" (
+    echo フォルダをこのバッチへドラッグ＆ドロップしてください。
+    pause
+    exit /b 1
+)
+
+for %%R in (%*) do (
+    if exist "%%~fR\" (
+        call :PROCESS_ROOT "%%~fR"
+    ) else (
+        echo [SKIP] フォルダではないためスキップ: %%~fR
+    )
+)
+
+echo.
+echo 完了しました。
+pause
+exit /b 0
+
+:PROCESS_ROOT
+set "ROOT=%~1"
+for /r "%ROOT%" %%D in (.) do (
+    dir /b /ad "%%~fD" >nul 2>&1
+    if errorlevel 1 (
+        call :COPY_FILES "%%~fD"
+    )
+)
+exit /b
+
+:COPY_FILES
+set "LEAF=%~1"
+for %%F in ("%LEAF%\*") do (
+    if not exist "%%~fF\" (
+        call :COPY_ONE "%%~fF"
+    )
+)
+exit /b
+
+:COPY_ONE
+set "SRC=%~1"
+set "NAME=%~nx1"
+set "TARGET=%DEST%%NAME%"
+
+if not exist "%TARGET%" (
+    copy /y "%SRC%" "%TARGET%" >nul
+    echo [COPY] %SRC%
+    exit /b
+)
+
+rem 同名ファイルがある場合は _1, _2 ... を付けて保存
+set /a N=1
+:RENAME_LOOP
+set "BASENAME=%~n1"
+set "EXT=%~x1"
+set "TARGET=%DEST%%BASENAME%_!N!!EXT!"
+if exist "%TARGET%" (
+    set /a N+=1
+    goto :RENAME_LOOP
+)
+copy /y "%SRC%" "%TARGET%" >nul
+echo [COPY] %SRC% ^> %TARGET%
+exit /b
