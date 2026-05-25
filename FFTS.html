@@ -22,6 +22,21 @@
       <span id="status" class="text-sm text-slate-600"></span>
     </div>
 
+
+    <div class="mt-6 bg-white border border-slate-200 rounded-xl p-4">
+      <h2 class="font-semibold mb-3">選択ファイルのプレビュー（差し引き後FFT）</h2>
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+        <div><label class="text-xs">開始秒</label><input id="range-start" type="number" step="0.001" value="0" class="w-full border rounded p-2"></div>
+        <div><label class="text-xs">終了秒</label><input id="range-end" type="number" step="0.001" value="0" class="w-full border rounded p-2"></div>
+        <div><label class="text-xs">開始スライダー</label><input id="range-start-slider" type="range" min="0" max="0" step="0.001" value="0" class="w-full"></div>
+        <div><label class="text-xs">終了スライダー</label><input id="range-end-slider" type="range" min="0" max="0" step="0.001" value="0" class="w-full"></div>
+      </div>
+      <div class="mt-3 flex items-center gap-3">
+        <button id="play-btn" type="button" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm">波形再生</button>
+        <span id="preview-text" class="text-sm text-slate-700">未選択</span>
+      </div>
+    </div>
+
     <div class="mt-6 overflow-x-auto bg-white border border-slate-200 rounded-xl">
       <table class="min-w-full text-sm">
         <thead class="bg-slate-100">
@@ -43,8 +58,17 @@
   const resultBody = document.getElementById('result-body');
   const downloadBtn = document.getElementById('download-btn');
   const statusText = document.getElementById('status');
+  const rangeStartInput = document.getElementById('range-start');
+  const rangeEndInput = document.getElementById('range-end');
+  const rangeStartSlider = document.getElementById('range-start-slider');
+  const rangeEndSlider = document.getElementById('range-end-slider');
+  const playBtn = document.getElementById('play-btn');
+  const previewText = document.getElementById('preview-text');
 
   let results = [];
+  let analyzedData = [];
+  let selectedIndex = -1;
+  let audioCtx = null;
 
   dropZone.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', async (e) => {
@@ -91,14 +115,17 @@
 
   async function processFiles(files) {
     results = [];
+    analyzedData = [];
+    selectedIndex = -1;
     resultBody.innerHTML = '';
     statusText.textContent = `処理中... (${files.length} files)`;
 
     for (const file of files) {
       try {
         const res = await analyzeWav(file);
-        results.push(res);
-        appendRow(res);
+        results.push(res.summary);
+        analyzedData.push(res.detail);
+        appendRow(res.summary, analyzedData.length - 1);
       } catch (err) {
         appendRow({ name: file.name, maxFreq: 'ERROR', maxAmp: err.message });
       }
@@ -107,14 +134,15 @@
     statusText.textContent = `完了: ${results.length} 件成功`;
   }
 
-  function appendRow(r) {
+  function appendRow(r, idx = -1) {
     const tr = document.createElement('tr');
-    tr.className = 'border-t border-slate-100';
+    tr.className = 'border-t border-slate-100 cursor-pointer hover:bg-slate-50';
     tr.innerHTML = `
       <td class="p-3">${r.name}</td>
       <td class="p-3 text-right">${r.maxFreq}</td>
       <td class="p-3 text-right">${r.maxAmp}</td>
     `;
+    if (idx >= 0) tr.addEventListener('click', () => selectFile(idx));
     resultBody.appendChild(tr);
   }
 
@@ -151,11 +179,84 @@
     }
 
     return {
-      name: file.name,
-      maxFreq: mainSpec.freqs[peakIdx].toFixed(2),
-      maxAmp: peakAmp.toFixed(6)
+      summary: { name: file.name, maxFreq: mainSpec.freqs[peakIdx].toFixed(2), maxAmp: peakAmp.toFixed(6) },
+      detail: { name: file.name, fs, main, ambient, len, duration: len / fs }
     };
   }
+
+
+
+  function selectFile(idx) {
+    selectedIndex = idx;
+    const d = analyzedData[idx];
+    const max = Math.max(0, d.duration);
+    rangeStartInput.max = max; rangeEndInput.max = max;
+    rangeStartSlider.max = max; rangeEndSlider.max = max;
+    rangeStartInput.value = 0;
+    rangeEndInput.value = max.toFixed(3);
+    rangeStartSlider.value = 0;
+    rangeEndSlider.value = max;
+    updatePreview();
+  }
+
+  function syncRange(from) {
+    const max = selectedIndex >= 0 ? analyzedData[selectedIndex].duration : 0;
+    let s = parseFloat(rangeStartInput.value || '0');
+    let e = parseFloat(rangeEndInput.value || '0');
+    if (from === 'ss') s = parseFloat(rangeStartSlider.value || '0');
+    if (from === 'es') e = parseFloat(rangeEndSlider.value || '0');
+    if (e < s) [s, e] = [e, s];
+    s = Math.max(0, Math.min(max, s));
+    e = Math.max(0, Math.min(max, e));
+    rangeStartInput.value = s.toFixed(3);
+    rangeEndInput.value = e.toFixed(3);
+    rangeStartSlider.value = s;
+    rangeEndSlider.value = e;
+    updatePreview();
+  }
+
+  function updatePreview() {
+    if (selectedIndex < 0) return;
+    const d = analyzedData[selectedIndex];
+    const s = parseFloat(rangeStartInput.value || '0');
+    const e = parseFloat(rangeEndInput.value || '0');
+    const sIdx = Math.floor(s * d.fs);
+    const eIdx = Math.max(sIdx + 8, Math.floor(e * d.fs));
+    const mainSlice = d.main.slice(sIdx, eIdx);
+    const ambSlice = d.ambient.slice(sIdx, eIdx);
+    let N = 1; while (N * 2 <= mainSlice.length && N * 2 <= 65536) N *= 2;
+    const m = computeSpectrum(mainSlice, N, d.fs);
+    const a = computeSpectrum(ambSlice, N, d.fs);
+    let pIdx = 1, pAmp = -Infinity;
+    for (let i = 1; i < m.amps.length; i++) {
+      const v = Math.max(0, m.amps[i] - a.amps[i]);
+      if (v > pAmp) { pAmp = v; pIdx = i; }
+    }
+    previewText.textContent = `${d.name} | ${s.toFixed(3)}s〜${e.toFixed(3)}s | Peak ${m.freqs[pIdx].toFixed(2)} Hz / ${pAmp.toFixed(6)}`;
+  }
+
+  async function playSelectedRange() {
+    if (selectedIndex < 0) return;
+    const d = analyzedData[selectedIndex];
+    const s = parseFloat(rangeStartInput.value || '0');
+    const e = parseFloat(rangeEndInput.value || '0');
+    const sIdx = Math.floor(s * d.fs);
+    const eIdx = Math.max(sIdx + 1, Math.floor(e * d.fs));
+    const len = eIdx - sIdx;
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    const buf = audioCtx.createBuffer(1, len, d.fs);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) ch[i] = d.main[sIdx + i] ?? 0;
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf; src.connect(audioCtx.destination); src.start();
+  }
+
+  rangeStartInput.addEventListener('input', () => syncRange('si'));
+  rangeEndInput.addEventListener('input', () => syncRange('ei'));
+  rangeStartSlider.addEventListener('input', () => syncRange('ss'));
+  rangeEndSlider.addEventListener('input', () => syncRange('es'));
+  playBtn.addEventListener('click', playSelectedRange);
 
   function computeSpectrum(signal, N, fs) {
     const real = new Float64Array(N);
