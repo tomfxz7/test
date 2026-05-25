@@ -267,6 +267,15 @@
       const ae = a.maxFreq === 'ERROR', be = b.maxFreq === 'ERROR';
       if (ae || be) return ae === be ? 0 : 1;
       if (sortKey === 'name') return a.name.localeCompare(b.name) * mul;
+      if (sortKey.startsWith('rfreq_') || sortKey.startsWith('ramp_')) {
+        const [kind, idxStr] = sortKey.split('_');
+        const idx = Number.parseInt(idxStr, 10);
+        const av = kind === 'rfreq' ? a.rangePeaks?.[idx]?.maxFreq : a.rangePeaks?.[idx]?.maxAmp;
+        const bv = kind === 'rfreq' ? b.rangePeaks?.[idx]?.maxFreq : b.rangePeaks?.[idx]?.maxAmp;
+        const an = Number.parseFloat(av || '-Infinity');
+        const bn = Number.parseFloat(bv || '-Infinity');
+        return (an - bn) * mul;
+      }
       return ((parseFloat(a[sortKey]) - parseFloat(b[sortKey])) * mul);
     });
     return arr;
@@ -284,11 +293,15 @@
       <th id="sort-name" class="text-left p-3 cursor-pointer">ファイル名 ↕</th>
       <th id="sort-freq" class="text-right p-3 cursor-pointer">最大周波数 (Hz) ↕</th>
       <th id="sort-amp" class="text-right p-3 cursor-pointer">振幅 ↕</th>
-      ${ranges.map((r, i) => `\n        <th class="text-right p-3">${escapeHtml(r.name || `範囲${i + 1}`)} 周波数(Hz)</th>\n        <th class="text-right p-3">${escapeHtml(r.name || `範囲${i + 1}`)} 振幅</th>\n      `).join('')}
+      ${ranges.map((r, i) => `\n        <th id="sort-rfreq-${i}" class="text-right p-3 cursor-pointer">${escapeHtml(r.name || `範囲${i + 1}`)} 周波数(Hz) ↕</th>\n        <th id="sort-ramp-${i}" class="text-right p-3 cursor-pointer">${escapeHtml(r.name || `範囲${i + 1}`)} 振幅 ↕</th>\n      `).join('')}
     `;
     document.getElementById('sort-name').addEventListener('click', () => toggleSort('name'));
     document.getElementById('sort-freq').addEventListener('click', () => toggleSort('maxFreq'));
     document.getElementById('sort-amp').addEventListener('click', () => toggleSort('maxAmp'));
+    ranges.forEach((_, i) => {
+      document.getElementById(`sort-rfreq-${i}`)?.addEventListener('click', () => toggleSort(`rfreq_${i}`));
+      document.getElementById(`sort-ramp-${i}`)?.addEventListener('click', () => toggleSort(`ramp_${i}`));
+    });
   }
 
   function getGlobalMaxDuration() {
