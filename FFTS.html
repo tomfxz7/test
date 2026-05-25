@@ -362,9 +362,7 @@
       data: { datasets: [{ data: wave, borderColor: '#3b82f6', pointRadius: 0, borderWidth: 1 }] },
       options: { animation: false, responsive: true, maintainAspectRatio: false, parsing: false, scales: { x: { type: 'linear' } } }
     });
-    const fft = [];
-    const fftStep = Math.max(1, Math.floor(freqs.length / 1500));
-    for (let i = 0; i < freqs.length; i += fftStep) fft.push({ x: freqs[i], y: subAmps[i] ?? 0 });
+    const fft = buildPeakPreservingFftSeries(freqs, subAmps, 1500);
     if (fftChart) fftChart.destroy();
     const fftXMax = parseFloat(fftXMaxInput.value);
     const fftYMax = parseFloat(fftYMaxInput.value);
@@ -383,6 +381,32 @@
         }
       }
     });
+  }
+
+  function buildPeakPreservingFftSeries(freqs, amps, maxPoints = 1500) {
+    const n = freqs.length;
+    if (n <= maxPoints) {
+      const full = [];
+      for (let i = 0; i < n; i++) full.push({ x: freqs[i], y: amps[i] ?? 0 });
+      return full;
+    }
+
+    const bucketSize = Math.ceil(n / maxPoints);
+    const points = [];
+    for (let start = 0; start < n; start += bucketSize) {
+      const end = Math.min(n, start + bucketSize);
+      let peakIdx = start;
+      let peakAmp = -Infinity;
+      for (let i = start; i < end; i++) {
+        const amp = amps[i] ?? 0;
+        if (amp > peakAmp) {
+          peakAmp = amp;
+          peakIdx = i;
+        }
+      }
+      points.push({ x: freqs[peakIdx], y: peakAmp });
+    }
+    return points;
   }
 
   async function playSelectedRange() {
