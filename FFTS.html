@@ -407,9 +407,7 @@
       syncRange(which, false);
       return;
     }
-    const n = Number(v);
-    if (Number.isFinite(n)) syncRange(which, true);
-    else syncRange(which, false);
+    syncRange(which, false);
   }
 
   rangeStartInput.addEventListener('input', () => handleRangeInputLive('si'));
