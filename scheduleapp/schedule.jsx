@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, forwardRef, useImperativeHandle } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Clock,
   Plus,
@@ -1024,7 +1024,7 @@ const RichTextEditor = forwardRef(({ html, onChange }, ref) => {
 });
 
 const CompletionModal = ({ isOpen, task, onClose, onSave }) => {
-  const completionEditorRef = useRef(null);
+  const richHtmlRef = useRef('');
   const [richHtml, setRichHtml] = useState('');
   const [urls, setUrls] = useState(['']);
 
@@ -1039,20 +1039,26 @@ const CompletionModal = ({ isOpen, task, onClose, onSave }) => {
           });
         }
       }
+      richHtmlRef.current = initialHtml;
       setRichHtml(initialHtml);
       setUrls(task.resultUrls && task.resultUrls.length > 0 ? task.resultUrls : ['']);
     } else {
+      richHtmlRef.current = '';
       setRichHtml('');
     }
   }, [isOpen, task]);
 
   if (!isOpen || !task) return null;
 
+  const handleRichHtmlChange = (html) => {
+    richHtmlRef.current = html;
+    setRichHtml(html);
+  };
+
   const handleSaveAction = (isCompletedState) => {
     const latestRichHtml = completionEditorRef.current?.getHtml() ?? richHtml;
     const filteredUrls = urls.filter(u => u.trim() !== '');
-    setRichHtml(latestRichHtml);
-    onSave(task.id, latestRichHtml, filteredUrls, isCompletedState);
+    onSave(task.id, richHtmlRef.current, filteredUrls, isCompletedState);
   };
 
   const addUrlScheme = (scheme) => {
@@ -1077,7 +1083,7 @@ const CompletionModal = ({ isOpen, task, onClose, onSave }) => {
 
           <div>
             <label className="block text-sm font-bold text-gray-700 mb-2">結論・成果ノート (未記入でもOK)</label>
-            <RichTextEditor ref={completionEditorRef} html={richHtml} onChange={setRichHtml} />
+            <RichTextEditor html={richHtml} onChange={handleRichHtmlChange} />
           </div>
 
           <div>
@@ -1604,7 +1610,7 @@ export default function App() {
   };
 
   const recurringDisplayRange = useMemo(() => {
-    const boardDates = mainBoardWeeks.flatMap(week => week.days.map(day => day.date));
+    const boardDates = mainBoardWeeks.reduce((dates, week) => [...dates, ...week.days.map(day => day.date)], []);
     const plannerDates = yearWeeks.map(week => week.startDate);
     const allDates = [...boardDates, ...plannerDates, TODAY_STR].sort();
     return { start: allDates[0], end: allDates[allDates.length - 1] };
@@ -1890,7 +1896,13 @@ export default function App() {
 
   const handleDeleteRecurringSchedule = (scheduleId) => {
     setRecurringSchedules(prev => prev.filter(item => item.id !== scheduleId));
-    setRecurringCompletions(prev => Object.fromEntries(Object.entries(prev).filter(([key]) => !key.startsWith(`${scheduleId}_`))));
+    setRecurringCompletions(prev => {
+      const next = {};
+      Object.entries(prev).forEach(([key, value]) => {
+        if (!key.startsWith(`${scheduleId}_`)) next[key] = value;
+      });
+      return next;
+    });
     setIsRecurringModalOpen(false);
     setEditingRecurringSchedule(null);
     showToast('定期スケジュールを削除しました');
