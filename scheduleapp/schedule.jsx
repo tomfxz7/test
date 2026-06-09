@@ -848,7 +848,7 @@ const TaskModal = ({ isOpen, onClose, onSave, onDelete, defaultDate = TODAY_STR,
   );
 };
 
-const RichTextEditor = ({ html, onChange }) => {
+const RichTextEditor = forwardRef(({ html, onChange }, ref) => {
   const editorRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -857,6 +857,10 @@ const RichTextEditor = ({ html, onChange }) => {
       editorRef.current.innerHTML = html || '';
     }
   }, [html]);
+
+  useImperativeHandle(ref, () => ({
+    getHtml: () => editorRef.current?.innerHTML || ''
+  }));
 
   const handleInput = () => {
     onChange(editorRef.current.innerHTML);
@@ -1017,7 +1021,7 @@ const RichTextEditor = ({ html, onChange }) => {
       />
     </div>
   );
-};
+});
 
 const CompletionModal = ({ isOpen, task, onClose, onSave }) => {
   const richHtmlRef = useRef('');
@@ -1052,6 +1056,7 @@ const CompletionModal = ({ isOpen, task, onClose, onSave }) => {
   };
 
   const handleSaveAction = (isCompletedState) => {
+    const latestRichHtml = completionEditorRef.current?.getHtml() ?? richHtml;
     const filteredUrls = urls.filter(u => u.trim() !== '');
     onSave(task.id, richHtmlRef.current, filteredUrls, isCompletedState);
   };
