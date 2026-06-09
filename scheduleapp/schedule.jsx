@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { 
-  Clock, 
-  Plus, 
-  AlertCircle, 
+import {
+  Clock,
+  Plus,
+  AlertCircle,
   Calendar,
   Settings,
   Layout,
@@ -25,7 +25,8 @@ import {
   Bell,
   FileSpreadsheet,
   MonitorPlay,
-  FileText
+  FileText,
+  Repeat
 } from 'lucide-react';
 
 // --- IndexedDB Configuration & Utils ---
@@ -119,42 +120,126 @@ const getWeekNumber = (dateVal) => {
   return 1 + Math.round(((date.getTime() - week1.getTime()) / 86400000 - 3 + (week1.getDay() + 6) % 7) / 7);
 };
 
+
+const addMonths = (date, months) => {
+  const src = getLocalDate(date);
+  const result = new Date(src);
+  const targetMonth = result.getMonth() + months;
+  const originalDate = result.getDate();
+  result.setDate(1);
+  result.setMonth(targetMonth);
+  const lastDay = new Date(result.getFullYear(), result.getMonth() + 1, 0).getDate();
+  result.setDate(Math.min(originalDate, lastDay));
+  return result;
+};
+
+const getRecurringStepDate = (date, frequency, interval = 1) => {
+  const safeInterval = Math.max(1, Number(interval) || 1);
+  if (frequency === 'daily') return addDays(date, safeInterval);
+  if (frequency === 'monthly') return addMonths(date, safeInterval);
+  return addDays(date, safeInterval * 7);
+};
+
+const getLastDayOfMonth = (date) => {
+  const d = getLocalDate(date);
+  return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+};
+
+const getMonthlyOccurrenceDate = (date, dayOfMonth) => {
+  const base = getLocalDate(date);
+  const targetDay = Math.max(1, Math.min(31, Number(dayOfMonth) || base.getDate()));
+  const lastDay = getLastDayOfMonth(base);
+  return new Date(base.getFullYear(), base.getMonth(), Math.min(targetDay, lastDay));
+};
+
+const getFirstRecurringOccurrenceDate = (schedule) => {
+  const start = getLocalDate(schedule.startDate);
+  if (schedule.frequency === 'weekly') {
+    const targetDay = Number.isInteger(Number(schedule.recurrenceDay)) ? Number(schedule.recurrenceDay) : start.getDay();
+    const offset = (targetDay - start.getDay() + 7) % 7;
+    return addDays(start, offset);
+  }
+  if (schedule.frequency === 'monthly') {
+    const targetDay = Number(schedule.recurrenceDay) || start.getDate();
+    const candidate = getMonthlyOccurrenceDate(start, targetDay);
+    return candidate < start ? getMonthlyOccurrenceDate(addMonths(start, 1), targetDay) : candidate;
+  }
+  return start;
+};
+
+const getRecurringNextOccurrenceDate = (date, schedule) => {
+  if (schedule.frequency === 'monthly') {
+    return getMonthlyOccurrenceDate(addMonths(date, Math.max(1, Number(schedule.interval) || 1)), schedule.recurrenceDay);
+  }
+  return getRecurringStepDate(date, schedule.frequency, schedule.interval);
+};
+
+const weekdayLabels = ['日曜日', '月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日'];
+
+const getFrequencyLabel = (frequency, interval = 1) => {
+  const safeInterval = Math.max(1, Number(interval) || 1);
+  const unit = frequency === 'daily' ? '日' : frequency === 'monthly' ? 'か月' : '週';
+  return safeInterval === 1 ? `毎${unit}` : `${safeInterval}${unit}ごと`;
+};
+
+const getRecurrenceDetailLabel = (schedule) => {
+  if (schedule.frequency === 'weekly') {
+    const day = Number.isInteger(Number(schedule.recurrenceDay)) ? Number(schedule.recurrenceDay) : getLocalDate(schedule.startDate).getDay();
+    return weekdayLabels[day];
+  }
+  if (schedule.frequency === 'monthly') {
+    return `${Number(schedule.recurrenceDay) || getLocalDate(schedule.startDate).getDate()}日`;
+  }
+  return '毎回';
+};
+
+const buildRecurringOccurrenceId = (scheduleId, date) => `rec_${scheduleId}_${date}`;
+
 // --- Mock Initial Data ---
 const initialTasks = [
-  { 
-    id: 't1', type: 'simple', title: '要件定義書のレビュー', 
+  {
+    id: 't1', type: 'simple', title: '要件定義書のレビュー',
     date: TODAY_STR, dueDate: TODAY_STR, memo: '顧客からのFB反映確認', urls: [], completed: false,
     completionNote: '', resultUrls: [], resultImages: [], order: Date.now()
   },
-  { 
-    id: 't2', type: 'simple', title: '先週の経費精算', 
+  {
+    id: 't2', type: 'simple', title: '先週の経費精算',
     date: formatDate(addDays(new Date(), -2)), dueDate: formatDate(addDays(new Date(), -4)), memo: '', urls: [], completed: true,
     completionNote: '申請完了しました', resultUrls: [], resultImages: [], order: Date.now() + 1000
-  },
+  }
+];
+
+const initialRecurringSchedules = [
   {
-    id: 't4', type: 'recurring', title: '週次定例ミーティング',
-    date: TODAY_STR, dueDate: TODAY_STR, memo: '', urls: [], completed: false,
-    completionNote: '', resultUrls: [], resultImages: [], order: Date.now() + 2000
+    id: 'r1',
+    title: '週次定例ミーティング',
+    frequency: 'weekly',
+    interval: 1,
+    startDate: TODAY_STR,
+    endDate: '',
+    recurrenceDay: getLocalDate(TODAY_STR).getDay(),
+    memo: '毎週の定例予定',
+    urls: []
   }
 ];
 
 const initialProjects = [
-  { 
-    id: 'p1', title: '秋期大型リリース', type: 'project', durationWeeks: 4, 
+  {
+    id: 'p1', title: '秋期大型リリース', type: 'project', durationWeeks: 4,
     tasksTemplate: [
-      { id: 'tt1', title: '要件定義完了' }, 
+      { id: 'tt1', title: '要件定義完了' },
       { id: 'tt2', title: '環境構築＆テスト開始' },
       { id: 'tt3', title: 'ユーザー受け入れテスト' },
       { id: 'tt4', title: '本番デプロイ' }
-    ] 
+    ]
   },
-  { 
-    id: 'e1', title: '全社目標設定プロセス (上期)', type: 'evaluation', durationWeeks: 3, 
+  {
+    id: 'e1', title: '全社目標設定プロセス (上期)', type: 'evaluation', durationWeeks: 3,
     tasksTemplate: [
-      { id: 'tt5', title: '全社方針発表' }, 
+      { id: 'tt5', title: '全社方針発表' },
       { id: 'tt6', title: '部門目標の策定' },
       { id: 'tt7', title: '個別面談の完了' }
-    ] 
+    ]
   }
 ];
 
@@ -164,22 +249,22 @@ const TaskCard = ({ task, onEdit, onCompleteAction, onPointerDown, onCompleteSub
   const isOverdue = new Date(task.dueDate) < new Date(TODAY_STR) && !task.completed;
   const isCompleted = task.completed;
   const [isSubtasksOpen, setIsSubtasksOpen] = useState(false);
-  
-  const stateClasses = isCompleted 
-    ? "bg-gray-50 border-gray-200 opacity-60" 
-    : isOverdue 
-      ? "bg-red-50 border-red-300 hover:border-red-400" 
+
+  const stateClasses = isCompleted
+    ? "bg-gray-50 border-gray-200 opacity-60"
+    : isOverdue
+      ? "bg-red-50 border-red-300 hover:border-red-400"
       : "bg-white border-gray-200 hover:border-blue-300";
 
   return (
-    <div 
-      id={`task-${task.id}`} 
-      data-task-id={task.id} 
+    <div
+      id={`task-${task.id}`}
+      data-task-id={task.id}
       data-is-subtask={task.isSubtask || false}
       data-drop-date={task.date}
       className={`relative p-3 mb-2 rounded-xl shadow-sm border flex gap-2 transition-colors ${stateClasses}`}
     >
-      <div 
+      <div
         className="flex flex-col items-center justify-center cursor-grab touch-none text-gray-300 hover:text-gray-600 active:text-blue-500 px-1 -ml-1"
         onPointerDown={(e) => onPointerDown(e, 'task', task)}
       >
@@ -188,24 +273,24 @@ const TaskCard = ({ task, onEdit, onCompleteAction, onPointerDown, onCompleteSub
       <div className="flex-1 min-w-0">
         <div className="flex justify-between items-start mb-1">
           <span className={`text-[10px] font-black tracking-wider uppercase px-2 py-0.5 rounded-full
-            ${task.type === 'project' ? 'bg-purple-100 text-purple-700' : 
-              task.type === 'evaluation' || task.type === 'single_eval' ? 'bg-orange-100 text-orange-700' : 
-              task.type === 'recurring' ? 'bg-green-100 text-green-700' : 
-              task.type === 'subtask' ? 'bg-gray-100 text-gray-600' : 
+            ${task.type === 'project' ? 'bg-purple-100 text-purple-700' :
+              task.type === 'evaluation' || task.type === 'single_eval' ? 'bg-orange-100 text-orange-700' :
+              task.type === 'recurring' ? 'bg-green-100 text-green-700' :
+              task.type === 'subtask' ? 'bg-gray-100 text-gray-600' :
               'bg-blue-100 text-blue-700'}`}>
-            {task.type === 'project' ? 'Project' : 
-             task.type === 'evaluation' ? 'Eval' : 
-             task.type === 'recurring' ? 'Sync' : 
+            {task.type === 'project' ? 'Project' :
+             task.type === 'evaluation' ? 'Eval' :
+             task.type === 'recurring' ? 'Sync' :
              task.type === 'subtask' ? 'Subtask' : 'Task'}
           </span>
           <div className="flex gap-1 -mt-1 -mr-1">
-            <button 
-              onClick={(e) => { 
-                e.stopPropagation(); 
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
                 if (task.isSubtask) {
                   onEditParentTask(task.parentId);
                 } else {
-                  onEdit(task); 
+                  onEdit(task);
                 }
               }}
               className="p-1.5 text-gray-400 hover:text-blue-600 transition-colors rounded-lg hover:bg-blue-50"
@@ -213,10 +298,10 @@ const TaskCard = ({ task, onEdit, onCompleteAction, onPointerDown, onCompleteSub
             >
               <Pencil size={16} />
             </button>
-            <button 
-              onClick={(e) => { 
-                e.stopPropagation(); 
-                onCompleteAction(task); 
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onCompleteAction(task);
               }}
               className={`p-1.5 transition-colors rounded-lg ${isCompleted ? 'text-green-600 bg-green-50 hover:bg-green-100 hover:text-green-700' : 'text-gray-400 hover:text-green-600 hover:bg-green-50'}`}
               title="結論入力 / 完了"
@@ -225,12 +310,12 @@ const TaskCard = ({ task, onEdit, onCompleteAction, onPointerDown, onCompleteSub
             </button>
           </div>
         </div>
-        
-        <h4 className={`font-bold text-sm mb-1 line-clamp-2 leading-tight 
+
+        <h4 className={`font-bold text-sm mb-1 line-clamp-2 leading-tight
           ${isCompleted ? 'text-gray-500' : isOverdue ? 'text-red-700' : 'text-gray-800'}`}>
           {task.title}
         </h4>
-        
+
         {task.dueDate && (
           <div className={`flex items-center gap-1 text-xs mb-1 ${isCompleted ? 'text-gray-400' : isOverdue ? 'text-red-600 font-bold' : 'text-gray-500'}`}>
             {isOverdue && !isCompleted ? <AlertCircle size={12} /> : <Clock size={12} />}
@@ -263,7 +348,7 @@ const TaskCard = ({ task, onEdit, onCompleteAction, onPointerDown, onCompleteSub
               <span>小タスク一覧 ({task.subtasks.length})</span>
               {isSubtasksOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
             </button>
-            
+
             {isSubtasksOpen && (
               <div className="mt-1 space-y-1 bg-gray-50/80 p-1.5 rounded border border-gray-100">
                 {task.subtasks.map((st, i) => {
@@ -339,7 +424,7 @@ const TaskCard = ({ task, onEdit, onCompleteAction, onPointerDown, onCompleteSub
 const BoardColumn = ({ date, dateLabel, tasks, onEdit, onCompleteAction, onPointerDown, isHovered, onAddTask, onCompleteSubtask, onEditParentTask }) => {
   const isToday = date === TODAY_STR;
   return (
-    <div 
+    <div
       data-drop-zone="column"
       data-drop-date={date}
       className={`flex-none w-[280px] bg-gray-50/80 rounded-2xl border-2 flex flex-col h-full min-h-[300px] overflow-hidden transition-all
@@ -350,7 +435,7 @@ const BoardColumn = ({ date, dateLabel, tasks, onEdit, onCompleteAction, onPoint
           <span className="font-black text-lg">{dateLabel}</span>
           <span className="text-xs font-medium opacity-75">{date.slice(5)}</span>
         </div>
-        <button 
+        <button
           onClick={() => onAddTask(date)}
           className={`absolute right-2 p-1.5 rounded-xl transition-colors ${isToday ? 'text-blue-600 hover:bg-blue-200' : 'text-gray-400 hover:text-blue-600 hover:bg-gray-200'}`}
           title={`${date} にタスクを追加`}
@@ -360,9 +445,9 @@ const BoardColumn = ({ date, dateLabel, tasks, onEdit, onCompleteAction, onPoint
       </div>
       <div className="flex-1 p-3 overflow-y-auto">
         {tasks.map(task => (
-          <TaskCard 
-            key={task.id} 
-            task={task} 
+          <TaskCard
+            key={task.id}
+            task={task}
             onEdit={onEdit}
             onCompleteAction={onCompleteAction}
             onPointerDown={onPointerDown}
@@ -395,15 +480,15 @@ const ListViewTask = ({ task, onEdit, onCompleteAction, onPointerDown }) => {
   };
 
   return (
-    <div 
+    <div
       id={`list-task-${task.id}`}
       data-task-id={task.id}
       data-is-subtask={task.isSubtask || false}
       data-drop-date={task.date}
-      className={`p-4 rounded-xl border flex flex-col md:flex-row gap-4 items-start md:items-center transition-colors 
+      className={`p-4 rounded-xl border flex flex-col md:flex-row gap-4 items-start md:items-center transition-colors
       ${isCompleted ? 'bg-gray-50 border-gray-200 opacity-80' : isOverdue ? 'bg-red-50 border-red-200' : 'bg-white border-gray-200 shadow-sm hover:border-blue-300'}`}
     >
-      <div 
+      <div
         className="flex flex-col items-center justify-center cursor-grab touch-none text-gray-300 hover:text-gray-600 active:text-blue-500 px-1 -ml-2 h-full"
         onPointerDown={(e) => onPointerDown && onPointerDown(e, 'task', task)}
       >
@@ -413,9 +498,9 @@ const ListViewTask = ({ task, onEdit, onCompleteAction, onPointerDown }) => {
       <div className="flex-1 min-w-0 flex flex-col gap-1.5 w-full">
         <div className="flex items-center gap-2">
           <span className={`text-[10px] font-black tracking-wider uppercase px-2 py-0.5 rounded-full
-            ${task.type === 'project' ? 'bg-purple-100 text-purple-700' : 
-              task.type === 'evaluation' || task.type === 'single_eval' ? 'bg-orange-100 text-orange-700' : 
-              task.type === 'recurring' ? 'bg-green-100 text-green-700' : 
+            ${task.type === 'project' ? 'bg-purple-100 text-purple-700' :
+              task.type === 'evaluation' || task.type === 'single_eval' ? 'bg-orange-100 text-orange-700' :
+              task.type === 'recurring' ? 'bg-green-100 text-green-700' :
               task.type === 'subtask' ? 'bg-gray-100 text-gray-600' : 'bg-blue-100 text-blue-700'}`}>
             {task.type === 'project' ? 'Project' : task.type === 'evaluation' ? 'Eval' : task.type === 'recurring' ? 'Sync' : task.type === 'subtask' ? 'Subtask' : 'Task'}
           </span>
@@ -424,12 +509,12 @@ const ListViewTask = ({ task, onEdit, onCompleteAction, onPointerDown }) => {
           )}
         </div>
         <h4 className={`font-bold text-base leading-tight ${isCompleted ? 'text-gray-500' : isOverdue ? 'text-red-700' : 'text-gray-900'}`}>{task.title}</h4>
-        
+
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500 font-medium">
           <span className="flex items-center gap-1"><Calendar size={12}/> 表示日: {task.date}</span>
           <span className="flex items-center gap-1"><Clock size={12}/> 期限: {task.dueDate}</span>
         </div>
-        
+
         {task.subtasks && task.subtasks.length > 0 && (
           <div className="mt-2 bg-gray-50 p-2.5 rounded-lg border border-gray-200/60">
             <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Subtasks</span>
@@ -447,11 +532,11 @@ const ListViewTask = ({ task, onEdit, onCompleteAction, onPointerDown }) => {
         {(task.memo || task.richResult || task.completionNote || (task.resultImages && task.resultImages.length > 0) || (task.resultUrls && task.resultUrls.length > 0) || (task.urls && task.urls.length > 0)) && (
           <div className="mt-2 text-xs bg-white/50 p-2.5 rounded-lg border border-gray-200/60 space-y-2">
             {task.memo && <div className="text-gray-600"><span className="font-bold bg-gray-100 px-1.5 py-0.5 rounded mr-1">メモ</span> {task.memo}</div>}
-            
+
             {task.richResult ? (
-              <div 
-                className="rich-text-content text-blue-900 bg-blue-50/50 p-2 rounded border border-blue-100" 
-                dangerouslySetInnerHTML={{ __html: task.richResult }} 
+              <div
+                className="rich-text-content text-blue-900 bg-blue-50/50 p-2 rounded border border-blue-100"
+                dangerouslySetInnerHTML={{ __html: task.richResult }}
                 onClick={handleRichTextClick}
               />
             ) : (
@@ -506,14 +591,14 @@ const ListViewTask = ({ task, onEdit, onCompleteAction, onPointerDown }) => {
       </div>
 
       <div className="flex gap-2 shrink-0 w-full md:w-auto justify-end mt-2 md:mt-0">
-        <button 
+        <button
           onClick={() => onEdit(task)}
           className="p-2 text-gray-500 hover:text-blue-600 bg-white border border-gray-200 rounded-lg shadow-sm hover:bg-blue-50 transition-colors"
           title="編集"
         >
           <Pencil size={18} />
         </button>
-        <button 
+        <button
           onClick={() => onCompleteAction(task)}
           className={`px-4 py-2 flex items-center justify-center gap-2 border rounded-lg font-bold text-sm shadow-sm transition-colors flex-1 md:flex-none
             ${isCompleted ? 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100' : 'bg-white text-gray-600 border-gray-200 hover:text-green-600 hover:border-green-300 hover:bg-green-50'}`}
@@ -562,7 +647,7 @@ const TaskModal = ({ isOpen, onClose, onSave, onDelete, defaultDate = TODAY_STR,
     if (newTaskType === 'project_subtask' && !editingTask) {
       const targetProject = projects.find(p => p.id === selectedProjectId);
       if(!targetProject) return alert('プロジェクトを選択してください');
-      
+
       onSave({
         type: targetProject.type,
         title: `[${targetProject.title}] ${formData.title}`,
@@ -576,7 +661,7 @@ const TaskModal = ({ isOpen, onClose, onSave, onDelete, defaultDate = TODAY_STR,
       });
     } else {
       onSave({
-        id: editingTask?.id, 
+        id: editingTask?.id,
         type: newTaskType,
         title: formData.title,
         dueDate: formData.dueDate,
@@ -601,24 +686,24 @@ const TaskModal = ({ isOpen, onClose, onSave, onDelete, defaultDate = TODAY_STR,
           </h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-800 bg-white hover:bg-gray-200 p-2 rounded-full transition-colors"><X size={20}/></button>
         </div>
-        
+
         {!editingTask && (
           <div className="p-4 flex gap-2 border-b bg-gray-50 flex-wrap">
-            <button 
+            <button
               type="button"
               className={`flex-1 min-w-[90px] py-2 text-xs font-bold rounded-xl border-2 transition-all ${newTaskType === 'simple' ? 'bg-blue-600 text-white border-blue-600 shadow-md' : 'bg-white text-gray-500 border-gray-200 hover:border-blue-300'}`}
               onClick={() => setNewTaskType('simple')}
             >
               シンプル
             </button>
-            <button 
+            <button
               type="button"
               className={`flex-1 min-w-[90px] py-2 text-xs font-bold rounded-xl border-2 transition-all ${newTaskType === 'single_eval' ? 'bg-orange-500 text-white border-orange-500 shadow-md' : 'bg-white text-gray-500 border-gray-200 hover:border-orange-300'}`}
               onClick={() => setNewTaskType('single_eval')}
             >
               単評価(細分化)
             </button>
-            <button 
+            <button
               type="button"
               className={`flex-1 min-w-[120px] py-2 text-xs font-bold rounded-xl border-2 transition-all ${newTaskType === 'project_subtask' ? 'bg-purple-600 text-white border-purple-600 shadow-md' : 'bg-white text-gray-500 border-gray-200 hover:border-purple-300'}`}
               onClick={() => setNewTaskType('project_subtask')}
@@ -632,8 +717,8 @@ const TaskModal = ({ isOpen, onClose, onSave, onDelete, defaultDate = TODAY_STR,
           {newTaskType === 'project_subtask' && !editingTask && (
             <div className="bg-purple-50 p-4 rounded-xl border border-purple-100">
               <label className="block text-sm font-bold text-purple-800 mb-2">関連付けるイベント・プロジェクト</label>
-              <select 
-                required 
+              <select
+                required
                 className="w-full border-2 border-purple-200 p-3 rounded-xl focus:border-purple-500 focus:outline-none transition-colors bg-white text-sm"
                 value={selectedProjectId}
                 onChange={(e) => setSelectedProjectId(e.target.value)}
@@ -651,7 +736,7 @@ const TaskModal = ({ isOpen, onClose, onSave, onDelete, defaultDate = TODAY_STR,
             <label className="block text-sm font-bold text-gray-700 mb-1">タイトル</label>
             <input required type="text" className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:outline-none transition-colors" value={formData.title} onChange={e => setFormData({...formData, title: e.target.value})} placeholder={newTaskType === 'project_subtask' ? "小タスク名を入力" : "タスク名を入力"} />
           </div>
-          
+
           <div>
             <label className="block text-sm font-bold text-gray-700 mb-1">表示日 兼 期限日</label>
             <input required type="date" className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:outline-none transition-colors" value={formData.dueDate} onChange={e => setFormData({...formData, dueDate: e.target.value})} />
@@ -665,13 +750,13 @@ const TaskModal = ({ isOpen, onClose, onSave, onDelete, defaultDate = TODAY_STR,
           <div>
             <label className="block text-sm font-bold text-gray-700 mb-2">関連URL</label>
             <div className="flex gap-2 mb-3 overflow-x-auto pb-1">
-              <button type="button" onClick={() => addUrlScheme('ms-excel:ofv|u|https://')} className="text-xs bg-green-50 text-green-700 px-2.5 py-1.5 rounded-lg border border-green-200 hover:bg-green-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
+              <button type="button" onClick={() => addUrlScheme('ms-excel:ofv|u|')} className="text-xs bg-green-50 text-green-700 px-2.5 py-1.5 rounded-lg border border-green-200 hover:bg-green-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
                 <FileSpreadsheet size={14} /> Excelリンク
               </button>
-              <button type="button" onClick={() => addUrlScheme('ms-powerpoint:ofv|u|https://')} className="text-xs bg-orange-50 text-orange-700 px-2.5 py-1.5 rounded-lg border border-orange-200 hover:bg-orange-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
+              <button type="button" onClick={() => addUrlScheme('ms-powerpoint:ofv|u|')} className="text-xs bg-orange-50 text-orange-700 px-2.5 py-1.5 rounded-lg border border-orange-200 hover:bg-orange-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
                 <MonitorPlay size={14} /> PPTリンク
               </button>
-              <button type="button" onClick={() => addUrlScheme('ms-word:ofv|u|https://')} className="text-xs bg-blue-50 text-blue-700 px-2.5 py-1.5 rounded-lg border border-blue-200 hover:bg-blue-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
+              <button type="button" onClick={() => addUrlScheme('ms-word:ofv|u|')} className="text-xs bg-blue-50 text-blue-700 px-2.5 py-1.5 rounded-lg border border-blue-200 hover:bg-blue-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
                 <FileText size={14} /> Wordリンク
               </button>
             </div>
@@ -679,11 +764,11 @@ const TaskModal = ({ isOpen, onClose, onSave, onDelete, defaultDate = TODAY_STR,
               <div key={i} className="flex gap-2 mb-3">
                 <div className="relative flex-1">
                   <LinkIcon size={16} className="absolute left-3 top-3 text-gray-400" />
-                  <input 
-                    type="text" 
-                    placeholder="https://... または ms-powerpoint:ofv|u|https://..." 
-                    className="w-full border-2 border-gray-200 py-2.5 pl-9 pr-3 rounded-xl text-sm focus:border-blue-500 focus:outline-none transition-colors" 
-                    value={url} 
+                  <input
+                    type="text"
+                    placeholder="https://... または ms-powerpoint:ofv|u|..."
+                    className="w-full border-2 border-gray-200 py-2.5 pl-9 pr-3 rounded-xl text-sm focus:border-blue-500 focus:outline-none transition-colors"
+                    value={url}
                     onChange={e => {
                       const newUrls = [...formData.urls];
                       newUrls[i] = e.target.value;
@@ -692,30 +777,30 @@ const TaskModal = ({ isOpen, onClose, onSave, onDelete, defaultDate = TODAY_STR,
                   />
                 </div>
                 {url.trim() && (
-                  <a 
-                    href={url.trim()} 
-                    target="_blank" 
+                  <a
+                    href={url.trim()}
+                    target="_blank"
                     rel="noopener noreferrer"
                     className="flex items-center justify-center text-blue-600 bg-blue-50 border-2 border-blue-200 hover:bg-blue-100 px-4 rounded-xl transition-colors font-bold text-sm shrink-0"
                   >
                     開く
                   </a>
                 )}
-                <button 
-                  type="button" 
+                <button
+                  type="button"
                   onClick={() => {
                     const newUrls = formData.urls.filter((_, idx) => idx !== i);
                     setFormData({...formData, urls: newUrls});
-                  }} 
+                  }}
                   className="text-red-500 bg-white border-2 border-red-100 hover:bg-red-50 p-2.5 rounded-xl transition-colors"
                 >
                   <Trash2 size={18}/>
                 </button>
               </div>
             ))}
-            <button 
-              type="button" 
-              onClick={() => setFormData({...formData, urls: [...formData.urls, '']})} 
+            <button
+              type="button"
+              onClick={() => setFormData({...formData, urls: [...formData.urls, '']})}
               className="w-full py-2.5 border-2 border-dashed border-gray-300 text-sm text-gray-600 font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-gray-50 hover:border-blue-300 transition-colors"
             >
               <Plus size={16}/> URLを追加
@@ -768,8 +853,8 @@ const RichTextEditor = ({ html, onChange }) => {
   const fileInputRef = useRef(null);
 
   useEffect(() => {
-    if (editorRef.current && html !== undefined && editorRef.current.innerHTML === '') {
-      editorRef.current.innerHTML = html;
+    if (editorRef.current && html !== undefined && editorRef.current.innerHTML !== html) {
+      editorRef.current.innerHTML = html || '';
     }
   }, [html]);
 
@@ -780,7 +865,7 @@ const RichTextEditor = ({ html, onChange }) => {
   const insertLink = (defaultUrl = 'https://') => {
     const url = prompt('リンク先のURLを入力してください\n(※ファイルへのパスやアプリ起動リンクも可):', defaultUrl);
     if (!url) return;
-    
+
     const editor = editorRef.current;
     editor.focus();
 
@@ -792,9 +877,9 @@ const RichTextEditor = ({ html, onChange }) => {
        selection.removeAllRanges();
        selection.addRange(range);
     }
-    
+
     document.execCommand('createLink', false, url);
-    
+
     const links = editor.querySelectorAll('a');
     links.forEach(link => {
       if (!link.hasAttribute('target')) {
@@ -805,7 +890,7 @@ const RichTextEditor = ({ html, onChange }) => {
         link.style.cursor = 'pointer';
       }
     });
-    
+
     onChange(editor.innerHTML);
   };
 
@@ -840,7 +925,7 @@ const RichTextEditor = ({ html, onChange }) => {
     if (files.length === 0) return;
     const editor = editorRef.current;
     editor.focus();
-    
+
     const range = document.createRange();
     range.selectNodeContents(editor);
     range.collapse(false);
@@ -874,44 +959,44 @@ const RichTextEditor = ({ html, onChange }) => {
   return (
     <div className="border-2 border-gray-200 rounded-xl overflow-hidden focus-within:border-blue-500 transition-colors bg-white flex flex-col">
       <div className="bg-gray-50 border-b border-gray-200 p-2 flex gap-2 flex-wrap">
-        <button 
-          type="button" 
+        <button
+          type="button"
           onClick={() => fileInputRef.current?.click()}
           className="text-gray-600 hover:text-blue-600 hover:bg-blue-50 px-2 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 text-xs font-bold"
           title="画像を挿入"
         >
           <ImageIcon size={16} /> 画像
         </button>
-        <button 
-          type="button" 
+        <button
+          type="button"
           onClick={() => insertLink()}
           className="text-gray-600 hover:text-blue-600 hover:bg-blue-50 px-2 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 text-xs font-bold"
           title="リンクを挿入 (Ctrl+K)"
         >
           <LinkIcon size={16} /> リンク
         </button>
-        
+
         <div className="w-px h-6 bg-gray-300 mx-1"></div>
-        
-        <button 
-          type="button" 
-          onClick={() => insertLink('ms-excel:ofv|u|https://')}
+
+        <button
+          type="button"
+          onClick={() => insertLink('ms-excel:ofv|u|')}
           className="text-green-600 hover:text-green-700 hover:bg-green-50 px-2 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 text-xs font-bold"
           title="Excelリンクを挿入"
         >
           <FileSpreadsheet size={16} /> Excel
         </button>
-        <button 
-          type="button" 
-          onClick={() => insertLink('ms-powerpoint:ofv|u|https://')}
+        <button
+          type="button"
+          onClick={() => insertLink('ms-powerpoint:ofv|u|')}
           className="text-orange-600 hover:text-orange-700 hover:bg-orange-50 px-2 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 text-xs font-bold"
           title="PPTリンクを挿入"
         >
           <MonitorPlay size={16} /> PPT
         </button>
-        <button 
-          type="button" 
-          onClick={() => insertLink('ms-word:ofv|u|https://')}
+        <button
+          type="button"
+          onClick={() => insertLink('ms-word:ofv|u|')}
           className="text-blue-600 hover:text-blue-700 hover:bg-blue-50 px-2 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 text-xs font-bold"
           title="Wordリンクを挿入"
         >
@@ -920,7 +1005,7 @@ const RichTextEditor = ({ html, onChange }) => {
 
         <input type="file" accept="image/*" multiple className="hidden" ref={fileInputRef} onChange={insertImageFile} />
       </div>
-      <div 
+      <div
         ref={editorRef}
         contentEditable
         className="w-full p-4 min-h-[200px] max-h-[50vh] overflow-y-auto text-sm focus:outline-none"
@@ -935,6 +1020,7 @@ const RichTextEditor = ({ html, onChange }) => {
 };
 
 const CompletionModal = ({ isOpen, task, onClose, onSave }) => {
+  const richHtmlRef = useRef('');
   const [richHtml, setRichHtml] = useState('');
   const [urls, setUrls] = useState(['']);
 
@@ -949,18 +1035,25 @@ const CompletionModal = ({ isOpen, task, onClose, onSave }) => {
           });
         }
       }
+      richHtmlRef.current = initialHtml;
       setRichHtml(initialHtml);
       setUrls(task.resultUrls && task.resultUrls.length > 0 ? task.resultUrls : ['']);
     } else {
+      richHtmlRef.current = '';
       setRichHtml('');
     }
   }, [isOpen, task]);
 
   if (!isOpen || !task) return null;
 
+  const handleRichHtmlChange = (html) => {
+    richHtmlRef.current = html;
+    setRichHtml(html);
+  };
+
   const handleSaveAction = (isCompletedState) => {
     const filteredUrls = urls.filter(u => u.trim() !== '');
-    onSave(task.id, richHtml, filteredUrls, isCompletedState);
+    onSave(task.id, richHtmlRef.current, filteredUrls, isCompletedState);
   };
 
   const addUrlScheme = (scheme) => {
@@ -972,12 +1065,12 @@ const CompletionModal = ({ isOpen, task, onClose, onSave }) => {
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
         <div className="p-4 border-b flex justify-between items-center bg-gray-50">
           <h2 className="text-xl font-black flex items-center gap-2 text-gray-800">
-            <CheckSquare size={24} className={task.completed ? "text-green-600" : "text-blue-600"} /> 
+            <CheckSquare size={24} className={task.completed ? "text-green-600" : "text-blue-600"} />
             タスクの結論・成果の入力
           </h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-800 bg-white hover:bg-gray-200 p-2 rounded-full transition-colors"><X size={20}/></button>
         </div>
-        
+
         <div className="p-6 overflow-y-auto flex-1 flex flex-col gap-6">
           <div className="bg-blue-50 border border-blue-100 p-3 rounded-xl">
             <p className="text-sm font-bold text-blue-800">{task.title}</p>
@@ -985,19 +1078,19 @@ const CompletionModal = ({ isOpen, task, onClose, onSave }) => {
 
           <div>
             <label className="block text-sm font-bold text-gray-700 mb-2">結論・成果ノート (未記入でもOK)</label>
-            <RichTextEditor html={richHtml} onChange={setRichHtml} />
+            <RichTextEditor html={richHtml} onChange={handleRichHtmlChange} />
           </div>
 
           <div>
             <label className="block text-sm font-bold text-gray-700 mb-2">成果物 URL</label>
             <div className="flex gap-2 mb-3 overflow-x-auto pb-1">
-              <button type="button" onClick={() => addUrlScheme('ms-excel:ofv|u|https://')} className="text-xs bg-green-50 text-green-700 px-2.5 py-1.5 rounded-lg border border-green-200 hover:bg-green-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
+              <button type="button" onClick={() => addUrlScheme('ms-excel:ofv|u|')} className="text-xs bg-green-50 text-green-700 px-2.5 py-1.5 rounded-lg border border-green-200 hover:bg-green-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
                 <FileSpreadsheet size={14} /> Excelリンク
               </button>
-              <button type="button" onClick={() => addUrlScheme('ms-powerpoint:ofv|u|https://')} className="text-xs bg-orange-50 text-orange-700 px-2.5 py-1.5 rounded-lg border border-orange-200 hover:bg-orange-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
+              <button type="button" onClick={() => addUrlScheme('ms-powerpoint:ofv|u|')} className="text-xs bg-orange-50 text-orange-700 px-2.5 py-1.5 rounded-lg border border-orange-200 hover:bg-orange-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
                 <MonitorPlay size={14} /> PPTリンク
               </button>
-              <button type="button" onClick={() => addUrlScheme('ms-word:ofv|u|https://')} className="text-xs bg-blue-50 text-blue-700 px-2.5 py-1.5 rounded-lg border border-blue-200 hover:bg-blue-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
+              <button type="button" onClick={() => addUrlScheme('ms-word:ofv|u|')} className="text-xs bg-blue-50 text-blue-700 px-2.5 py-1.5 rounded-lg border border-blue-200 hover:bg-blue-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
                 <FileText size={14} /> Wordリンク
               </button>
             </div>
@@ -1005,11 +1098,11 @@ const CompletionModal = ({ isOpen, task, onClose, onSave }) => {
               <div key={i} className="flex gap-2 mb-3">
                 <div className="relative flex-1">
                   <LinkIcon size={16} className="absolute left-3 top-3 text-gray-400" />
-                  <input 
-                    type="text" 
-                    placeholder="https://... または ms-excel:ofv|u|https://..." 
-                    className="w-full border-2 border-gray-200 py-2.5 pl-9 pr-3 rounded-xl text-sm focus:border-blue-500 focus:outline-none transition-colors" 
-                    value={url} 
+                  <input
+                    type="text"
+                    placeholder="https://... または ms-excel:ofv|u|..."
+                    className="w-full border-2 border-gray-200 py-2.5 pl-9 pr-3 rounded-xl text-sm focus:border-blue-500 focus:outline-none transition-colors"
+                    value={url}
                     onChange={e => {
                       const newUrls = [...urls];
                       newUrls[i] = e.target.value;
@@ -1018,27 +1111,27 @@ const CompletionModal = ({ isOpen, task, onClose, onSave }) => {
                   />
                 </div>
                 {url.trim() && (
-                  <a 
-                    href={url.trim()} 
-                    target="_blank" 
+                  <a
+                    href={url.trim()}
+                    target="_blank"
                     rel="noopener noreferrer"
                     className="flex items-center justify-center text-blue-600 bg-blue-50 border-2 border-blue-200 hover:bg-blue-100 px-4 rounded-xl transition-colors font-bold text-sm shrink-0"
                   >
                     開く
                   </a>
                 )}
-                <button 
-                  type="button" 
-                  onClick={() => setUrls(urls.filter((_, idx) => idx !== i))} 
+                <button
+                  type="button"
+                  onClick={() => setUrls(urls.filter((_, idx) => idx !== i))}
                   className="text-red-500 bg-white border-2 border-red-100 hover:bg-red-50 p-2.5 rounded-xl transition-colors"
                 >
                   <Trash2 size={18}/>
                 </button>
               </div>
             ))}
-            <button 
-              type="button" 
-              onClick={() => setUrls([...urls, ''])} 
+            <button
+              type="button"
+              onClick={() => setUrls([...urls, ''])}
               className="w-full py-2.5 border-2 border-dashed border-gray-300 text-sm text-gray-600 font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-gray-50 hover:border-blue-300 transition-colors"
             >
               <Plus size={16}/> URLを追加
@@ -1050,16 +1143,16 @@ const CompletionModal = ({ isOpen, task, onClose, onSave }) => {
               キャンセル
             </button>
             <div className="flex gap-2">
-              <button 
-                type="button" 
-                onClick={() => handleSaveAction(task.completed)} 
+              <button
+                type="button"
+                onClick={() => handleSaveAction(task.completed)}
                 className="px-5 py-3 text-blue-600 border-2 border-blue-600 rounded-xl font-bold hover:bg-blue-50 transition-colors"
               >
                 保存のみ
               </button>
-              <button 
-                type="button" 
-                onClick={() => handleSaveAction(!task.completed)} 
+              <button
+                type="button"
+                onClick={() => handleSaveAction(!task.completed)}
                 className={`px-6 py-3 text-white rounded-xl font-bold shadow-md transition-all ${task.completed ? 'bg-orange-500 hover:bg-orange-600' : 'bg-green-600 hover:bg-green-700'}`}
               >
                 {task.completed ? 'タスク完了を取り消す' : 'タスク完了'}
@@ -1067,6 +1160,209 @@ const CompletionModal = ({ isOpen, task, onClose, onSave }) => {
             </div>
           </div>
         </div>
+      </div>
+    </div>
+  );
+};
+
+const RecurringScheduleModal = ({ isOpen, onClose, onSave, onDelete, editingSchedule }) => {
+  const [formData, setFormData] = useState({
+    title: '',
+    frequency: 'weekly',
+    interval: 1,
+    startDate: TODAY_STR,
+    endDate: '',
+    recurrenceDay: getLocalDate(TODAY_STR).getDay(),
+    memo: '',
+    urls: ['']
+  });
+
+  useEffect(() => {
+    if (isOpen) {
+      if (editingSchedule) {
+        setFormData({
+          title: editingSchedule.title || '',
+          frequency: editingSchedule.frequency || 'weekly',
+          interval: editingSchedule.interval || 1,
+          startDate: editingSchedule.startDate || TODAY_STR,
+          endDate: editingSchedule.endDate || '',
+          recurrenceDay: editingSchedule.recurrenceDay ?? (editingSchedule.frequency === 'monthly' ? getLocalDate(editingSchedule.startDate || TODAY_STR).getDate() : getLocalDate(editingSchedule.startDate || TODAY_STR).getDay()),
+          memo: editingSchedule.memo || '',
+          urls: editingSchedule.urls && editingSchedule.urls.length > 0 ? editingSchedule.urls : ['']
+        });
+      } else {
+        setFormData({ title: '', frequency: 'weekly', interval: 1, startDate: TODAY_STR, endDate: '', recurrenceDay: getLocalDate(TODAY_STR).getDay(), memo: '', urls: [''] });
+      }
+    }
+  }, [isOpen, editingSchedule]);
+
+  if (!isOpen) return null;
+
+  const addUrlScheme = (scheme) => {
+    setFormData({ ...formData, urls: [...formData.urls, scheme] });
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (formData.endDate && formData.endDate < formData.startDate) {
+      alert('終了時期は開始時期以降の日付を指定してください。');
+      return;
+    }
+    onSave({
+      id: editingSchedule?.id,
+      title: formData.title,
+      frequency: formData.frequency,
+      interval: Math.max(1, Number(formData.interval) || 1),
+      startDate: formData.startDate,
+      endDate: formData.endDate,
+      recurrenceDay: formData.frequency === 'daily' ? undefined : Number(formData.recurrenceDay),
+      memo: formData.memo,
+      urls: formData.urls.filter(u => u.trim() !== '')
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="p-4 border-b flex justify-between items-center bg-green-50">
+          <h2 className="text-xl font-black flex items-center gap-2 text-gray-800">
+            <Repeat size={24} className="text-green-600" />
+            {editingSchedule ? '定期スケジュールの編集' : '新規定期スケジュール'}
+          </h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-800 bg-white hover:bg-gray-200 p-2 rounded-full transition-colors"><X size={20}/></button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 overflow-y-auto flex-1 flex flex-col gap-5">
+          <div>
+            <label className="block text-sm font-bold text-gray-700 mb-1">タイトル</label>
+            <input required type="text" className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-green-500 focus:outline-none transition-colors" value={formData.title} onChange={e => setFormData({...formData, title: e.target.value})} placeholder="例: 週次定例、月次レポート作成" />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-1">繰り返し単位</label>
+              <select
+                required
+                className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-green-500 focus:outline-none bg-white"
+                value={formData.frequency}
+                onChange={e => {
+                  const nextFrequency = e.target.value;
+                  const start = getLocalDate(formData.startDate || TODAY_STR);
+                  setFormData({
+                    ...formData,
+                    frequency: nextFrequency,
+                    recurrenceDay: nextFrequency === 'monthly' ? start.getDate() : start.getDay()
+                  });
+                }}
+              >
+                <option value="daily">日ごと</option>
+                <option value="weekly">週ごと</option>
+                <option value="monthly">月ごと</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-1">間隔</label>
+              <input required type="number" min="1" max="99" className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-green-500 focus:outline-none" value={formData.interval} onChange={e => setFormData({...formData, interval: e.target.value})} />
+            </div>
+          </div>
+
+          {formData.frequency !== 'daily' && (
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-1">{formData.frequency === 'weekly' ? '曜日' : '日付'}</label>
+              {formData.frequency === 'weekly' ? (
+                <select required className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-green-500 focus:outline-none bg-white" value={formData.recurrenceDay} onChange={e => setFormData({...formData, recurrenceDay: Number(e.target.value)})}>
+                  {weekdayLabels.map((label, idx) => (
+                    <option key={label} value={idx}>{label}</option>
+                  ))}
+                </select>
+              ) : (
+                <select required className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-green-500 focus:outline-none bg-white" value={formData.recurrenceDay} onChange={e => setFormData({...formData, recurrenceDay: Number(e.target.value)})}>
+                  {Array.from({ length: 31 }, (_, idx) => idx + 1).map(day => (
+                    <option key={day} value={day}>{day}日</option>
+                  ))}
+                </select>
+              )}
+              {formData.frequency === 'monthly' && (
+                <p className="text-xs text-gray-500 font-medium mt-1">月末より後の日付は、その月の最終日に表示します。</p>
+              )}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-green-50 border border-green-100 p-4 rounded-xl">
+            <div>
+              <label className="block text-sm font-bold text-green-800 mb-1">開始時期 <span className="text-red-500">必須</span></label>
+              <input
+                required
+                type="date"
+                className="w-full border-2 border-green-200 p-3 rounded-xl focus:border-green-500 focus:outline-none bg-white"
+                value={formData.startDate}
+                onChange={e => {
+                  const nextStart = e.target.value;
+                  const start = getLocalDate(nextStart || TODAY_STR);
+                  setFormData({
+                    ...formData,
+                    startDate: nextStart,
+                    recurrenceDay: formData.frequency === 'monthly' ? start.getDate() : formData.frequency === 'weekly' ? start.getDay() : formData.recurrenceDay
+                  });
+                }}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-bold text-green-800 mb-1">終了時期 <span className="text-gray-400">任意</span></label>
+              <input type="date" min={formData.startDate} className="w-full border-2 border-green-200 p-3 rounded-xl focus:border-green-500 focus:outline-none bg-white" value={formData.endDate} onChange={e => setFormData({...formData, endDate: e.target.value})} />
+            </div>
+            <p className="sm:col-span-2 text-xs text-green-700 font-medium">終了時期を空欄にすると、表示対象期間内で継続して予定を自動生成します。</p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-bold text-gray-700 mb-1">メモ</label>
+            <textarea className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-green-500 focus:outline-none transition-colors" rows="2" value={formData.memo} onChange={e => setFormData({...formData, memo: e.target.value})} placeholder="補足情報など" />
+          </div>
+
+          <div>
+            <label className="block text-sm font-bold text-gray-700 mb-2">関連URL</label>
+            <div className="flex gap-2 mb-3 overflow-x-auto pb-1">
+              <button type="button" onClick={() => addUrlScheme('ms-excel:ofv|u|')} className="text-xs bg-green-50 text-green-700 px-2.5 py-1.5 rounded-lg border border-green-200 hover:bg-green-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
+                <FileSpreadsheet size={14} /> Excelリンク
+              </button>
+              <button type="button" onClick={() => addUrlScheme('ms-powerpoint:ofv|u|')} className="text-xs bg-orange-50 text-orange-700 px-2.5 py-1.5 rounded-lg border border-orange-200 hover:bg-orange-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
+                <MonitorPlay size={14} /> PPTリンク
+              </button>
+              <button type="button" onClick={() => addUrlScheme('ms-word:ofv|u|')} className="text-xs bg-blue-50 text-blue-700 px-2.5 py-1.5 rounded-lg border border-blue-200 hover:bg-blue-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
+                <FileText size={14} /> Wordリンク
+              </button>
+            </div>
+            {formData.urls.map((url, i) => (
+              <div key={i} className="flex gap-2 mb-3">
+                <input type="text" className="flex-1 border-2 border-gray-200 p-2.5 rounded-xl text-sm focus:border-green-500 focus:outline-none" value={url} onChange={e => {
+                  const newUrls = [...formData.urls];
+                  newUrls[i] = e.target.value;
+                  setFormData({...formData, urls: newUrls});
+                }} placeholder="https://..." />
+                <button type="button" onClick={() => setFormData({...formData, urls: formData.urls.filter((_, idx) => idx !== i)})} className="text-red-500 bg-white border-2 border-red-100 hover:bg-red-50 p-2.5 rounded-xl transition-colors"><Trash2 size={18}/></button>
+              </div>
+            ))}
+            <button type="button" onClick={() => setFormData({...formData, urls: [...formData.urls, '']})} className="w-full py-2.5 border-2 border-dashed border-gray-300 text-sm text-gray-600 font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-gray-50 hover:border-green-300 transition-colors">
+              <Plus size={16}/> URLを追加
+            </button>
+          </div>
+
+          <div className="mt-4 flex justify-between items-center pt-4 border-t">
+            <div>
+              {editingSchedule && (
+                <button type="button" onClick={() => onDelete(editingSchedule.id)} className="px-4 py-3 text-red-600 bg-red-50 rounded-xl font-bold hover:bg-red-100 transition-colors flex items-center gap-2">
+                  <Trash2 size={18} /> 削除
+                </button>
+              )}
+            </div>
+            <div className="flex gap-3">
+              <button type="button" onClick={onClose} className="px-5 py-3 text-gray-600 bg-gray-100 rounded-xl font-bold hover:bg-gray-200 transition-colors">キャンセル</button>
+              <button type="submit" className="px-8 py-3 bg-green-600 text-white rounded-xl font-bold shadow-lg hover:bg-green-700 hover:shadow-xl transition-all transform hover:-translate-y-0.5">
+                {editingSchedule ? '保存する' : '作成する'}
+              </button>
+            </div>
+          </div>
+        </form>
       </div>
     </div>
   );
@@ -1093,12 +1389,12 @@ const ProjectModal = ({ isOpen, onClose, onSave }) => {
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col">
         <div className="p-4 border-b flex justify-between items-center bg-gray-50">
           <h2 className="text-xl font-black flex items-center gap-2 text-gray-800">
-            <Plus size={24} className="text-purple-600" /> 
+            <Plus size={24} className="text-purple-600" />
             新規イベント・プロジェクト作成
           </h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-800 bg-white hover:bg-gray-200 p-2 rounded-full transition-colors"><X size={20}/></button>
         </div>
-        
+
         <form onSubmit={handleSubmit} className="p-6 flex flex-col gap-5">
           <div>
             <label className="block text-sm font-bold text-gray-700 mb-1">タイトル</label>
@@ -1137,23 +1433,29 @@ const ProjectModal = ({ isOpen, onClose, onSave }) => {
 export default function App() {
   const [isDBReady, setIsDBReady] = useState(false);
   const [activeTab, setActiveTab] = useState('board');
-  const [plannerView, setPlannerView] = useState('list'); 
-  
+  const [plannerView, setPlannerView] = useState('list');
+
   const [tasks, setTasks] = useState([]);
   const [projects, setProjects] = useState([]);
-  
+  const [recurringSchedules, setRecurringSchedules] = useState([]);
+  const [recurringCompletions, setRecurringCompletions] = useState({});
+
   useEffect(() => {
     const loadData = async () => {
       try {
         const loadedTasks = await loadFromDB('tasks');
         const loadedProjects = await loadFromDB('projects');
-        
-        const tasksWithId = (loadedTasks || initialTasks).map((t, idx) => 
+        const loadedRecurringSchedules = await loadFromDB('recurringSchedules');
+        const loadedRecurringCompletions = await loadFromDB('recurringCompletions');
+
+        const tasksWithId = (loadedTasks || initialTasks).map((t, idx) =>
           (!t.id || t.id === 'undefined') ? { ...t, id: `t_${Date.now()}_${idx}_${Math.random().toString(36).substring(2,9)}` } : t
         );
 
         setTasks(tasksWithId);
         setProjects(loadedProjects || initialProjects);
+        setRecurringSchedules(loadedRecurringSchedules || initialRecurringSchedules);
+        setRecurringCompletions(loadedRecurringCompletions || {});
       } catch (e) {
         console.error("Failed to load from DB", e);
       } finally {
@@ -1171,14 +1473,24 @@ export default function App() {
     if (isDBReady) saveToDB('projects', projects);
   }, [projects, isDBReady]);
 
+  useEffect(() => {
+    if (isDBReady) saveToDB('recurringSchedules', recurringSchedules);
+  }, [recurringSchedules, isDBReady]);
+
+  useEffect(() => {
+    if (isDBReady) saveToDB('recurringCompletions', recurringCompletions);
+  }, [recurringCompletions, isDBReady]);
+
   const [selectedProject, setSelectedProject] = useState(null);
   const [showCompletedTasks, setShowCompletedTasks] = useState(false);
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState(null);
   const [completingTask, setCompletingTask] = useState(null);
-  
+
   const [newTaskDefaultDate, setNewTaskDefaultDate] = useState(TODAY_STR);
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
+  const [isRecurringModalOpen, setIsRecurringModalOpen] = useState(false);
+  const [editingRecurringSchedule, setEditingRecurringSchedule] = useState(null);
   const [isAddingSubtask, setIsAddingSubtask] = useState(false);
   const [newSubtaskTitle, setNewSubtaskTitle] = useState('');
   const [toastMessage, setToastMessage] = useState('');
@@ -1188,8 +1500,9 @@ export default function App() {
   const [hoverDropWeek, setHoverDropWeek] = useState(null);
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterCompleted, setFilterCompleted] = useState('all'); 
+  const [filterCompleted, setFilterCompleted] = useState('all');
   const [filterProject, setFilterProject] = useState('all');
+  const [showRecurringInList, setShowRecurringInList] = useState(true);
 
   const thisWeekRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -1198,7 +1511,7 @@ export default function App() {
     const weeks = [];
     const today = new Date(TODAY_STR);
     const thisMonday = getMonday(today);
-    
+
     for (let i = -26; i <= 26; i++) {
       const startMonday = addDays(thisMonday, i * 7);
       const days = [];
@@ -1255,7 +1568,7 @@ export default function App() {
   }, []);
 
   const handleExport = () => {
-    const data = { tasks, projects };
+    const data = { tasks, projects, recurringSchedules, recurringCompletions };
     const jsonString = JSON.stringify(data, null, 2);
     const blob = new Blob([jsonString], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -1279,6 +1592,8 @@ export default function App() {
         const data = JSON.parse(event.target.result);
         if (data.tasks && Array.isArray(data.tasks)) setTasks(data.tasks);
         if (data.projects && Array.isArray(data.projects)) setProjects(data.projects);
+        if (data.recurringSchedules && Array.isArray(data.recurringSchedules)) setRecurringSchedules(data.recurringSchedules);
+        if (data.recurringCompletions && typeof data.recurringCompletions === 'object') setRecurringCompletions(data.recurringCompletions);
         showToast('データをインポートしました');
       } catch (error) {
         console.error("Import failed:", error);
@@ -1286,15 +1601,71 @@ export default function App() {
       }
     };
     reader.readAsText(file);
-    e.target.value = ''; 
+    e.target.value = '';
   };
+
+  const recurringDisplayRange = useMemo(() => {
+    const boardDates = mainBoardWeeks.reduce((dates, week) => [...dates, ...week.days.map(day => day.date)], []);
+    const plannerDates = yearWeeks.map(week => week.startDate);
+    const allDates = [...boardDates, ...plannerDates, TODAY_STR].sort();
+    return { start: allDates[0], end: allDates[allDates.length - 1] };
+  }, [mainBoardWeeks, yearWeeks]);
+
+  const recurringOccurrences = useMemo(() => {
+    const rangeStart = getLocalDate(recurringDisplayRange.start);
+    const rangeEnd = getLocalDate(recurringDisplayRange.end);
+    rangeEnd.setHours(23, 59, 59, 999);
+    const occurrences = [];
+
+    recurringSchedules.forEach((schedule, scheduleIndex) => {
+      if (!schedule.startDate) return;
+      const scheduleEnd = schedule.endDate ? getLocalDate(schedule.endDate) : rangeEnd;
+      const effectiveEnd = scheduleEnd < rangeEnd ? scheduleEnd : rangeEnd;
+      let current = getFirstRecurringOccurrenceDate(schedule);
+      let guard = 0;
+
+      while (current < rangeStart && guard < 10000) {
+        current = getRecurringNextOccurrenceDate(current, schedule);
+        guard += 1;
+      }
+
+      while (current <= effectiveEnd && guard < 12000) {
+        const date = formatDate(current);
+        const completionKey = `${schedule.id}_${date}`;
+        const completion = recurringCompletions[completionKey] || {};
+        occurrences.push({
+          id: buildRecurringOccurrenceId(schedule.id, date),
+          recurringScheduleId: schedule.id,
+          recurrenceDate: date,
+          isRecurringOccurrence: true,
+          isSubtask: false,
+          type: 'recurring',
+          title: schedule.title,
+          date,
+          dueDate: date,
+          memo: schedule.memo,
+          urls: schedule.urls || [],
+          completed: completion.completed || false,
+          richResult: completion.richResult,
+          completionNote: completion.completionNote || '',
+          resultUrls: completion.resultUrls || [],
+          resultImages: completion.resultImages || [],
+          order: new Date(date).getTime() + 500 + scheduleIndex
+        });
+        current = getRecurringNextOccurrenceDate(current, schedule);
+        guard += 1;
+      }
+    });
+
+    return occurrences;
+  }, [recurringSchedules, recurringCompletions, recurringDisplayRange]);
 
   const displayItems = useMemo(() => {
     const items = [];
     tasks.forEach((t, i) => {
       const tOrder = typeof t.order === 'number' ? t.order : new Date(t.date).getTime() + i * 1000;
       items.push({ ...t, isSubtask: false, order: tOrder });
-      
+
       if (t.subtasks && Array.isArray(t.subtasks)) {
         t.subtasks.forEach((st, idx) => {
           const stOrder = typeof st.order === 'number' ? st.order : new Date(st.dueDate).getTime() + i * 1000 + idx;
@@ -1321,8 +1692,8 @@ export default function App() {
         });
       }
     });
-    return items.sort((a, b) => a.order - b.order);
-  }, [tasks]);
+    return [...items, ...recurringOccurrences].sort((a, b) => a.order - b.order);
+  }, [tasks, recurringOccurrences]);
 
   const handlePointerDown = (e, type, data) => {
     e.preventDefault();
@@ -1343,7 +1714,7 @@ export default function App() {
     if (!dragItem) return;
 
     const handlePointerMove = (e) => {
-      e.preventDefault(); 
+      e.preventDefault();
       setDragItem(prev => ({
         ...prev,
         clientX: e.clientX,
@@ -1361,7 +1732,7 @@ export default function App() {
 
     const handlePointerUp = (e) => {
       const target = document.elementFromPoint(e.clientX, e.clientY);
-      
+
       const dropZone = target?.closest('[data-drop-zone]');
       const targetTaskEl = target?.closest('[data-task-id]');
       const dropZoneWeek = target?.closest('[data-drop-week]')?.getAttribute('data-drop-week');
@@ -1388,7 +1759,7 @@ export default function App() {
           const taskEls = Array.from(listContainer.querySelectorAll('[data-task-id]')).filter(
             el => el.getAttribute('data-task-id') !== dragItem.data.id
           );
-          
+
           let insertIndex = taskEls.length;
           for (let i = 0; i < taskEls.length; i++) {
             const rect = taskEls[i].getBoundingClientRect();
@@ -1459,6 +1830,14 @@ export default function App() {
   }, [dragItem, tasks, displayItems]);
 
   const handleEditTask = (task) => {
+    if (task.isRecurringOccurrence) {
+      const schedule = recurringSchedules.find(item => item.id === task.recurringScheduleId);
+      if (schedule) {
+        setEditingRecurringSchedule(schedule);
+        setIsRecurringModalOpen(true);
+      }
+      return;
+    }
     setEditingTask(task);
     setIsTaskModalOpen(true);
   };
@@ -1481,14 +1860,14 @@ export default function App() {
     if (!selectedProject) return;
     const projectTitle = selectedProject.title;
     const projectType = selectedProject.type;
-    
+
     setProjects(prev => prev.filter(p => p.id !== projectId));
     setTasks(prev => prev.filter(t => {
       if (t.projectId === projectId) return false;
       if (t.type === projectType && t.title.startsWith(`[${projectTitle}]`)) return false;
       return true;
     }));
-    
+
     setPlannerView('list');
     setSelectedProject(null);
     showToast('イベントと関連タスクを削除しました');
@@ -1496,6 +1875,32 @@ export default function App() {
 
   const handleCompleteAction = (task) => {
     setCompletingTask(task);
+  };
+
+  const handleSaveRecurringSchedule = (scheduleData) => {
+    if (scheduleData.id) {
+      setRecurringSchedules(prev => prev.map(item => item.id === scheduleData.id ? { ...item, ...scheduleData } : item));
+      showToast(`「${scheduleData.title}」を更新しました`);
+    } else {
+      setRecurringSchedules(prev => [...prev, { ...scheduleData, id: `r_${Date.now()}_${Math.random().toString(36).substring(2,9)}` }]);
+      showToast(`「${scheduleData.title}」を作成しました`);
+    }
+    setIsRecurringModalOpen(false);
+    setEditingRecurringSchedule(null);
+  };
+
+  const handleDeleteRecurringSchedule = (scheduleId) => {
+    setRecurringSchedules(prev => prev.filter(item => item.id !== scheduleId));
+    setRecurringCompletions(prev => {
+      const next = {};
+      Object.entries(prev).forEach(([key, value]) => {
+        if (!key.startsWith(`${scheduleId}_`)) next[key] = value;
+      });
+      return next;
+    });
+    setIsRecurringModalOpen(false);
+    setEditingRecurringSchedule(null);
+    showToast('定期スケジュールを削除しました');
   };
 
   const handleCompleteSubtask = (parentId, subtaskIndex) => {
@@ -1515,7 +1920,18 @@ export default function App() {
   };
 
   const handleSaveCompletion = (taskId, richHtml, urls, isCompleted) => {
-    if (completingTask?.isSubtask) {
+    if (completingTask?.isRecurringOccurrence) {
+      const completionKey = `${completingTask.recurringScheduleId}_${completingTask.recurrenceDate}`;
+      setRecurringCompletions(prev => ({
+        ...prev,
+        [completionKey]: {
+          ...(prev[completionKey] || {}),
+          richResult: richHtml,
+          resultUrls: urls,
+          completed: isCompleted
+        }
+      }));
+    } else if (completingTask?.isSubtask) {
       // 小タスクの場合の保存処理
       setTasks(prev => prev.map(t => {
         if (t.id === completingTask.parentId) {
@@ -1588,9 +2004,9 @@ export default function App() {
     if (taskData.isProjectSubtask) {
       setProjects(prev => prev.map(p => {
         if (p.id === taskData.projectId) {
-          return { 
-            ...p, 
-            tasksTemplate: [...p.tasksTemplate, { id: `tt_${Date.now()}`, title: taskData.rawTitle }] 
+          return {
+            ...p,
+            tasksTemplate: [...p.tasksTemplate, { id: `tt_${Date.now()}`, title: taskData.rawTitle }]
           };
         }
         return p;
@@ -1599,8 +2015,8 @@ export default function App() {
 
     const processedTaskData = {
       ...taskData,
-      subtasks: taskData.subtasks?.map((st, i) => ({ 
-        ...st, 
+      subtasks: taskData.subtasks?.map((st, i) => ({
+        ...st,
         id: st.id || `sub_${Date.now()}_${i}_${Math.random().toString(36).substring(2,9)}`,
         order: st.order || Date.now() + i
       }))
@@ -1657,19 +2073,19 @@ export default function App() {
   const handleAddSubtask = () => {
     if (newSubtaskTitle.trim() && selectedProject) {
       const newTaskTemplate = { id: `tt_${Date.now()}`, title: newSubtaskTitle.trim() };
-      
+
       setProjects(prev => prev.map(p => {
         if (p.id === selectedProject.id) {
           return { ...p, tasksTemplate: [...p.tasksTemplate, newTaskTemplate] };
         }
         return p;
       }));
-      
+
       setSelectedProject(prev => ({
         ...prev,
         tasksTemplate: [...prev.tasksTemplate, newTaskTemplate]
       }));
-      
+
       setNewSubtaskTitle('');
       setIsAddingSubtask(false);
     }
@@ -1702,6 +2118,7 @@ export default function App() {
 
   const filteredTasks = useMemo(() => {
     return displayItems.filter(t => {
+      if (!showRecurringInList && t.isRecurringOccurrence) return false;
       if (filterCompleted === 'completed' && !t.completed) return false;
       if (filterCompleted === 'incomplete' && t.completed) return false;
 
@@ -1727,8 +2144,8 @@ export default function App() {
       }
 
       return true;
-    }); 
-  }, [displayItems, filterCompleted, filterProject, searchQuery, projects, tasks]);
+    });
+  }, [displayItems, filterCompleted, filterProject, searchQuery, projects, tasks, showRecurringInList]);
 
   if (!isDBReady) {
     return (
@@ -1746,7 +2163,7 @@ export default function App() {
           content: attr(data-placeholder);
           color: #9ca3af;
           pointer-events: none;
-          display: block; 
+          display: block;
         }
         .rich-text-content img {
           max-height: 200px;
@@ -1764,24 +2181,24 @@ export default function App() {
             <p className="text-xs text-gray-500 font-bold mt-1">Today: {TODAY_STR}</p>
           </div>
         </div>
-        
+
         <div className="flex flex-wrap items-center gap-4">
           <div className="flex items-center gap-2">
-            <input 
-              type="file" 
-              accept=".json" 
-              style={{ display: 'none' }} 
+            <input
+              type="file"
+              accept=".json"
+              style={{ display: 'none' }}
               ref={fileInputRef}
               onChange={handleImport}
             />
-            <button 
+            <button
               onClick={() => fileInputRef.current?.click()}
               className="flex items-center gap-1.5 text-gray-500 hover:text-blue-600 bg-gray-50 hover:bg-blue-50 px-3 py-1.5 rounded-lg border border-gray-200 transition-colors text-xs font-bold shadow-sm"
               title="JSONファイルからインポート"
             >
               <Upload size={14} /> <span className="hidden sm:inline">インポート</span>
             </button>
-            <button 
+            <button
               onClick={handleExport}
               className="flex items-center gap-1.5 text-gray-500 hover:text-blue-600 bg-gray-50 hover:bg-blue-50 px-3 py-1.5 rounded-lg border border-gray-200 transition-colors text-xs font-bold shadow-sm"
               title="JSONファイルへエクスポート"
@@ -1791,25 +2208,31 @@ export default function App() {
           </div>
 
           <div className="flex bg-gray-100 p-1.5 rounded-xl border border-gray-200">
-            <button 
+            <button
               onClick={() => setActiveTab('today')}
               className={`flex items-center gap-2 px-4 md:px-5 py-2.5 rounded-lg text-sm font-bold transition-all ${activeTab === 'today' ? 'bg-white shadow-sm text-blue-700 ring-1 ring-gray-200' : 'text-gray-500 hover:text-gray-700'}`}
             >
               <Bell size={18} /> <span className="hidden sm:inline">今日 / 期限切れ</span>
             </button>
-            <button 
+            <button
               onClick={() => setActiveTab('board')}
               className={`flex items-center gap-2 px-4 md:px-5 py-2.5 rounded-lg text-sm font-bold transition-all ${activeTab === 'board' ? 'bg-white shadow-sm text-blue-700 ring-1 ring-gray-200' : 'text-gray-500 hover:text-gray-700'}`}
             >
               <Layout size={18} /> <span className="hidden sm:inline">ボード</span>
             </button>
-            <button 
+            <button
               onClick={() => setActiveTab('list')}
               className={`flex items-center gap-2 px-4 md:px-5 py-2.5 rounded-lg text-sm font-bold transition-all ${activeTab === 'list' ? 'bg-white shadow-sm text-blue-700 ring-1 ring-gray-200' : 'text-gray-500 hover:text-gray-700'}`}
             >
               <List size={18} /> <span className="hidden sm:inline">一覧・検索</span>
             </button>
-            <button 
+            <button
+              onClick={() => setActiveTab('recurring')}
+              className={`flex items-center gap-2 px-4 md:px-5 py-2.5 rounded-lg text-sm font-bold transition-all ${activeTab === 'recurring' ? 'bg-white shadow-sm text-blue-700 ring-1 ring-gray-200' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              <Repeat size={18} /> <span className="hidden sm:inline">定期</span>
+            </button>
+            <button
               onClick={() => setActiveTab('planner')}
               className={`flex items-center gap-2 px-4 md:px-5 py-2.5 rounded-lg text-sm font-bold transition-all ${activeTab === 'planner' ? 'bg-white shadow-sm text-blue-700 ring-1 ring-gray-200' : 'text-gray-500 hover:text-gray-700'}`}
             >
@@ -1820,11 +2243,11 @@ export default function App() {
       </header>
 
       <main className="flex-1 overflow-hidden relative">
-        
+
         {activeTab === 'today' && (
           <div className="h-full flex flex-col p-4 md:p-6 pb-24 max-w-[1200px] mx-auto w-full overflow-y-auto">
             <div className="space-y-8">
-              
+
               <section>
                 <h2 className="text-xl font-black text-red-600 flex items-center gap-2 mb-4 border-b-2 border-red-200 pb-2">
                   <AlertCircle size={24} /> 期限切れタスク ({overdueTasks.length})
@@ -1832,9 +2255,9 @@ export default function App() {
                 <div className="space-y-3 min-h-[50px]" data-drop-zone="list">
                   {overdueTasks.length > 0 ? (
                     overdueTasks.map(task => (
-                      <ListViewTask 
-                        key={task.id} 
-                        task={task} 
+                      <ListViewTask
+                        key={task.id}
+                        task={task}
                         onEdit={t => t.isSubtask ? handleEditParentTask(t.parentId) : handleEditTask(t)}
                         onCompleteAction={handleCompleteAction}
                         onPointerDown={handlePointerDown}
@@ -1856,9 +2279,9 @@ export default function App() {
                 <div className="space-y-3 min-h-[50px]" data-drop-zone="list" data-drop-date={TODAY_STR}>
                   {todayTasks.length > 0 ? (
                     todayTasks.map(task => (
-                      <ListViewTask 
-                        key={task.id} 
-                        task={task} 
+                      <ListViewTask
+                        key={task.id}
+                        task={task}
                         onEdit={t => t.isSubtask ? handleEditParentTask(t.parentId) : handleEditTask(t)}
                         onCompleteAction={handleCompleteAction}
                         onPointerDown={handlePointerDown}
@@ -1880,13 +2303,13 @@ export default function App() {
         {activeTab === 'board' && (
           <div className="h-full overflow-y-auto p-4 md:p-6 pb-24 scroll-smooth">
             <div className="max-w-[1600px] mx-auto space-y-6">
-              
+
               {mainBoardWeeks.map((week) => (
                 <section key={week.offset} ref={week.isThisWeek ? thisWeekRef : null} className="scroll-mt-24">
                   <div className="flex items-center gap-3 mb-4 pl-2">
-                    <div className={`px-4 py-1.5 rounded-full font-black text-sm flex items-center gap-2 
-                      ${week.isThisWeek ? 'bg-blue-100 text-blue-800' : 
-                        week.isNextWeek ? 'bg-emerald-100 text-emerald-800' : 
+                    <div className={`px-4 py-1.5 rounded-full font-black text-sm flex items-center gap-2
+                      ${week.isThisWeek ? 'bg-blue-100 text-blue-800' :
+                        week.isNextWeek ? 'bg-emerald-100 text-emerald-800' :
                         week.offset < 0 ? 'bg-gray-200 text-gray-700' : 'bg-purple-100 text-purple-800'}`}>
                       <Calendar size={16}/> {getWeekLabel(week.offset)}
                     </div>
@@ -1895,9 +2318,9 @@ export default function App() {
                   <div className="flex gap-4 overflow-x-auto pb-4 snap-x pl-2">
                     {week.days.map((day, idx) => (
                       <div key={`${week.offset}-${idx}`} className="snap-start">
-                        <BoardColumn 
-                          date={day.date} 
-                          dateLabel={day.label} 
+                        <BoardColumn
+                          date={day.date}
+                          dateLabel={day.label}
                           tasks={displayItems.filter(t => (showCompletedTasks || !t.completed) && t.date === day.date).sort((a, b) => a.order - b.order)}
                           onEdit={t => t.isSubtask ? handleEditParentTask(t.parentId) : handleEditTask(t)}
                           onCompleteAction={handleCompleteAction}
@@ -1920,7 +2343,7 @@ export default function App() {
         {activeTab === 'list' && (
           <div className="h-full flex flex-col p-4 md:p-6 pb-24 max-w-[1200px] mx-auto w-full">
             <div className="bg-white rounded-2xl shadow-sm border border-gray-200 flex flex-col overflow-hidden h-full">
-              
+
               <div className="p-4 md:p-6 border-b bg-gray-50 flex flex-col gap-4 shrink-0">
                 <div className="flex items-center justify-between">
                   <h2 className="text-xl font-black text-gray-800 flex items-center gap-2">
@@ -1928,11 +2351,11 @@ export default function App() {
                   </h2>
                   <span className="text-sm font-bold text-gray-500 bg-gray-200 px-3 py-1 rounded-full">{filteredTasks.length} 件</span>
                 </div>
-                
+
                 <div className="flex flex-col md:flex-row gap-3">
                   <div className="flex-1 relative">
                     <Search size={18} className="absolute left-3 top-3.5 text-gray-400" />
-                    <input 
+                    <input
                       type="text"
                       placeholder="タイトル、メモ、結果/成果からキーワード検索..."
                       className="w-full pl-10 pr-4 py-3 rounded-xl border-2 border-gray-200 focus:border-blue-500 focus:outline-none transition-colors text-sm font-medium"
@@ -1940,7 +2363,7 @@ export default function App() {
                       onChange={(e) => setSearchQuery(e.target.value)}
                     />
                   </div>
-                  
+
                   <div className="flex flex-col sm:flex-row gap-3">
                     <select
                       className="py-3 px-4 rounded-xl border-2 border-gray-200 bg-white text-sm font-bold focus:border-blue-500 outline-none text-gray-700"
@@ -1951,6 +2374,16 @@ export default function App() {
                       <option value="incomplete">未完了のみ</option>
                       <option value="completed">完了済みのみ</option>
                     </select>
+
+                    <label className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl border-2 border-gray-200 bg-white text-sm font-bold text-gray-700 whitespace-nowrap cursor-pointer hover:border-blue-300 transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={showRecurringInList}
+                        onChange={(e) => setShowRecurringInList(e.target.checked)}
+                        className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                      />
+                      定期を表示
+                    </label>
 
                     <select
                       className="py-3 px-4 rounded-xl border-2 border-gray-200 bg-white text-sm font-bold focus:border-blue-500 outline-none text-gray-700 max-w-full sm:max-w-[240px]"
@@ -1970,9 +2403,9 @@ export default function App() {
                 <div className="space-y-3" data-drop-zone="list">
                   {filteredTasks.length > 0 ? (
                     filteredTasks.map(task => (
-                      <ListViewTask 
-                        key={task.id} 
-                        task={task} 
+                      <ListViewTask
+                        key={task.id}
+                        task={task}
                         onEdit={t => t.isSubtask ? handleEditParentTask(t.parentId) : handleEditTask(t)}
                         onCompleteAction={handleCompleteAction}
                         onPointerDown={handlePointerDown}
@@ -1991,9 +2424,100 @@ export default function App() {
           </div>
         )}
 
+        {activeTab === 'recurring' && (
+          <div className="h-full flex flex-col p-4 md:p-6 pb-24 max-w-[1200px] mx-auto w-full overflow-y-auto">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+              <div>
+                <h2 className="text-2xl font-black text-gray-900 flex items-center gap-2">
+                  <Repeat size={28} className="text-green-600" /> 定期スケジュール管理
+                </h2>
+                <p className="text-sm text-gray-500 font-medium mt-1">開始時期・終了時期を指定して、日次・週次・月次の予定を自動でボードに表示します。</p>
+              </div>
+              <button
+                onClick={() => { setEditingRecurringSchedule(null); setIsRecurringModalOpen(true); }}
+                className="bg-green-600 hover:bg-green-700 text-white px-5 py-3 rounded-xl font-bold shadow-lg hover:shadow-xl transition-all flex items-center gap-2 justify-center"
+              >
+                <Plus size={20} /> 定期スケジュールを作成
+              </button>
+            </div>
+
+            {recurringSchedules.length === 0 ? (
+              <div className="bg-white border-2 border-dashed border-gray-300 rounded-2xl p-10 text-center text-gray-500">
+                <Repeat size={48} className="mx-auto mb-3 text-gray-300" />
+                <p className="font-bold">定期スケジュールはまだありません。</p>
+                <p className="text-sm mt-1">右上の作成ボタンから、繰り返し予定を登録してください。</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {recurringSchedules.map(schedule => {
+                  const scheduleOccurrences = recurringOccurrences.filter(item => item.recurringScheduleId === schedule.id);
+                  const upcomingOccurrences = scheduleOccurrences.filter(item => item.date >= TODAY_STR).slice(0, 3);
+                  return (
+                    <div key={schedule.id} className="bg-white rounded-2xl border border-gray-200 shadow-sm hover:shadow-md transition-all p-5 flex flex-col gap-4">
+                      <div className="flex justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 mb-2 flex-wrap">
+                            <span className="text-[10px] font-black tracking-wider uppercase px-2 py-0.5 rounded-full bg-green-100 text-green-700">Recurring</span>
+                            <span className="text-xs font-bold text-green-700 bg-green-50 border border-green-100 px-2 py-0.5 rounded-full">{getFrequencyLabel(schedule.frequency, schedule.interval)}</span>
+                            <span className="text-xs font-bold text-gray-600 bg-gray-50 border border-gray-200 px-2 py-0.5 rounded-full">{getRecurrenceDetailLabel(schedule)}</span>
+                          </div>
+                          <h3 className="text-lg font-black text-gray-900 truncate">{schedule.title}</h3>
+                          {schedule.memo && <p className="text-sm text-gray-500 mt-1 line-clamp-2">{schedule.memo}</p>}
+                        </div>
+                        <div className="flex gap-2 shrink-0">
+                          <button
+                            onClick={() => { setEditingRecurringSchedule(schedule); setIsRecurringModalOpen(true); }}
+                            className="p-2 text-gray-500 hover:text-blue-600 bg-gray-50 border border-gray-200 rounded-lg hover:bg-blue-50 transition-colors"
+                            title="編集"
+                          >
+                            <Pencil size={18} />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteRecurringSchedule(schedule.id)}
+                            className="p-2 text-gray-500 hover:text-red-600 bg-gray-50 border border-gray-200 rounded-lg hover:bg-red-50 transition-colors"
+                            title="削除"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3 bg-gray-50 rounded-xl p-3 border border-gray-100">
+                        <div>
+                          <p className="text-[10px] font-black text-gray-400 uppercase tracking-wider">開始時期</p>
+                          <p className="text-sm font-bold text-gray-800 flex items-center gap-1 mt-1"><CalendarDays size={14} className="text-green-600" /> {schedule.startDate}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-black text-gray-400 uppercase tracking-wider">終了時期</p>
+                          <p className="text-sm font-bold text-gray-800 flex items-center gap-1 mt-1"><CalendarDays size={14} className="text-green-600" /> {schedule.endDate || '期限なし'}</p>
+                        </div>
+                      </div>
+
+                      <div>
+                        <p className="text-xs font-black text-gray-500 uppercase tracking-wider mb-2">次回予定</p>
+                        {upcomingOccurrences.length > 0 ? (
+                          <div className="flex flex-wrap gap-2">
+                            {upcomingOccurrences.map(item => (
+                              <span key={item.id} className={`text-xs font-bold px-3 py-1.5 rounded-lg border ${item.completed ? 'bg-green-50 text-green-700 border-green-200' : 'bg-blue-50 text-blue-700 border-blue-200'}`}>
+                                {item.date}{item.completed ? ' 完了' : ''}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-gray-400 font-medium">表示対象期間内の今後の予定はありません。</p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
         {activeTab === 'planner' && (
           <div className="h-full flex flex-col p-4 md:p-6 pb-24 max-w-[1600px] mx-auto relative">
-            
+
             {plannerView === 'list' ? (
               <div className="flex-1 bg-white rounded-2xl shadow-sm border border-gray-200 flex flex-col overflow-hidden">
                 <div className="p-5 border-b bg-gray-50 flex items-center gap-3">
@@ -2006,13 +2530,13 @@ export default function App() {
                 <div className="flex-1 overflow-y-auto p-6 bg-gray-50/30">
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                     {projects.map(proj => (
-                      <div 
+                      <div
                         key={proj.id}
                         onClick={() => { setSelectedProject(proj); setPlannerView('detail'); setIsAddingSubtask(false); }}
                         className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm hover:shadow-md hover:border-blue-300 cursor-pointer transition-all group relative overflow-hidden"
                       >
                         <div className="flex items-center gap-2 mb-3">
-                          <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-1 rounded-md 
+                          <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-1 rounded-md
                             ${proj.type === 'project' ? 'bg-purple-100 text-purple-700' : 'bg-orange-100 text-orange-700'}`}>
                             {proj.type === 'project' ? 'Project' : 'Evaluation'}
                           </span>
@@ -2030,8 +2554,8 @@ export default function App() {
               <div className="flex-1 flex flex-col overflow-hidden gap-4">
                 <div className="flex items-center justify-between bg-white p-4 rounded-2xl shadow-sm border border-gray-200 shrink-0">
                   <div className="flex items-center gap-4">
-                    <button 
-                      onClick={() => setPlannerView('list')} 
+                    <button
+                      onClick={() => setPlannerView('list')}
                       className="flex items-center gap-2 text-gray-600 hover:text-blue-700 hover:bg-blue-50 px-4 py-2 rounded-xl font-bold text-sm transition-colors"
                     >
                       <ArrowLeft size={18} /> 一覧に戻る
@@ -2041,7 +2565,7 @@ export default function App() {
                       {selectedProject?.title}
                     </h2>
                   </div>
-                  <button 
+                  <button
                     onClick={() => handleDeleteProject(selectedProject.id)}
                     className="flex items-center gap-2 text-red-600 hover:bg-red-50 hover:text-red-700 px-3 py-2 rounded-xl font-bold text-sm transition-colors border border-red-200"
                     title="イベントを削除"
@@ -2051,20 +2575,20 @@ export default function App() {
                 </div>
 
                 <div className="flex-1 flex flex-row gap-4 md:gap-6 overflow-hidden">
-                  
+
                   <div className="w-48 sm:w-64 md:w-80 bg-white rounded-2xl shadow-sm border border-gray-200 flex flex-col overflow-hidden shrink-0">
                     <div className="p-4 border-b bg-blue-50/50">
                       <h3 className="font-bold text-gray-800 text-sm">小タスク一覧</h3>
                       <p className="text-xs text-blue-600 font-bold mt-1">右側の週枠へドラッグ＆ドロップ</p>
                     </div>
-                    
+
                     <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50/50">
                       {selectedProject?.tasksTemplate.map((t) => {
                         const assignedTask = getTaskForTemplate(t);
                         const isAssigned = !!assignedTask;
 
                         return (
-                          <div 
+                          <div
                             key={t.id}
                             className={`border-2 rounded-xl p-3 flex flex-col gap-1.5 shadow-sm hover:border-blue-400 hover:shadow-md transition-all cursor-grab active:cursor-grabbing group
                               ${isAssigned ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-200'}`}
@@ -2074,7 +2598,7 @@ export default function App() {
                               <GripVertical size={18} className="text-gray-300 group-hover:text-blue-500 shrink-0 mt-0.5" />
                               <span className="font-bold text-sm text-gray-700 leading-tight">{t.title}</span>
                             </div>
-                            
+
                             {isAssigned && (
                               <div className="pl-6 text-[11px] font-bold text-blue-600 flex items-center gap-1">
                                 <Calendar size={12} />
@@ -2088,9 +2612,9 @@ export default function App() {
                       <div className="pt-2 border-t border-gray-200 mt-4">
                         {isAddingSubtask ? (
                           <div className="bg-white border-2 border-blue-300 rounded-xl p-3 flex flex-col gap-2 shadow-sm">
-                            <input 
+                            <input
                               autoFocus
-                              type="text" 
+                              type="text"
                               value={newSubtaskTitle}
                               onChange={e => setNewSubtaskTitle(e.target.value)}
                               className="text-sm border-2 border-gray-200 p-2 rounded-lg focus:border-blue-500 focus:outline-none"
@@ -2103,7 +2627,7 @@ export default function App() {
                             </div>
                           </div>
                         ) : (
-                          <button 
+                          <button
                             onClick={() => setIsAddingSubtask(true)}
                             className="w-full border-2 border-dashed border-gray-300 rounded-xl p-3 flex gap-2 items-center justify-center text-gray-500 hover:bg-blue-50 hover:border-blue-300 hover:text-blue-600 transition-colors"
                           >
@@ -2129,7 +2653,7 @@ export default function App() {
                           const assignedTasks = getAssignedTasksForWeek(week.startDate);
 
                           return (
-                            <div 
+                            <div
                               key={week.startDate}
                               data-drop-week={week.startDate}
                               className={`border-2 rounded-xl flex flex-col overflow-hidden transition-all duration-200 min-h-[120px]
@@ -2140,7 +2664,7 @@ export default function App() {
                                 <span className="text-[10px] font-black uppercase tracking-widest">W{week.weekNum}</span>
                                 <span className="text-xs font-bold">{week.startDate.slice(5).replace('-', '/')}</span>
                               </div>
-                              
+
                               <div className="flex-1 p-2 flex flex-col gap-1 overflow-y-auto">
                                 {assignedTasks.length > 0 ? (
                                   assignedTasks.map(at => (
@@ -2170,9 +2694,9 @@ export default function App() {
 
       <div className="fixed bottom-8 right-8 flex flex-col items-end gap-3 z-40">
         <label className="flex items-center gap-2 cursor-pointer bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 rounded-full px-4 py-3 shadow-lg transition-all font-bold text-sm">
-          <input 
-            type="checkbox" 
-            checked={showCompletedTasks} 
+          <input
+            type="checkbox"
+            checked={showCompletedTasks}
             onChange={e => setShowCompletedTasks(e.target.checked)}
             className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
           />
@@ -2181,7 +2705,7 @@ export default function App() {
         </label>
 
         {activeTab === 'board' && (
-          <button 
+          <button
             onClick={scrollToThisWeek}
             className="bg-white border border-gray-200 text-gray-700 hover:text-blue-600 hover:bg-blue-50 rounded-full px-4 py-3 shadow-lg transition-all flex items-center gap-2 font-bold text-sm"
           >
@@ -2191,7 +2715,7 @@ export default function App() {
         )}
 
         {(activeTab === 'board' || activeTab === 'today') && (
-          <button 
+          <button
             onClick={handleOpenTaskModalFromFab}
             className="bg-blue-600 hover:bg-blue-700 text-white rounded-full p-4 shadow-2xl hover:shadow-blue-500/50 transition-all transform hover:-translate-y-1 flex items-center justify-center group"
           >
@@ -2200,8 +2724,18 @@ export default function App() {
           </button>
         )}
 
+        {activeTab === 'recurring' && (
+          <button
+            onClick={() => { setEditingRecurringSchedule(null); setIsRecurringModalOpen(true); }}
+            className="bg-green-600 hover:bg-green-700 text-white rounded-full p-4 shadow-2xl hover:shadow-green-500/50 transition-all transform hover:-translate-y-1 flex items-center justify-center group"
+          >
+            <Plus size={28} />
+            <span className="max-w-0 overflow-hidden whitespace-nowrap group-hover:max-w-[160px] transition-all duration-300 font-bold px-0 group-hover:px-2">定期作成</span>
+          </button>
+        )}
+
         {activeTab === 'planner' && plannerView === 'list' && (
-          <button 
+          <button
             onClick={() => setIsProjectModalOpen(true)}
             className="bg-purple-600 hover:bg-purple-700 text-white rounded-full p-4 shadow-2xl hover:shadow-purple-500/50 transition-all transform hover:-translate-y-1 flex items-center justify-center group"
           >
@@ -2218,7 +2752,7 @@ export default function App() {
       )}
 
       {dragItem && (
-        <div 
+        <div
           style={{
             position: 'fixed',
             top: dragItem.clientY - dragItem.offsetY,
@@ -2254,19 +2788,26 @@ export default function App() {
         </div>
       )}
 
-      <TaskModal 
-        isOpen={isTaskModalOpen} 
-        onClose={() => { setIsTaskModalOpen(false); setEditingTask(null); }} 
-        onSave={handleSaveTask} 
+      <TaskModal
+        isOpen={isTaskModalOpen}
+        onClose={() => { setIsTaskModalOpen(false); setEditingTask(null); }}
+        onSave={handleSaveTask}
         onDelete={handleDeleteTask}
         defaultDate={newTaskDefaultDate}
         editingTask={editingTask}
         projects={projects}
       />
-      <ProjectModal 
-        isOpen={isProjectModalOpen} 
-        onClose={() => setIsProjectModalOpen(false)} 
-        onSave={handleSaveNewProject} 
+      <ProjectModal
+        isOpen={isProjectModalOpen}
+        onClose={() => setIsProjectModalOpen(false)}
+        onSave={handleSaveNewProject}
+      />
+      <RecurringScheduleModal
+        isOpen={isRecurringModalOpen}
+        onClose={() => { setIsRecurringModalOpen(false); setEditingRecurringSchedule(null); }}
+        onSave={handleSaveRecurringSchedule}
+        onDelete={handleDeleteRecurringSchedule}
+        editingSchedule={editingRecurringSchedule}
       />
       <CompletionModal
         isOpen={!!completingTask}
