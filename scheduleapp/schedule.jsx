@@ -140,6 +140,71 @@ const getRecurringStepDate = (date, frequency, interval = 1) => {
   return addDays(date, safeInterval * 7);
 };
 
+const WEEKDAY_OPTIONS = [
+  { value: 1, label: '月曜日' },
+  { value: 2, label: '火曜日' },
+  { value: 3, label: '水曜日' },
+  { value: 4, label: '木曜日' },
+  { value: 5, label: '金曜日' },
+  { value: 6, label: '土曜日' },
+  { value: 0, label: '日曜日' }
+];
+
+const getWeekdayOffsetFromMonday = (dayOfWeek) => dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+
+const getSafeMonthDay = (year, monthIndex, dayOfMonth) => {
+  const lastDay = new Date(year, monthIndex + 1, 0).getDate();
+  return Math.min(Math.max(1, Number(dayOfMonth) || 1), lastDay);
+};
+
+const getScheduleWeekday = (schedule) => (
+  schedule.dayOfWeek !== undefined && schedule.dayOfWeek !== ''
+    ? Number(schedule.dayOfWeek)
+    : getLocalDate(schedule.startDate).getDay()
+);
+
+const getScheduleMonthDay = (schedule) => (
+  schedule.dayOfMonth !== undefined && schedule.dayOfMonth !== ''
+    ? Number(schedule.dayOfMonth)
+    : getLocalDate(schedule.startDate).getDate()
+);
+
+const getRecurringFirstOccurrenceDate = (schedule) => {
+  const startDate = getLocalDate(schedule.startDate);
+
+  if (schedule.frequency === 'weekly') {
+    const weekStart = getMonday(startDate);
+    const first = addDays(weekStart, getWeekdayOffsetFromMonday(getScheduleWeekday(schedule)));
+    return first < startDate ? addDays(first, 7) : first;
+  }
+
+  if (schedule.frequency === 'monthly') {
+    const dayOfMonth = getScheduleMonthDay(schedule);
+    const first = new Date(
+      startDate.getFullYear(),
+      startDate.getMonth(),
+      getSafeMonthDay(startDate.getFullYear(), startDate.getMonth(), dayOfMonth)
+    );
+    return first < startDate ? getRecurringNextOccurrenceDate(schedule, first, 1) : first;
+  }
+
+  return startDate;
+};
+
+const getRecurringNextOccurrenceDate = (schedule, date, steps = 1) => {
+  const next = getRecurringStepDate(date, schedule.frequency, (schedule.interval || 1) * steps);
+
+  if (schedule.frequency === 'monthly') {
+    return new Date(
+      next.getFullYear(),
+      next.getMonth(),
+      getSafeMonthDay(next.getFullYear(), next.getMonth(), getScheduleMonthDay(schedule))
+    );
+  }
+
+  return next;
+};
+
 const getFrequencyLabel = (frequency, interval = 1) => {
   const safeInterval = Math.max(1, Number(interval) || 1);
   const unit = frequency === 'daily' ? '日' : frequency === 'monthly' ? 'か月' : '週';
@@ -168,6 +233,8 @@ const initialRecurringSchedules = [
     title: '週次定例ミーティング',
     frequency: 'weekly',
     interval: 1,
+    dayOfWeek: getLocalDate(TODAY_STR).getDay(),
+    dayOfMonth: getLocalDate(TODAY_STR).getDate(),
     startDate: TODAY_STR,
     endDate: '',
     memo: '毎週の定例予定',
@@ -702,13 +769,13 @@ const TaskModal = ({ isOpen, onClose, onSave, onDelete, defaultDate = TODAY_STR,
           <div>
             <label className="block text-sm font-bold text-gray-700 mb-2">関連URL</label>
             <div className="flex gap-2 mb-3 overflow-x-auto pb-1">
-              <button type="button" onClick={() => addUrlScheme('ms-excel:ofv|u|https://')} className="text-xs bg-green-50 text-green-700 px-2.5 py-1.5 rounded-lg border border-green-200 hover:bg-green-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
+              <button type="button" onClick={() => addUrlScheme('ms-excel:ofv|u|')} className="text-xs bg-green-50 text-green-700 px-2.5 py-1.5 rounded-lg border border-green-200 hover:bg-green-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
                 <FileSpreadsheet size={14} /> Excelリンク
               </button>
-              <button type="button" onClick={() => addUrlScheme('ms-powerpoint:ofv|u|https://')} className="text-xs bg-orange-50 text-orange-700 px-2.5 py-1.5 rounded-lg border border-orange-200 hover:bg-orange-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
+              <button type="button" onClick={() => addUrlScheme('ms-powerpoint:ofv|u|')} className="text-xs bg-orange-50 text-orange-700 px-2.5 py-1.5 rounded-lg border border-orange-200 hover:bg-orange-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
                 <MonitorPlay size={14} /> PPTリンク
               </button>
-              <button type="button" onClick={() => addUrlScheme('ms-word:ofv|u|https://')} className="text-xs bg-blue-50 text-blue-700 px-2.5 py-1.5 rounded-lg border border-blue-200 hover:bg-blue-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
+              <button type="button" onClick={() => addUrlScheme('ms-word:ofv|u|')} className="text-xs bg-blue-50 text-blue-700 px-2.5 py-1.5 rounded-lg border border-blue-200 hover:bg-blue-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
                 <FileText size={14} /> Wordリンク
               </button>
             </div>
@@ -718,7 +785,7 @@ const TaskModal = ({ isOpen, onClose, onSave, onDelete, defaultDate = TODAY_STR,
                   <LinkIcon size={16} className="absolute left-3 top-3 text-gray-400" />
                   <input
                     type="text"
-                    placeholder="https://... または ms-powerpoint:ofv|u|https://..."
+                    placeholder="https://... または ms-powerpoint:ofv|u|..."
                     className="w-full border-2 border-gray-200 py-2.5 pl-9 pr-3 rounded-xl text-sm focus:border-blue-500 focus:outline-none transition-colors"
                     value={url}
                     onChange={e => {
@@ -932,7 +999,7 @@ const RichTextEditor = ({ html, onChange }) => {
 
         <button
           type="button"
-          onClick={() => insertLink('ms-excel:ofv|u|https://')}
+          onClick={() => insertLink('ms-excel:ofv|u|')}
           className="text-green-600 hover:text-green-700 hover:bg-green-50 px-2 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 text-xs font-bold"
           title="Excelリンクを挿入"
         >
@@ -940,7 +1007,7 @@ const RichTextEditor = ({ html, onChange }) => {
         </button>
         <button
           type="button"
-          onClick={() => insertLink('ms-powerpoint:ofv|u|https://')}
+          onClick={() => insertLink('ms-powerpoint:ofv|u|')}
           className="text-orange-600 hover:text-orange-700 hover:bg-orange-50 px-2 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 text-xs font-bold"
           title="PPTリンクを挿入"
         >
@@ -948,7 +1015,7 @@ const RichTextEditor = ({ html, onChange }) => {
         </button>
         <button
           type="button"
-          onClick={() => insertLink('ms-word:ofv|u|https://')}
+          onClick={() => insertLink('ms-word:ofv|u|')}
           className="text-blue-600 hover:text-blue-700 hover:bg-blue-50 px-2 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 text-xs font-bold"
           title="Wordリンクを挿入"
         >
@@ -962,6 +1029,7 @@ const RichTextEditor = ({ html, onChange }) => {
         contentEditable
         className="w-full p-4 min-h-[200px] max-h-[50vh] overflow-y-auto text-sm focus:outline-none"
         onInput={handleInput}
+        onBlur={handleInput}
         onPaste={handlePaste}
         onKeyDown={handleKeyDown}
         onClick={handleEditorClick}
@@ -973,6 +1041,7 @@ const RichTextEditor = ({ html, onChange }) => {
 
 const CompletionModal = ({ isOpen, task, onClose, onSave }) => {
   const [richHtml, setRichHtml] = useState('');
+  const richHtmlRef = useRef('');
   const [urls, setUrls] = useState(['']);
 
   useEffect(() => {
@@ -987,17 +1056,24 @@ const CompletionModal = ({ isOpen, task, onClose, onSave }) => {
         }
       }
       setRichHtml(initialHtml);
+      richHtmlRef.current = initialHtml;
       setUrls(task.resultUrls && task.resultUrls.length > 0 ? task.resultUrls : ['']);
     } else {
       setRichHtml('');
+      richHtmlRef.current = '';
     }
   }, [isOpen, task]);
 
   if (!isOpen || !task) return null;
 
+  const handleRichHtmlChange = (nextHtml) => {
+    richHtmlRef.current = nextHtml;
+    setRichHtml(nextHtml);
+  };
+
   const handleSaveAction = (isCompletedState) => {
     const filteredUrls = urls.filter(u => u.trim() !== '');
-    onSave(task.id, richHtml, filteredUrls, isCompletedState);
+    onSave(task.id, richHtmlRef.current, filteredUrls, isCompletedState);
   };
 
   const addUrlScheme = (scheme) => {
@@ -1022,19 +1098,19 @@ const CompletionModal = ({ isOpen, task, onClose, onSave }) => {
 
           <div>
             <label className="block text-sm font-bold text-gray-700 mb-2">結論・成果ノート (未記入でもOK)</label>
-            <RichTextEditor html={richHtml} onChange={setRichHtml} />
+            <RichTextEditor html={richHtml} onChange={handleRichHtmlChange} />
           </div>
 
           <div>
             <label className="block text-sm font-bold text-gray-700 mb-2">成果物 URL</label>
             <div className="flex gap-2 mb-3 overflow-x-auto pb-1">
-              <button type="button" onClick={() => addUrlScheme('ms-excel:ofv|u|https://')} className="text-xs bg-green-50 text-green-700 px-2.5 py-1.5 rounded-lg border border-green-200 hover:bg-green-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
+              <button type="button" onClick={() => addUrlScheme('ms-excel:ofv|u|')} className="text-xs bg-green-50 text-green-700 px-2.5 py-1.5 rounded-lg border border-green-200 hover:bg-green-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
                 <FileSpreadsheet size={14} /> Excelリンク
               </button>
-              <button type="button" onClick={() => addUrlScheme('ms-powerpoint:ofv|u|https://')} className="text-xs bg-orange-50 text-orange-700 px-2.5 py-1.5 rounded-lg border border-orange-200 hover:bg-orange-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
+              <button type="button" onClick={() => addUrlScheme('ms-powerpoint:ofv|u|')} className="text-xs bg-orange-50 text-orange-700 px-2.5 py-1.5 rounded-lg border border-orange-200 hover:bg-orange-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
                 <MonitorPlay size={14} /> PPTリンク
               </button>
-              <button type="button" onClick={() => addUrlScheme('ms-word:ofv|u|https://')} className="text-xs bg-blue-50 text-blue-700 px-2.5 py-1.5 rounded-lg border border-blue-200 hover:bg-blue-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
+              <button type="button" onClick={() => addUrlScheme('ms-word:ofv|u|')} className="text-xs bg-blue-50 text-blue-700 px-2.5 py-1.5 rounded-lg border border-blue-200 hover:bg-blue-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
                 <FileText size={14} /> Wordリンク
               </button>
             </div>
@@ -1044,7 +1120,7 @@ const CompletionModal = ({ isOpen, task, onClose, onSave }) => {
                   <LinkIcon size={16} className="absolute left-3 top-3 text-gray-400" />
                   <input
                     type="text"
-                    placeholder="https://... または ms-excel:ofv|u|https://..."
+                    placeholder="https://... または ms-excel:ofv|u|..."
                     className="w-full border-2 border-gray-200 py-2.5 pl-9 pr-3 rounded-xl text-sm focus:border-blue-500 focus:outline-none transition-colors"
                     value={url}
                     onChange={e => {
@@ -1114,6 +1190,8 @@ const RecurringScheduleModal = ({ isOpen, onClose, onSave, onDelete, editingSche
     title: '',
     frequency: 'weekly',
     interval: 1,
+    dayOfWeek: getLocalDate(TODAY_STR).getDay(),
+    dayOfMonth: getLocalDate(TODAY_STR).getDate(),
     startDate: TODAY_STR,
     endDate: '',
     memo: '',
@@ -1127,13 +1205,15 @@ const RecurringScheduleModal = ({ isOpen, onClose, onSave, onDelete, editingSche
           title: editingSchedule.title || '',
           frequency: editingSchedule.frequency || 'weekly',
           interval: editingSchedule.interval || 1,
+          dayOfWeek: editingSchedule.dayOfWeek !== undefined ? editingSchedule.dayOfWeek : getLocalDate(editingSchedule.startDate || TODAY_STR).getDay(),
+          dayOfMonth: editingSchedule.dayOfMonth || getLocalDate(editingSchedule.startDate || TODAY_STR).getDate(),
           startDate: editingSchedule.startDate || TODAY_STR,
           endDate: editingSchedule.endDate || '',
           memo: editingSchedule.memo || '',
           urls: editingSchedule.urls && editingSchedule.urls.length > 0 ? editingSchedule.urls : ['']
         });
       } else {
-        setFormData({ title: '', frequency: 'weekly', interval: 1, startDate: TODAY_STR, endDate: '', memo: '', urls: [''] });
+        setFormData({ title: '', frequency: 'weekly', interval: 1, dayOfWeek: getLocalDate(TODAY_STR).getDay(), dayOfMonth: getLocalDate(TODAY_STR).getDate(), startDate: TODAY_STR, endDate: '', memo: '', urls: [''] });
       }
     }
   }, [isOpen, editingSchedule]);
@@ -1155,6 +1235,8 @@ const RecurringScheduleModal = ({ isOpen, onClose, onSave, onDelete, editingSche
       title: formData.title,
       frequency: formData.frequency,
       interval: Math.max(1, Number(formData.interval) || 1),
+      dayOfWeek: Number(formData.dayOfWeek),
+      dayOfMonth: Math.min(31, Math.max(1, Number(formData.dayOfMonth) || 1)),
       startDate: formData.startDate,
       endDate: formData.endDate,
       memo: formData.memo,
@@ -1194,6 +1276,42 @@ const RecurringScheduleModal = ({ isOpen, onClose, onSave, onDelete, editingSche
             </div>
           </div>
 
+          {formData.frequency === 'weekly' && (
+            <div className="bg-green-50 border border-green-100 p-4 rounded-xl">
+              <label className="block text-sm font-bold text-green-800 mb-2">繰り返す曜日</label>
+              <select
+                required
+                className="w-full border-2 border-green-200 p-3 rounded-xl focus:border-green-500 focus:outline-none bg-white"
+                value={formData.dayOfWeek}
+                onChange={e => setFormData({...formData, dayOfWeek: Number(e.target.value)})}
+              >
+                {WEEKDAY_OPTIONS.map(day => (
+                  <option key={day.value} value={day.value}>{day.label}</option>
+                ))}
+              </select>
+              <p className="mt-2 text-xs text-green-700 font-medium">開始時期以降の指定曜日に予定を自動生成します。</p>
+            </div>
+          )}
+
+          {formData.frequency === 'monthly' && (
+            <div className="bg-green-50 border border-green-100 p-4 rounded-xl">
+              <label className="block text-sm font-bold text-green-800 mb-2">繰り返す日付</label>
+              <div className="flex items-center gap-2">
+                <input
+                  required
+                  type="number"
+                  min="1"
+                  max="31"
+                  className="w-28 border-2 border-green-200 p-3 rounded-xl focus:border-green-500 focus:outline-none bg-white"
+                  value={formData.dayOfMonth}
+                  onChange={e => setFormData({...formData, dayOfMonth: e.target.value})}
+                />
+                <span className="text-sm font-bold text-green-800">日</span>
+              </div>
+              <p className="mt-2 text-xs text-green-700 font-medium">月末より大きい日付は、その月の最終日に調整して表示します。</p>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-green-50 border border-green-100 p-4 rounded-xl">
             <div>
               <label className="block text-sm font-bold text-green-800 mb-1">開始時期 <span className="text-red-500">必須</span></label>
@@ -1214,13 +1332,13 @@ const RecurringScheduleModal = ({ isOpen, onClose, onSave, onDelete, editingSche
           <div>
             <label className="block text-sm font-bold text-gray-700 mb-2">関連URL</label>
             <div className="flex gap-2 mb-3 overflow-x-auto pb-1">
-              <button type="button" onClick={() => addUrlScheme('ms-excel:ofv|u|https://')} className="text-xs bg-green-50 text-green-700 px-2.5 py-1.5 rounded-lg border border-green-200 hover:bg-green-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
+              <button type="button" onClick={() => addUrlScheme('ms-excel:ofv|u|')} className="text-xs bg-green-50 text-green-700 px-2.5 py-1.5 rounded-lg border border-green-200 hover:bg-green-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
                 <FileSpreadsheet size={14} /> Excelリンク
               </button>
-              <button type="button" onClick={() => addUrlScheme('ms-powerpoint:ofv|u|https://')} className="text-xs bg-orange-50 text-orange-700 px-2.5 py-1.5 rounded-lg border border-orange-200 hover:bg-orange-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
+              <button type="button" onClick={() => addUrlScheme('ms-powerpoint:ofv|u|')} className="text-xs bg-orange-50 text-orange-700 px-2.5 py-1.5 rounded-lg border border-orange-200 hover:bg-orange-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
                 <MonitorPlay size={14} /> PPTリンク
               </button>
-              <button type="button" onClick={() => addUrlScheme('ms-word:ofv|u|https://')} className="text-xs bg-blue-50 text-blue-700 px-2.5 py-1.5 rounded-lg border border-blue-200 hover:bg-blue-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
+              <button type="button" onClick={() => addUrlScheme('ms-word:ofv|u|')} className="text-xs bg-blue-50 text-blue-700 px-2.5 py-1.5 rounded-lg border border-blue-200 hover:bg-blue-100 flex items-center gap-1 font-bold whitespace-nowrap shrink-0 transition-colors">
                 <FileText size={14} /> Wordリンク
               </button>
             </div>
@@ -1394,6 +1512,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterCompleted, setFilterCompleted] = useState('all');
   const [filterProject, setFilterProject] = useState('all');
+  const [showRecurringInList, setShowRecurringInList] = useState(true);
 
   const thisWeekRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -1512,11 +1631,11 @@ export default function App() {
       if (!schedule.startDate) return;
       const scheduleEnd = schedule.endDate ? getLocalDate(schedule.endDate) : rangeEnd;
       const effectiveEnd = scheduleEnd < rangeEnd ? scheduleEnd : rangeEnd;
-      let current = getLocalDate(schedule.startDate);
+      let current = getRecurringFirstOccurrenceDate(schedule);
       let guard = 0;
 
       while (current < rangeStart && guard < 10000) {
-        current = getRecurringStepDate(current, schedule.frequency, schedule.interval);
+        current = getRecurringNextOccurrenceDate(schedule, current);
         guard += 1;
       }
 
@@ -1543,7 +1662,7 @@ export default function App() {
           resultImages: completion.resultImages || [],
           order: new Date(date).getTime() + 500 + scheduleIndex
         });
-        current = getRecurringStepDate(current, schedule.frequency, schedule.interval);
+        current = getRecurringNextOccurrenceDate(schedule, current);
         guard += 1;
       }
     });
@@ -2005,6 +2124,7 @@ export default function App() {
     return displayItems.filter(t => {
       if (filterCompleted === 'completed' && !t.completed) return false;
       if (filterCompleted === 'incomplete' && t.completed) return false;
+      if (!showRecurringInList && t.isRecurringOccurrence) return false;
 
       if (filterProject !== 'all') {
         const targetProj = projects.find(p => p.id === filterProject);
@@ -2029,7 +2149,7 @@ export default function App() {
 
       return true;
     });
-  }, [displayItems, filterCompleted, filterProject, searchQuery, projects, tasks]);
+  }, [displayItems, filterCompleted, filterProject, searchQuery, projects, tasks, showRecurringInList]);
 
   if (!isDBReady) {
     return (
@@ -2269,6 +2389,16 @@ export default function App() {
                         <option key={p.id} value={p.id}>{p.title}</option>
                       ))}
                     </select>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowRecurringInList(prev => !prev)}
+                      className={`py-3 px-4 rounded-xl border-2 text-sm font-bold transition-colors flex items-center justify-center gap-2 whitespace-nowrap ${showRecurringInList ? 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'}`}
+                      title="一覧に定期スケジュールを表示するか切り替え"
+                    >
+                      <Repeat size={16} />
+                      定期: {showRecurringInList ? '表示' : '非表示'}
+                    </button>
                   </div>
                 </div>
               </div>
