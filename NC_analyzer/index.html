@@ -234,7 +234,7 @@
             return maxNcRequired < 15 ? "<15" : maxNcRequired;
         }
 
-        const GroupChart = ({ groupName, items, visibleNcCurves, lineWidth, pointSize, yAxisMaxAuto, yAxisMaxManual, isViewerMode, setDataItems, setGroups, onRemoveItem, onToggleVisible, onMoveItems, groups, onDragStart, onDragOver, onDrop, isDraggingThis }) => {
+        const GroupChart = ({ groupName, projectName, items, bgGraphItem, visibleNcCurves, lineWidth, pointSize, yAxisMaxAuto, yAxisMaxManual, isViewerMode, setDataItems, setGroups, onRemoveItem, onToggleVisible, onMoveItems, groups, projects, groupProjects, onDuplicateGroup, onMoveGroupToProject, onDragStart, onDragOver, onDrop, isDraggingThis }) => {
             const chartRef = React.useRef(null);
             const chartInstance = React.useRef(null);
             
@@ -326,6 +326,44 @@
                         isNcCurve: false
                     });
                 });
+
+
+                if (bgGraphItem) {
+                    const bgLabel = `暗騒音: ${bgGraphItem.fileName} (NC-${bgGraphItem.ncResult})`;
+                    const filteredBgValues = activeFreqs.map(f => {
+                        const i = allFreqs.indexOf(f);
+                        return bgGraphItem.values[i];
+                    });
+
+                    filteredBgValues.forEach(v => {
+                        if (v !== null) maxVal = Math.max(maxVal, v);
+                    });
+
+                    let isHidden = hiddenLabels.has(bgLabel);
+                    if (isolatedLabels.size > 0 && !isolatedLabels.has(bgLabel)) {
+                        isHidden = true;
+                    }
+
+                    const bgColorBase = '#64748b';
+                    const isHighlighted = highlightedLabel === bgLabel;
+                    const isFaded = highlightedLabel !== null && !isHighlighted;
+                    const bgColor = isFaded ? hexToRgba(bgColorBase, 0.15) : bgColorBase;
+
+                    datasets.push({
+                        label: bgLabel,
+                        data: filteredBgValues,
+                        borderColor: bgColor,
+                        borderWidth: isHighlighted ? lineWidth * 2.5 : lineWidth,
+                        borderDash: [2, 3],
+                        pointRadius: isHighlighted ? pointSize * 1.5 : pointSize,
+                        pointBackgroundColor: bgColor,
+                        fill: false,
+                        spanGaps: true,
+                        tension: 0,
+                        hidden: isHidden,
+                        isBackgroundNoise: true
+                    });
+                }
 
                 const yMax = yAxisMaxAuto ? Math.max(50, Math.ceil((maxVal + 5) / 10) * 10) : yAxisMaxManual;
 
@@ -436,7 +474,7 @@
                         plugins: [bgPlugin]
                     });
                 }
-            }, [items, groupName, visibleNcCurves, lineWidth, pointSize, yAxisMaxAuto, yAxisMaxManual, highlightedLabel, hiddenLabels, isolatedLabels, isMaximized]);
+            }, [items, bgGraphItem, groupName, visibleNcCurves, lineWidth, pointSize, yAxisMaxAuto, yAxisMaxManual, highlightedLabel, hiddenLabels, isolatedLabels, isMaximized]);
 
             const handleContextMenu = (e) => {
                 e.preventDefault();
@@ -472,10 +510,11 @@
             const canvasWrapperClass = "flex-grow min-h-0 relative mt-2";
 
             const modalColumns = isViewerMode 
-                ? [ { id: 'legendName', title: '凡例名', readOnly: false } ]
+                ? [ { id: 'legendName', title: '凡例名', readOnly: false }, { id: 'ncResult', title: '判定', readOnly: true } ]
                 : [
                     { id: 'fileName', title: 'ファイル名', readOnly: true },
-                    { id: 'legendName', title: '凡例名', readOnly: false }
+                    { id: 'legendName', title: '凡例名', readOnly: false },
+                    { id: 'ncResult', title: '判定', readOnly: true }
                   ];
 
             return (
@@ -500,13 +539,29 @@
                                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 8h16M4 16h16"></path></svg>
                                 </span>
                             )}
-                            {groupName}
+                            <span>{groupName}</span>
+                            {projectName && <span className="ml-2 text-[10px] font-semibold text-purple-700 bg-purple-50 border border-purple-200 rounded px-1.5 py-0.5">{projectName}</span>}
                             <button onClick={() => setShowDataModal(true)} className="ml-3 text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 py-1 px-2 rounded shadow-sm border border-indigo-200 font-bold">
                                 ⚙️ データ設定
                             </button>
                         </h3>
                         <div className="flex items-center space-x-2">
                             {!isMaximized && <span className="text-[10px] text-gray-400 hidden sm:inline">※凡例: 1クリック(強調) / Wクリック(単独切替) / 右クリック(非表示)</span>}
+                            {onDuplicateGroup && (
+                                <button onClick={() => onDuplicateGroup(groupName)} className="text-sm bg-purple-50 hover:bg-purple-100 text-purple-700 py-1 px-3 rounded shadow-sm border border-purple-200 font-bold">
+                                    🧬 複製
+                                </button>
+                            )}
+                            {onMoveGroupToProject && projects?.length > 1 && (
+                                <select
+                                    value={projectName || ''}
+                                    onChange={(e) => onMoveGroupToProject(groupName, e.target.value)}
+                                    className="text-sm bg-white text-gray-700 py-1 px-2 rounded shadow-sm border border-gray-300 max-w-[160px]"
+                                    title="別プロジェクトへ移動"
+                                >
+                                    {projects.map(p => <option key={p} value={p}>{p}</option>)}
+                                </select>
+                            )}
                             <button onClick={handleCopyImage} className="text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 py-1 px-3 rounded shadow-sm border border-gray-300">
                                 📷 コピー
                             </button>
@@ -539,6 +594,8 @@
                                                 groups={groups} 
                                                 columns={modalColumns}
                                                 setGroups={setGroups} 
+                                                projects={projects}
+                                                groupProjects={groupProjects}
                                                 setDataItems={setDataItems} 
                                                 onRemoveItem={isExportedViewerMode ? undefined : onRemoveItem} 
                                                 onToggleVisible={onToggleVisible} 
@@ -560,7 +617,7 @@
         };
 
         // --- スプレッドシート型編集コンポーネント ---
-        const DataTable = ({ displayItems, groups, columns, setDataItems, setGroups, onRemoveItem, onToggleVisible, onMoveItems }) => {
+        const DataTable = ({ displayItems, groups, projects, groupProjects, columns, setDataItems, setGroups, onRemoveItem, onToggleVisible, onMoveItems }) => {
             const [selectedCells, setSelectedCells] = React.useState(new Set());
             const [activeCell, setActiveCell] = React.useState(null);
             const [isDragging, setIsDragging] = React.useState(false);
@@ -870,7 +927,7 @@
                                     onBlur={() => setEditingCell(null)}
                                     className="w-full h-full min-h-[30px] px-2 border-none focus:outline-none bg-white text-sm cursor-pointer"
                                 >
-                                    {groups.map(g => <option key={g} value={g}>{g}</option>)}
+                                    {(col.id === 'projectName' ? projects : groups).map(g => <option key={g} value={g}>{g}</option>)}
                                 </select>
                             </td>
                         );
@@ -1058,11 +1115,18 @@
         const App = () => {
             const [dataItems, setDataItems] = React.useState(initState?.dataItems || []);
             const [groups, setGroups] = React.useState(initState?.groups || ['Group 1', 'Group 2', 'Group 3']);
+            const defaultProjectName = initState?.projects?.[0] || 'Project 1';
+            const [projects, setProjects] = React.useState(initState?.projects || [defaultProjectName]);
+            const [newProjectName, setNewProjectName] = React.useState('');
+            const [selectedProject, setSelectedProject] = React.useState(defaultProjectName);
+            const [groupProjects, setGroupProjects] = React.useState(() => initState?.groupProjects || Object.fromEntries((initState?.groups || ['Group 1', 'Group 2', 'Group 3']).map(g => [g, defaultProjectName])));
+            const [visibleProjects, setVisibleProjects] = React.useState(initState?.visibleProjects || (initState?.projects || [defaultProjectName]));
             const [newGroupName, setNewGroupName] = React.useState('');
             const [editingGroup, setEditingGroup] = React.useState(null);
             const [editingGroupName, setEditingGroupName] = React.useState('');
             const [bgNoiseData, setBgNoiseData] = React.useState(initState?.bgNoiseData || {});
             const [bgCorrectionMethod, setBgCorrectionMethod] = React.useState(initState?.bgCorrectionMethod || 'energy');
+            const [bgNoiseMode, setBgNoiseMode] = React.useState(initState?.bgNoiseMode || 'subtract');
             const [groupOctaveModes, setGroupOctaveModes] = React.useState(initState?.groupOctaveModes || {});
             const [visibleNcCurves, setVisibleNcCurves] = React.useState(initState?.visibleNcCurves || [15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65]);
             const [lineWidth, setLineWidth] = React.useState(initState?.lineWidth || 3);
@@ -1078,6 +1142,21 @@
             const [isExporting, setIsExporting] = React.useState(false);
 
             const activeViewerMode = isExportedViewerMode || isPreviewMode; // ビューアーとして機能させるかどうか
+
+            React.useEffect(() => {
+                setVisibleProjects(prev => {
+                    const valid = prev.filter(p => projects.includes(p));
+                    return valid.length > 0 ? valid : [...projects];
+                });
+                if (!projects.includes(selectedProject)) {
+                    setSelectedProject(projects[0] || 'Project 1');
+                }
+            }, [projects]);
+
+            const projectFilteredGroups = React.useMemo(() => {
+                if (!activeViewerMode) return groups;
+                return groups.filter(g => visibleProjects.includes(groupProjects[g] || defaultProjectName));
+            }, [activeViewerMode, groups, visibleProjects, groupProjects]);
 
             // ドラッグ＆ドロップ状態管理
             const [draggedGroup, setDraggedGroup] = React.useState(null);
@@ -1135,8 +1214,12 @@
                     version: "1.3", 
                     dataItems: htmlExportDataItems, 
                     groups, 
+                    projects,
+                    groupProjects,
+                    visibleProjects,
                     bgNoiseData: htmlExportBgNoiseData, 
                     bgCorrectionMethod, 
+                    bgNoiseMode,
                     groupOctaveModes, 
                     visibleNcCurves, 
                     lineWidth, 
@@ -1149,7 +1232,7 @@
 
             const handleExportJSON = () => {
                 const exportData = {
-                    version: "1.2", dataItems, groups, bgNoiseData, bgCorrectionMethod, 
+                    version: "1.4", dataItems, groups, projects, groupProjects, visibleProjects, bgNoiseData, bgCorrectionMethod, bgNoiseMode,
                     groupOctaveModes, visibleNcCurves, lineWidth, pointSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols
                 };
                 const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
@@ -1223,10 +1306,12 @@
                 try {
                     const zip = new window.JSZip();
                     dataItems.forEach(item => {
+                        const projectName = groupProjects[item.groupName] || defaultProjectName;
+                        const safeProject = projectName.replace(/[\\/:*?"<>|]/g, "_");
                         const safeGroup = item.groupName.replace(/[\\/:*?"<>|]/g, "_");
                         const safeLegend = item.legendName.replace(/[\\/:*?"<>|]/g, "_");
-                        const folder = zip.folder(safeGroup);
-                        folder.file(`${safeGroup}_${safeLegend}.txt`, item.rawText);
+                        const folder = zip.folder(safeProject).folder(safeGroup);
+                        folder.file(`${safeProject}_${safeGroup}_${safeLegend}.txt`, item.rawText);
                     });
                     const blob = await zip.generateAsync({ type: "blob" });
                     const url = URL.createObjectURL(blob);
@@ -1242,29 +1327,121 @@
                 }
             };
 
-            const handleImportJSON = (e) => {
-                const file = e.target.files[0];
-                if (!file) return;
+            const makeUniqueName = (baseName, existingNames) => {
+                let candidate = baseName || 'Untitled';
+                let count = 2;
+                while (existingNames.includes(candidate)) {
+                    candidate = `${baseName || 'Untitled'} (${count})`;
+                    count++;
+                }
+                return candidate;
+            };
+
+            const readJsonFile = (file) => new Promise((resolve, reject) => {
                 const reader = new FileReader();
                 reader.onload = (event) => {
                     try {
-                        const importedData = JSON.parse(event.target.result);
-                        if(importedData.dataItems !== undefined) setDataItems(importedData.dataItems);
-                        if(importedData.groups !== undefined) setGroups(importedData.groups);
-                        if(importedData.bgNoiseData !== undefined) setBgNoiseData(importedData.bgNoiseData);
-                        if(importedData.bgCorrectionMethod !== undefined) setBgCorrectionMethod(importedData.bgCorrectionMethod);
-                        if(importedData.groupOctaveModes !== undefined) setGroupOctaveModes(importedData.groupOctaveModes);
-                        if(importedData.visibleNcCurves !== undefined) setVisibleNcCurves(importedData.visibleNcCurves);
-                        if(importedData.lineWidth !== undefined) setLineWidth(importedData.lineWidth);
-                        if(importedData.pointSize !== undefined) setPointSize(importedData.pointSize);
-                        if(importedData.yAxisMaxAuto !== undefined) setYAxisMaxAuto(importedData.yAxisMaxAuto);
-                        if(importedData.yAxisMaxManual !== undefined) setYAxisMaxManual(importedData.yAxisMaxManual);
-                        if(importedData.viewerGridCols !== undefined) setViewerGridCols(importedData.viewerGridCols);
+                        resolve(JSON.parse(event.target.result));
                     } catch (err) {
-                        alert("JSONファイルの読み込みに失敗しました。ファイル形式が正しいか確認してください。");
+                        reject(err);
                     }
                 };
+                reader.onerror = reject;
                 reader.readAsText(file);
+            });
+
+            const buildMergedProjectData = (baseState, importedData) => {
+                const importedProjects = importedData.projects || ['Imported Project'];
+                const importedGroups = importedData.groups || [];
+                const importedGroupProjects = importedData.groupProjects || Object.fromEntries(importedGroups.map(g => [g, importedProjects[0]]));
+                const projectMap = {};
+                const groupMap = {};
+                const nextProjects = [...baseState.projects];
+                const nextGroups = [...baseState.groups];
+
+                importedProjects.forEach(projectName => {
+                    const uniqueProject = makeUniqueName(projectName, nextProjects);
+                    projectMap[projectName] = uniqueProject;
+                    nextProjects.push(uniqueProject);
+                });
+
+                importedGroups.forEach(groupName => {
+                    const uniqueGroup = makeUniqueName(groupName, nextGroups);
+                    groupMap[groupName] = uniqueGroup;
+                    nextGroups.push(uniqueGroup);
+                });
+
+                const nextGroupProjects = { ...baseState.groupProjects };
+                importedGroups.forEach(groupName => {
+                    const sourceProject = importedGroupProjects[groupName] || importedProjects[0];
+                    nextGroupProjects[groupMap[groupName]] = projectMap[sourceProject] || projectMap[importedProjects[0]] || nextProjects[0];
+                });
+
+                const nextDataItems = [
+                    ...baseState.dataItems,
+                    ...(importedData.dataItems || []).map(item => ({
+                        ...item,
+                        id: Math.random().toString(36).substring(2, 9),
+                        groupName: groupMap[item.groupName] || item.groupName
+                    }))
+                ];
+
+                const nextBgNoiseData = { ...baseState.bgNoiseData };
+                Object.entries(importedData.bgNoiseData || {}).forEach(([groupName, value]) => {
+                    nextBgNoiseData[groupMap[groupName] || groupName] = value;
+                });
+
+                const nextGroupOctaveModes = { ...baseState.groupOctaveModes };
+                Object.entries(importedData.groupOctaveModes || {}).forEach(([groupName, value]) => {
+                    nextGroupOctaveModes[groupMap[groupName] || groupName] = value;
+                });
+
+                return {
+                    ...baseState,
+                    projects: nextProjects,
+                    groups: nextGroups,
+                    groupProjects: nextGroupProjects,
+                    dataItems: nextDataItems,
+                    bgNoiseData: nextBgNoiseData,
+                    groupOctaveModes: nextGroupOctaveModes,
+                    visibleProjects: [...new Set([...baseState.visibleProjects, ...Object.values(projectMap)])]
+                };
+            };
+
+            const handleImportJSON = async (e) => {
+                const files = Array.from(e.target.files || []);
+                if (files.length === 0) return;
+                try {
+                    const importedList = await Promise.all(files.map(readJsonFile));
+                    const merged = importedList.reduce(buildMergedProjectData, {
+                        projects,
+                        groups,
+                        groupProjects,
+                        dataItems,
+                        bgNoiseData,
+                        groupOctaveModes,
+                        visibleProjects
+                    });
+                    setProjects(merged.projects);
+                    setGroups(merged.groups);
+                    setGroupProjects(merged.groupProjects);
+                    setDataItems(merged.dataItems);
+                    setBgNoiseData(merged.bgNoiseData);
+                    setGroupOctaveModes(merged.groupOctaveModes);
+                    setVisibleProjects(merged.visibleProjects);
+
+                    const lastImported = importedList[importedList.length - 1];
+                    if(lastImported.bgCorrectionMethod !== undefined) setBgCorrectionMethod(lastImported.bgCorrectionMethod);
+                    if(lastImported.bgNoiseMode !== undefined) setBgNoiseMode(lastImported.bgNoiseMode);
+                    if(lastImported.visibleNcCurves !== undefined) setVisibleNcCurves(lastImported.visibleNcCurves);
+                    if(lastImported.lineWidth !== undefined) setLineWidth(lastImported.lineWidth);
+                    if(lastImported.pointSize !== undefined) setPointSize(lastImported.pointSize);
+                    if(lastImported.yAxisMaxAuto !== undefined) setYAxisMaxAuto(lastImported.yAxisMaxAuto);
+                    if(lastImported.yAxisMaxManual !== undefined) setYAxisMaxManual(lastImported.yAxisMaxManual);
+                    if(lastImported.viewerGridCols !== undefined) setViewerGridCols(lastImported.viewerGridCols);
+                } catch (err) {
+                    alert("JSONファイルの読み込みに失敗しました。ファイル形式が正しいか確認してください。");
+                }
                 e.target.value = null;
             };
 
@@ -1318,9 +1495,20 @@
                 initEngine();
             }, []);
 
+            const handleAddProject = () => {
+                const name = newProjectName.trim();
+                if (!name || projects.includes(name)) return;
+                setProjects(prev => [...prev, name]);
+                setVisibleProjects(prev => [...new Set([...prev, name])]);
+                setSelectedProject(name);
+                setNewProjectName('');
+            };
+
             const handleAddGroup = () => {
                 if (newGroupName.trim() && !groups.includes(newGroupName.trim())) {
-                    setGroups([...groups, newGroupName.trim()]);
+                    const groupName = newGroupName.trim();
+                    setGroups([...groups, groupName]);
+                    setGroupProjects(prev => ({ ...prev, [groupName]: selectedProject }));
                     setNewGroupName('');
                 }
             };
@@ -1330,6 +1518,11 @@
                 const newGroups = groups.filter(g => g !== gToRemove);
                 setGroups(newGroups);
                 setDataItems(prev => prev.map(item => item.groupName === gToRemove ? { ...item, groupName: newGroups[0] } : item));
+                setGroupProjects(prev => {
+                    const next = { ...prev };
+                    delete next[gToRemove];
+                    return next;
+                });
             };
 
             const handleEditGroupStart = (g) => {
@@ -1350,6 +1543,11 @@
                 }
                 
                 setGroups(prev => prev.map(g => g === oldName ? newName : g));
+                setGroupProjects(prev => {
+                    const next = { ...prev, [newName]: prev[oldName] || selectedProject };
+                    delete next[oldName];
+                    return next;
+                });
                 setDataItems(prev => prev.map(item => item.groupName === oldName ? { ...item, groupName: newName } : item));
                 setBgNoiseData(prev => {
                     const newData = { ...prev };
@@ -1368,6 +1566,28 @@
                     return newModes;
                 });
                 setEditingGroup(null);
+            };
+
+            const handleMoveGroupToProject = (groupName, projectName) => {
+                setGroupProjects(prev => ({ ...prev, [groupName]: projectName }));
+                setVisibleProjects(prev => prev.includes(projectName) ? prev : [...prev, projectName]);
+            };
+
+            const handleDuplicateGroup = (groupName) => {
+                const newGroupName = makeUniqueName(`${groupName} Copy`, groups);
+                setGroups(prev => [...prev, newGroupName]);
+                setGroupProjects(prev => ({ ...prev, [newGroupName]: prev[groupName] || selectedProject }));
+                setDataItems(prev => [
+                    ...prev,
+                    ...prev.filter(item => item.groupName === groupName).map(item => ({
+                        ...item,
+                        id: Math.random().toString(36).substring(2, 9),
+                        groupName: newGroupName,
+                        legendName: `${item.legendName} Copy`
+                    }))
+                ]);
+                setBgNoiseData(prev => prev[groupName] ? { ...prev, [newGroupName]: { ...prev[groupName] } } : prev);
+                setGroupOctaveModes(prev => prev[groupName] ? { ...prev, [newGroupName]: prev[groupName] } : prev);
             };
 
             const handleNcCurveToggle = (nc) => {
@@ -1418,7 +1638,8 @@
                     try {
                         const parsed = await readAndParseFile(file);
                         const defaultLegend = file.name.replace(/\.[^/.]+$/, "");
-                        const defaultGroup = groups.length > 0 ? groups[0] : "Group 1";
+                        const projectGroups = groups.filter(g => (groupProjects[g] || defaultProjectName) === selectedProject);
+                        const defaultGroup = projectGroups.length > 0 ? projectGroups[0] : (groups.length > 0 ? groups[0] : "Group 1");
 
                         if (parsed.isThirdOct) {
                             setGroupOctaveModes(prev => {
@@ -1439,6 +1660,7 @@
                             isVisible: true 
                         };
 
+                        setGroupProjects(prev => prev[defaultGroup] ? prev : { ...prev, [defaultGroup]: selectedProject });
                         setDataItems(prev => [...prev, newItem]);
                     } catch (err) {
                         setErrorMsg(prev => prev ? prev + "\n" + err.message : err.message);
@@ -1492,7 +1714,7 @@
                     let corrValues = getProcessedItemData(item.rawFreqs, item.rawValues, item.isOriginalThird, octMode);
                     let isCorrected = false;
                     
-                    if (bgNoiseData[group]) {
+                    if (bgNoiseMode === 'subtract' && bgNoiseData[group]) {
                         const bgItem = bgNoiseData[group];
                         const bgVals = getProcessedItemData(bgItem.rawFreqs, bgItem.rawValues, bgItem.isOriginalThird, octMode);
                         corrValues = subtractBackgroundNoiseArray(corrValues, bgVals, bgCorrectionMethod);
@@ -1509,7 +1731,29 @@
                     });
                     return acc;
                 }, {});
-            }, [dataItems, bgNoiseData, bgCorrectionMethod, groupOctaveModes]);
+            }, [dataItems, bgNoiseData, bgCorrectionMethod, bgNoiseMode, groupOctaveModes]);
+
+            const bgGraphData = React.useMemo(() => {
+                if (bgNoiseMode !== 'overlay') return {};
+                return groups.reduce((acc, group) => {
+                    const bgItem = bgNoiseData[group];
+                    if (!bgItem) return acc;
+
+                    const groupItems = dataItems.filter(item => (item.groupName || 'No Group') === group);
+                    const hasThirdItem = groupItems.some(item => item.isOriginalThird);
+                    const octMode = (hasThirdItem || bgItem.isOriginalThird) ? (groupOctaveModes[group] || '1/3') : '1/1';
+                    const values = getProcessedItemData(bgItem.rawFreqs, bgItem.rawValues, bgItem.isOriginalThird, octMode);
+
+                    acc[group] = {
+                        ...bgItem,
+                        id: `bg-${group}`,
+                        values,
+                        ncResult: calculateNC(values),
+                        appliedOctMode: octMode
+                    };
+                    return acc;
+                }, {});
+            }, [bgNoiseMode, bgNoiseData, groups, dataItems, groupOctaveModes]);
 
             const displayItems = React.useMemo(() => {
                 const arr = [];
@@ -1550,8 +1794,10 @@
                         }
                         
                         const visibleItems = items.filter(item => item.isVisible);
+                        const bgGraphItem = bgGraphData[gName];
+                        const exportItems = bgGraphItem ? [...visibleItems, { ...bgGraphItem, legendName: `暗騒音: ${bgGraphItem.fileName}` }] : visibleItems;
 
-                        const slimItems = visibleItems.map(item => {
+                        const slimItems = exportItems.map(item => {
                             const slimVals = [];
                             allFreqs.forEach((f, i) => {
                                 if (activeFreqs.includes(f)) slimVals.push(item.values[i]);
@@ -1565,7 +1811,8 @@
                             };
                         });
 
-                        const yMax = yAxisMaxAuto ? Math.max(50, Math.ceil((maxVal + 5) / 10) * 10) : yAxisMaxManual;
+
+                const yMax = yAxisMaxAuto ? Math.max(50, Math.ceil((maxVal + 5) / 10) * 10) : yAxisMaxManual;
                         
                         const exportCurves = {};
                         for(let nc of visibleNcCurves) {
@@ -1735,6 +1982,22 @@ def create_excel():
                                 <p className="text-gray-500 mt-1">計測データとNC曲線のレポートです。</p>
                             </div>
                             <div className="flex items-center space-x-6">
+                                <div className="flex flex-col items-start max-w-sm">
+                                    <label className="text-xs font-bold text-gray-600 mb-1">表示プロジェクト</label>
+                                    <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
+                                        {projects.map(p => (
+                                            <label key={p} className="flex items-center space-x-1 cursor-pointer">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={visibleProjects.includes(p)}
+                                                    onChange={() => setVisibleProjects(prev => prev.includes(p) ? prev.filter(v => v !== p) : [...prev, p])}
+                                                    className="rounded text-purple-600 w-3 h-3"
+                                                />
+                                                <span>{p}</span>
+                                            </label>
+                                        ))}
+                                    </div>
+                                </div>
                                 <div className="flex flex-col items-center">
                                     <label className="text-xs font-bold text-gray-600 mb-1">カードサイズ（列数）</label>
                                     <div className="flex items-center space-x-2">
@@ -1777,14 +2040,16 @@ def create_excel():
                         )}
 
                         <div className={`grid gap-6 ${getGridClass()}`}>
-                            {groups.map((gName) => {
+                            {projectFilteredGroups.map((gName) => {
                                 const items = groupedDataWithBg[gName];
                                 if(!items) return null;
                                 return (
                                     <GroupChart 
                                         key={gName} 
                                         groupName={gName} 
+                                        projectName={groupProjects[gName] || defaultProjectName}
                                         items={items} 
+                                        bgGraphItem={bgGraphData[gName]}
                                         visibleNcCurves={visibleNcCurves} 
                                         lineWidth={lineWidth} 
                                         pointSize={pointSize}
@@ -1796,6 +2061,10 @@ def create_excel():
                                         onToggleVisible={handleToggleVisible}
                                         onMoveItems={handleMoveItems}
                                         groups={groups}
+                                        projects={projects}
+                                        groupProjects={groupProjects}
+                                        onDuplicateGroup={handleDuplicateGroup}
+                                        onMoveGroupToProject={handleMoveGroupToProject}
                                         onDragStart={(e) => handleDragStart(e, gName)}
                                         onDragOver={handleDragOver}
                                         onDrop={(e) => handleDrop(e, gName)}
@@ -1825,8 +2094,8 @@ def create_excel():
                         <div className="flex flex-col space-y-2 items-end">
                             <div className="flex space-x-2">
                                 <label className="cursor-pointer py-1 px-3 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-bold rounded shadow-sm transition-colors">
-                                    📁 JSON読込
-                                    <input type="file" className="hidden" accept=".json" onChange={handleImportJSON} />
+                                    📁 JSON結合読込
+                                    <input type="file" className="hidden" accept=".json" multiple onChange={handleImportJSON} />
                                 </label>
                                 <button 
                                     onClick={handleExportJSON}
@@ -1946,10 +2215,24 @@ def create_excel():
                                     </div>
                                 </div>
 
+                                <div className="border-t pt-2 mb-3">
+                                    <label className="block text-xs font-semibold text-gray-600 mb-1">プロジェクト管理</label>
+                                    <div className="flex space-x-2 mb-2">
+                                        <input type="text" value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} placeholder="新規プロジェクト名" className="flex-1 px-2 py-1 border border-gray-300 rounded focus:outline-none focus:border-purple-500 text-xs" />
+                                        <button onClick={handleAddProject} className="px-2 py-1 bg-purple-100 text-purple-700 rounded text-xs hover:bg-purple-200 font-medium">新規</button>
+                                    </div>
+                                    <div className="flex items-center space-x-2 text-xs">
+                                        <span className="text-gray-500">作業中:</span>
+                                        <select value={selectedProject} onChange={(e) => setSelectedProject(e.target.value)} className="flex-1 px-2 py-1 border border-gray-300 rounded bg-white focus:outline-none focus:border-purple-500">
+                                            {projects.map(p => <option key={p} value={p}>{p}</option>)}
+                                        </select>
+                                    </div>
+                                </div>
+
                                 <div className="border-t pt-2">
                                     <label className="block text-xs font-semibold text-gray-600 mb-1">グループリスト管理</label>
                                     <div className="flex space-x-2 mb-2">
-                                        <input type="text" value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} placeholder="新規グループ名" className="flex-1 px-2 py-1 border border-gray-300 rounded focus:outline-none focus:border-blue-500 text-xs" />
+                                        <input type="text" value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} placeholder={`新規グループ名 (${selectedProject})`} className="flex-1 px-2 py-1 border border-gray-300 rounded focus:outline-none focus:border-blue-500 text-xs" />
                                         <button onClick={handleAddGroup} className="px-2 py-1 bg-gray-200 text-gray-700 rounded text-xs hover:bg-gray-300 font-medium">追加</button>
                                     </div>
                                     <div className="flex flex-wrap gap-1">
@@ -1986,14 +2269,25 @@ def create_excel():
                                     </div>
                                     
                                     <div className="flex flex-col space-y-1 mb-2 bg-gray-50 p-1.5 rounded border border-gray-200">
-                                        <span className="text-[10px] font-semibold text-gray-600">暗騒音補正方式</span>
+                                        <span className="text-[10px] font-semibold text-gray-600">暗騒音の扱い</span>
                                         <div className="flex items-center space-x-2 text-[10px]">
                                             <label className="flex items-center space-x-1 cursor-pointer">
-                                                <input type="radio" name="bgMethod" value="energy" checked={bgCorrectionMethod === 'energy'} onChange={() => setBgCorrectionMethod('energy')} className="text-blue-600 w-3 h-3" />
-                                                <span className="text-gray-700">エネルギー</span>
+                                                <input type="radio" name="bgMode" value="subtract" checked={bgNoiseMode === 'subtract'} onChange={() => setBgNoiseMode('subtract')} className="text-blue-600 w-3 h-3" />
+                                                <span className="text-gray-700">測定値から差し引く</span>
                                             </label>
                                             <label className="flex items-center space-x-1 cursor-pointer">
-                                                <input type="radio" name="bgMethod" value="arithmetic" checked={bgCorrectionMethod === 'arithmetic'} onChange={() => setBgCorrectionMethod('arithmetic')} className="text-blue-600 w-3 h-3" />
+                                                <input type="radio" name="bgMode" value="overlay" checked={bgNoiseMode === 'overlay'} onChange={() => setBgNoiseMode('overlay')} className="text-blue-600 w-3 h-3" />
+                                                <span className="text-gray-700">差し引かずグラフに追加</span>
+                                            </label>
+                                        </div>
+                                        <span className="text-[10px] font-semibold text-gray-600 mt-1">暗騒音補正方式</span>
+                                        <div className="flex items-center space-x-2 text-[10px]">
+                                            <label className={`flex items-center space-x-1 ${bgNoiseMode === 'subtract' ? 'cursor-pointer' : 'opacity-50'}`}>
+                                                <input type="radio" name="bgMethod" value="energy" checked={bgCorrectionMethod === 'energy'} onChange={() => setBgCorrectionMethod('energy')} disabled={bgNoiseMode !== 'subtract'} className="text-blue-600 w-3 h-3" />
+                                                <span className="text-gray-700">エネルギー</span>
+                                            </label>
+                                            <label className={`flex items-center space-x-1 ${bgNoiseMode === 'subtract' ? 'cursor-pointer' : 'opacity-50'}`}>
+                                                <input type="radio" name="bgMethod" value="arithmetic" checked={bgCorrectionMethod === 'arithmetic'} onChange={() => setBgCorrectionMethod('arithmetic')} disabled={bgNoiseMode !== 'subtract'} className="text-blue-600 w-3 h-3" />
                                                 <span className="text-gray-700">単純算術</span>
                                             </label>
                                         </div>
@@ -2058,6 +2352,8 @@ def create_excel():
                                                 groups={groups}
                                                 columns={mainColumns}
                                                 setGroups={setGroups}
+                                                projects={projects}
+                                                groupProjects={groupProjects}
                                                 setDataItems={setDataItems}
                                                 onRemoveItem={handleRemoveItem}
                                                 onToggleVisible={handleToggleVisible}
@@ -2084,7 +2380,9 @@ def create_excel():
                                             <GroupChart 
                                                 key={gName} 
                                                 groupName={gName} 
+                                                projectName={groupProjects[gName] || defaultProjectName}
                                                 items={items} 
+                                                bgGraphItem={bgGraphData[gName]}
                                                 visibleNcCurves={visibleNcCurves} 
                                                 lineWidth={lineWidth} 
                                                 pointSize={pointSize}
@@ -2097,6 +2395,10 @@ def create_excel():
                                                 onToggleVisible={handleToggleVisible}
                                                 onMoveItems={handleMoveItems}
                                                 groups={groups}
+                                                projects={projects}
+                                                groupProjects={groupProjects}
+                                                onDuplicateGroup={handleDuplicateGroup}
+                                                onMoveGroupToProject={handleMoveGroupToProject}
                                                 onDragStart={(e) => handleDragStart(e, gName)}
                                                 onDragOver={handleDragOver}
                                                 onDrop={(e) => handleDrop(e, gName)}
