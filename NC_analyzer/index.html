@@ -234,7 +234,7 @@
             return maxNcRequired < 15 ? "<15" : maxNcRequired;
         }
 
-        const GroupChart = ({ groupName, items, visibleNcCurves, lineWidth, pointSize, yAxisMaxAuto, yAxisMaxManual, isViewerMode, setDataItems, setGroups, onRemoveItem, onToggleVisible, onMoveItems, groups, onDragStart, onDragOver, onDrop, isDraggingThis }) => {
+        const GroupChart = ({ groupName, items, bgGraphItem, visibleNcCurves, lineWidth, pointSize, yAxisMaxAuto, yAxisMaxManual, isViewerMode, setDataItems, setGroups, onRemoveItem, onToggleVisible, onMoveItems, groups, onDragStart, onDragOver, onDrop, isDraggingThis }) => {
             const chartRef = React.useRef(null);
             const chartInstance = React.useRef(null);
             
@@ -326,6 +326,44 @@
                         isNcCurve: false
                     });
                 });
+
+
+                if (bgGraphItem) {
+                    const bgLabel = `暗騒音: ${bgGraphItem.fileName} (NC-${bgGraphItem.ncResult})`;
+                    const filteredBgValues = activeFreqs.map(f => {
+                        const i = allFreqs.indexOf(f);
+                        return bgGraphItem.values[i];
+                    });
+
+                    filteredBgValues.forEach(v => {
+                        if (v !== null) maxVal = Math.max(maxVal, v);
+                    });
+
+                    let isHidden = hiddenLabels.has(bgLabel);
+                    if (isolatedLabels.size > 0 && !isolatedLabels.has(bgLabel)) {
+                        isHidden = true;
+                    }
+
+                    const bgColorBase = '#64748b';
+                    const isHighlighted = highlightedLabel === bgLabel;
+                    const isFaded = highlightedLabel !== null && !isHighlighted;
+                    const bgColor = isFaded ? hexToRgba(bgColorBase, 0.15) : bgColorBase;
+
+                    datasets.push({
+                        label: bgLabel,
+                        data: filteredBgValues,
+                        borderColor: bgColor,
+                        borderWidth: isHighlighted ? lineWidth * 2.5 : lineWidth,
+                        borderDash: [2, 3],
+                        pointRadius: isHighlighted ? pointSize * 1.5 : pointSize,
+                        pointBackgroundColor: bgColor,
+                        fill: false,
+                        spanGaps: true,
+                        tension: 0,
+                        hidden: isHidden,
+                        isBackgroundNoise: true
+                    });
+                }
 
                 const yMax = yAxisMaxAuto ? Math.max(50, Math.ceil((maxVal + 5) / 10) * 10) : yAxisMaxManual;
 
@@ -436,7 +474,7 @@
                         plugins: [bgPlugin]
                     });
                 }
-            }, [items, groupName, visibleNcCurves, lineWidth, pointSize, yAxisMaxAuto, yAxisMaxManual, highlightedLabel, hiddenLabels, isolatedLabels, isMaximized]);
+            }, [items, bgGraphItem, groupName, visibleNcCurves, lineWidth, pointSize, yAxisMaxAuto, yAxisMaxManual, highlightedLabel, hiddenLabels, isolatedLabels, isMaximized]);
 
             const handleContextMenu = (e) => {
                 e.preventDefault();
@@ -472,10 +510,11 @@
             const canvasWrapperClass = "flex-grow min-h-0 relative mt-2";
 
             const modalColumns = isViewerMode 
-                ? [ { id: 'legendName', title: '凡例名', readOnly: false } ]
+                ? [ { id: 'legendName', title: '凡例名', readOnly: false }, { id: 'ncResult', title: '判定', readOnly: true } ]
                 : [
                     { id: 'fileName', title: 'ファイル名', readOnly: true },
-                    { id: 'legendName', title: '凡例名', readOnly: false }
+                    { id: 'legendName', title: '凡例名', readOnly: false },
+                    { id: 'ncResult', title: '判定', readOnly: true }
                   ];
 
             return (
@@ -1063,6 +1102,7 @@
             const [editingGroupName, setEditingGroupName] = React.useState('');
             const [bgNoiseData, setBgNoiseData] = React.useState(initState?.bgNoiseData || {});
             const [bgCorrectionMethod, setBgCorrectionMethod] = React.useState(initState?.bgCorrectionMethod || 'energy');
+            const [bgNoiseMode, setBgNoiseMode] = React.useState(initState?.bgNoiseMode || 'subtract');
             const [groupOctaveModes, setGroupOctaveModes] = React.useState(initState?.groupOctaveModes || {});
             const [visibleNcCurves, setVisibleNcCurves] = React.useState(initState?.visibleNcCurves || [15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65]);
             const [lineWidth, setLineWidth] = React.useState(initState?.lineWidth || 3);
@@ -1137,6 +1177,7 @@
                     groups, 
                     bgNoiseData: htmlExportBgNoiseData, 
                     bgCorrectionMethod, 
+                    bgNoiseMode, 
                     groupOctaveModes, 
                     visibleNcCurves, 
                     lineWidth, 
@@ -1149,7 +1190,7 @@
 
             const handleExportJSON = () => {
                 const exportData = {
-                    version: "1.2", dataItems, groups, bgNoiseData, bgCorrectionMethod, 
+                    version: "1.2", dataItems, groups, bgNoiseData, bgCorrectionMethod, bgNoiseMode, 
                     groupOctaveModes, visibleNcCurves, lineWidth, pointSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols
                 };
                 const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
@@ -1253,6 +1294,7 @@
                         if(importedData.groups !== undefined) setGroups(importedData.groups);
                         if(importedData.bgNoiseData !== undefined) setBgNoiseData(importedData.bgNoiseData);
                         if(importedData.bgCorrectionMethod !== undefined) setBgCorrectionMethod(importedData.bgCorrectionMethod);
+                        if(importedData.bgNoiseMode !== undefined) setBgNoiseMode(importedData.bgNoiseMode);
                         if(importedData.groupOctaveModes !== undefined) setGroupOctaveModes(importedData.groupOctaveModes);
                         if(importedData.visibleNcCurves !== undefined) setVisibleNcCurves(importedData.visibleNcCurves);
                         if(importedData.lineWidth !== undefined) setLineWidth(importedData.lineWidth);
@@ -1492,7 +1534,7 @@
                     let corrValues = getProcessedItemData(item.rawFreqs, item.rawValues, item.isOriginalThird, octMode);
                     let isCorrected = false;
                     
-                    if (bgNoiseData[group]) {
+                    if (bgNoiseMode === 'subtract' && bgNoiseData[group]) {
                         const bgItem = bgNoiseData[group];
                         const bgVals = getProcessedItemData(bgItem.rawFreqs, bgItem.rawValues, bgItem.isOriginalThird, octMode);
                         corrValues = subtractBackgroundNoiseArray(corrValues, bgVals, bgCorrectionMethod);
@@ -1509,7 +1551,29 @@
                     });
                     return acc;
                 }, {});
-            }, [dataItems, bgNoiseData, bgCorrectionMethod, groupOctaveModes]);
+            }, [dataItems, bgNoiseData, bgCorrectionMethod, bgNoiseMode, groupOctaveModes]);
+
+            const bgGraphData = React.useMemo(() => {
+                if (bgNoiseMode !== 'overlay') return {};
+                return groups.reduce((acc, group) => {
+                    const bgItem = bgNoiseData[group];
+                    if (!bgItem) return acc;
+
+                    const groupItems = dataItems.filter(item => (item.groupName || 'No Group') === group);
+                    const hasThirdItem = groupItems.some(item => item.isOriginalThird);
+                    const octMode = (hasThirdItem || bgItem.isOriginalThird) ? (groupOctaveModes[group] || '1/3') : '1/1';
+                    const values = getProcessedItemData(bgItem.rawFreqs, bgItem.rawValues, bgItem.isOriginalThird, octMode);
+
+                    acc[group] = {
+                        ...bgItem,
+                        id: `bg-${group}`,
+                        values,
+                        ncResult: calculateNC(values),
+                        appliedOctMode: octMode
+                    };
+                    return acc;
+                }, {});
+            }, [bgNoiseMode, bgNoiseData, groups, dataItems, groupOctaveModes]);
 
             const displayItems = React.useMemo(() => {
                 const arr = [];
@@ -1550,8 +1614,10 @@
                         }
                         
                         const visibleItems = items.filter(item => item.isVisible);
+                        const bgGraphItem = bgGraphData[gName];
+                        const exportItems = bgGraphItem ? [...visibleItems, { ...bgGraphItem, legendName: `暗騒音: ${bgGraphItem.fileName}` }] : visibleItems;
 
-                        const slimItems = visibleItems.map(item => {
+                        const slimItems = exportItems.map(item => {
                             const slimVals = [];
                             allFreqs.forEach((f, i) => {
                                 if (activeFreqs.includes(f)) slimVals.push(item.values[i]);
@@ -1565,7 +1631,8 @@
                             };
                         });
 
-                        const yMax = yAxisMaxAuto ? Math.max(50, Math.ceil((maxVal + 5) / 10) * 10) : yAxisMaxManual;
+
+                const yMax = yAxisMaxAuto ? Math.max(50, Math.ceil((maxVal + 5) / 10) * 10) : yAxisMaxManual;
                         
                         const exportCurves = {};
                         for(let nc of visibleNcCurves) {
@@ -1785,6 +1852,7 @@ def create_excel():
                                         key={gName} 
                                         groupName={gName} 
                                         items={items} 
+                                        bgGraphItem={bgGraphData[gName]}
                                         visibleNcCurves={visibleNcCurves} 
                                         lineWidth={lineWidth} 
                                         pointSize={pointSize}
@@ -1986,14 +2054,25 @@ def create_excel():
                                     </div>
                                     
                                     <div className="flex flex-col space-y-1 mb-2 bg-gray-50 p-1.5 rounded border border-gray-200">
-                                        <span className="text-[10px] font-semibold text-gray-600">暗騒音補正方式</span>
+                                        <span className="text-[10px] font-semibold text-gray-600">暗騒音の扱い</span>
                                         <div className="flex items-center space-x-2 text-[10px]">
                                             <label className="flex items-center space-x-1 cursor-pointer">
-                                                <input type="radio" name="bgMethod" value="energy" checked={bgCorrectionMethod === 'energy'} onChange={() => setBgCorrectionMethod('energy')} className="text-blue-600 w-3 h-3" />
-                                                <span className="text-gray-700">エネルギー</span>
+                                                <input type="radio" name="bgMode" value="subtract" checked={bgNoiseMode === 'subtract'} onChange={() => setBgNoiseMode('subtract')} className="text-blue-600 w-3 h-3" />
+                                                <span className="text-gray-700">測定値から差し引く</span>
                                             </label>
                                             <label className="flex items-center space-x-1 cursor-pointer">
-                                                <input type="radio" name="bgMethod" value="arithmetic" checked={bgCorrectionMethod === 'arithmetic'} onChange={() => setBgCorrectionMethod('arithmetic')} className="text-blue-600 w-3 h-3" />
+                                                <input type="radio" name="bgMode" value="overlay" checked={bgNoiseMode === 'overlay'} onChange={() => setBgNoiseMode('overlay')} className="text-blue-600 w-3 h-3" />
+                                                <span className="text-gray-700">差し引かずグラフに追加</span>
+                                            </label>
+                                        </div>
+                                        <span className="text-[10px] font-semibold text-gray-600 mt-1">暗騒音補正方式</span>
+                                        <div className="flex items-center space-x-2 text-[10px]">
+                                            <label className={`flex items-center space-x-1 ${bgNoiseMode === 'subtract' ? 'cursor-pointer' : 'opacity-50'}`}>
+                                                <input type="radio" name="bgMethod" value="energy" checked={bgCorrectionMethod === 'energy'} onChange={() => setBgCorrectionMethod('energy')} disabled={bgNoiseMode !== 'subtract'} className="text-blue-600 w-3 h-3" />
+                                                <span className="text-gray-700">エネルギー</span>
+                                            </label>
+                                            <label className={`flex items-center space-x-1 ${bgNoiseMode === 'subtract' ? 'cursor-pointer' : 'opacity-50'}`}>
+                                                <input type="radio" name="bgMethod" value="arithmetic" checked={bgCorrectionMethod === 'arithmetic'} onChange={() => setBgCorrectionMethod('arithmetic')} disabled={bgNoiseMode !== 'subtract'} className="text-blue-600 w-3 h-3" />
                                                 <span className="text-gray-700">単純算術</span>
                                             </label>
                                         </div>
@@ -2085,6 +2164,7 @@ def create_excel():
                                                 key={gName} 
                                                 groupName={gName} 
                                                 items={items} 
+                                                bgGraphItem={bgGraphData[gName]}
                                                 visibleNcCurves={visibleNcCurves} 
                                                 lineWidth={lineWidth} 
                                                 pointSize={pointSize}
