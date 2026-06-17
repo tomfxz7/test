@@ -244,10 +244,15 @@
             
             const [isMaximized, setIsMaximized] = React.useState(false);
             const [showDataModal, setShowDataModal] = React.useState(false);
+            const [targetProjectForGroup, setTargetProjectForGroup] = React.useState(projectName || '');
             const [isDraggable, setIsDraggable] = React.useState(false);
             
             const clickState = React.useRef({ lastTime: 0, timer: null });
             const hoveredLegendRef = React.useRef(null);
+
+            React.useEffect(() => {
+                setTargetProjectForGroup(projectName || '');
+            }, [projectName]);
 
             React.useEffect(() => {
                 if (!chartRef.current || items.length === 0) return;
@@ -546,22 +551,6 @@
                             </button>
                         </h3>
                         <div className="flex items-center space-x-2">
-                            {!isMaximized && <span className="text-[10px] text-gray-400 hidden sm:inline">※凡例: 1クリック(強調) / Wクリック(単独切替) / 右クリック(非表示)</span>}
-                            {onDuplicateGroup && (
-                                <button onClick={() => onDuplicateGroup(groupName)} className="text-sm bg-purple-50 hover:bg-purple-100 text-purple-700 py-1 px-3 rounded shadow-sm border border-purple-200 font-bold">
-                                    🧬 複製
-                                </button>
-                            )}
-                            {onMoveGroupToProject && projects?.length > 1 && (
-                                <select
-                                    value={projectName || ''}
-                                    onChange={(e) => onMoveGroupToProject(groupName, e.target.value)}
-                                    className="text-sm bg-white text-gray-700 py-1 px-2 rounded shadow-sm border border-gray-300 max-w-[160px]"
-                                    title="別プロジェクトへ移動"
-                                >
-                                    {projects.map(p => <option key={p} value={p}>{p}</option>)}
-                                </select>
-                            )}
                             <button onClick={handleCopyImage} className="text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 py-1 px-3 rounded shadow-sm border border-gray-300">
                                 📷 コピー
                             </button>
@@ -570,7 +559,6 @@
                             </button>
                         </div>
                     </div>
-                    {isMaximized && <p className="text-xs text-gray-400 mt-1 shrink-0">※凡例: 1クリック(強調) / Wクリック(単独切替) / 右クリック(非表示)</p>}
                     <div className={canvasWrapperClass}>
                         <canvas ref={chartRef} onContextMenu={handleContextMenu}></canvas>
                     </div>
@@ -604,7 +592,27 @@
                                         </div>
                                     </div>
                                 </div>
-                                <div className="p-3 border-t bg-gray-50 flex justify-end shrink-0">
+                                <div className="p-3 border-t bg-gray-50 flex justify-between items-center gap-3 shrink-0 flex-wrap">
+                                    <div className="flex items-center gap-2 text-xs">
+                                        <span className="font-bold text-gray-600">プロジェクト操作:</span>
+                                        <select
+                                            value={targetProjectForGroup}
+                                            onChange={(e) => setTargetProjectForGroup(e.target.value)}
+                                            className="px-2 py-1 border border-gray-300 rounded bg-white min-w-[160px]"
+                                        >
+                                            {projects?.map(p => <option key={p} value={p}>{p}</option>)}
+                                        </select>
+                                        {onMoveGroupToProject && (
+                                            <button onClick={() => onMoveGroupToProject(groupName, targetProjectForGroup)} className="px-3 py-1 bg-purple-100 hover:bg-purple-200 text-purple-700 font-bold rounded border border-purple-200">
+                                                移動
+                                            </button>
+                                        )}
+                                        {onDuplicateGroup && (
+                                            <button onClick={() => onDuplicateGroup(groupName, targetProjectForGroup)} className="px-3 py-1 bg-indigo-100 hover:bg-indigo-200 text-indigo-700 font-bold rounded border border-indigo-200">
+                                                コピー
+                                            </button>
+                                        )}
+                                    </div>
                                     <button onClick={() => setShowDataModal(false)} className="px-6 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg shadow-sm">
                                         閉じる
                                     </button>
@@ -1121,6 +1129,10 @@
             const [selectedProject, setSelectedProject] = React.useState(defaultProjectName);
             const [groupProjects, setGroupProjects] = React.useState(() => initState?.groupProjects || Object.fromEntries((initState?.groups || ['Group 1', 'Group 2', 'Group 3']).map(g => [g, defaultProjectName])));
             const [visibleProjects, setVisibleProjects] = React.useState(initState?.visibleProjects || (initState?.projects || [defaultProjectName]));
+            const [editingProjectName, setEditingProjectName] = React.useState(null);
+            const [editingProjectValue, setEditingProjectValue] = React.useState('');
+            const [showProjectAddMenu, setShowProjectAddMenu] = React.useState(false);
+            const projectImportInputRef = React.useRef(null);
             const [newGroupName, setNewGroupName] = React.useState('');
             const [editingGroup, setEditingGroup] = React.useState(null);
             const [editingGroupName, setEditingGroupName] = React.useState('');
@@ -1246,6 +1258,45 @@
                 URL.revokeObjectURL(url);
             };
 
+            const handleExportProjectJSON = (projectName = selectedProject) => {
+                const projectGroups = groups.filter(g => (groupProjects[g] || defaultProjectName) === projectName);
+                const projectGroupSet = new Set(projectGroups);
+                const projectBgNoiseData = {};
+                const projectGroupOctaveModes = {};
+                projectGroups.forEach(g => {
+                    if (bgNoiseData[g]) projectBgNoiseData[g] = bgNoiseData[g];
+                    if (groupOctaveModes[g]) projectGroupOctaveModes[g] = groupOctaveModes[g];
+                });
+                const exportData = {
+                    version: "1.4",
+                    dataItems: dataItems.filter(item => projectGroupSet.has(item.groupName)),
+                    groups: projectGroups,
+                    projects: [projectName],
+                    groupProjects: Object.fromEntries(projectGroups.map(g => [g, projectName])),
+                    visibleProjects: [projectName],
+                    bgNoiseData: projectBgNoiseData,
+                    bgCorrectionMethod,
+                    bgNoiseMode,
+                    groupOctaveModes: projectGroupOctaveModes,
+                    visibleNcCurves,
+                    lineWidth,
+                    pointSize,
+                    yAxisMaxAuto,
+                    yAxisMaxManual,
+                    viewerGridCols
+                };
+                const safeProject = projectName.replace(/[\/:*?"<>|]/g, "_");
+                const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `NC_Project_${safeProject}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            };
+
             const handleExportHTML = () => {
                 const babelScripts = document.querySelectorAll('script[type="text/babel"]');
                 let appScript = '';
@@ -1300,12 +1351,13 @@
                 URL.revokeObjectURL(url);
             };
 
-            const handleExportZip = async () => {
-                if (dataItems.length === 0) return;
+            const handleExportZip = async (projectNameFilter = null) => {
+                const exportItems = projectNameFilter ? dataItems.filter(item => (groupProjects[item.groupName] || defaultProjectName) === projectNameFilter) : dataItems;
+                if (exportItems.length === 0) return;
                 setIsExporting(true);
                 try {
                     const zip = new window.JSZip();
-                    dataItems.forEach(item => {
+                    exportItems.forEach(item => {
                         const projectName = groupProjects[item.groupName] || defaultProjectName;
                         const safeProject = projectName.replace(/[\\/:*?"<>|]/g, "_");
                         const safeGroup = item.groupName.replace(/[\\/:*?"<>|]/g, "_");
@@ -1408,37 +1460,33 @@
                 };
             };
 
-            const handleImportJSON = async (e) => {
-                const files = Array.from(e.target.files || []);
-                if (files.length === 0) return;
-                try {
-                    const importedList = await Promise.all(files.map(readJsonFile));
-                    const merged = importedList.reduce(buildMergedProjectData, {
-                        projects,
-                        groups,
-                        groupProjects,
-                        dataItems,
-                        bgNoiseData,
-                        groupOctaveModes,
-                        visibleProjects
-                    });
-                    setProjects(merged.projects);
-                    setGroups(merged.groups);
-                    setGroupProjects(merged.groupProjects);
-                    setDataItems(merged.dataItems);
-                    setBgNoiseData(merged.bgNoiseData);
-                    setGroupOctaveModes(merged.groupOctaveModes);
-                    setVisibleProjects(merged.visibleProjects);
+            const applyWorkspaceData = (importedData) => {
+                const importedProjects = importedData.projects || [defaultProjectName];
+                const importedGroups = importedData.groups || ['Group 1'];
+                setProjects(importedProjects);
+                setSelectedProject(importedProjects[0] || defaultProjectName);
+                setVisibleProjects(importedData.visibleProjects || importedProjects);
+                setGroups(importedGroups);
+                setGroupProjects(importedData.groupProjects || Object.fromEntries(importedGroups.map(g => [g, importedProjects[0] || defaultProjectName])));
+                setDataItems(importedData.dataItems || []);
+                setBgNoiseData(importedData.bgNoiseData || {});
+                if(importedData.bgCorrectionMethod !== undefined) setBgCorrectionMethod(importedData.bgCorrectionMethod);
+                if(importedData.bgNoiseMode !== undefined) setBgNoiseMode(importedData.bgNoiseMode);
+                setGroupOctaveModes(importedData.groupOctaveModes || {});
+                if(importedData.visibleNcCurves !== undefined) setVisibleNcCurves(importedData.visibleNcCurves);
+                if(importedData.lineWidth !== undefined) setLineWidth(importedData.lineWidth);
+                if(importedData.pointSize !== undefined) setPointSize(importedData.pointSize);
+                if(importedData.yAxisMaxAuto !== undefined) setYAxisMaxAuto(importedData.yAxisMaxAuto);
+                if(importedData.yAxisMaxManual !== undefined) setYAxisMaxManual(importedData.yAxisMaxManual);
+                if(importedData.viewerGridCols !== undefined) setViewerGridCols(importedData.viewerGridCols);
+            };
 
-                    const lastImported = importedList[importedList.length - 1];
-                    if(lastImported.bgCorrectionMethod !== undefined) setBgCorrectionMethod(lastImported.bgCorrectionMethod);
-                    if(lastImported.bgNoiseMode !== undefined) setBgNoiseMode(lastImported.bgNoiseMode);
-                    if(lastImported.visibleNcCurves !== undefined) setVisibleNcCurves(lastImported.visibleNcCurves);
-                    if(lastImported.lineWidth !== undefined) setLineWidth(lastImported.lineWidth);
-                    if(lastImported.pointSize !== undefined) setPointSize(lastImported.pointSize);
-                    if(lastImported.yAxisMaxAuto !== undefined) setYAxisMaxAuto(lastImported.yAxisMaxAuto);
-                    if(lastImported.yAxisMaxManual !== undefined) setYAxisMaxManual(lastImported.yAxisMaxManual);
-                    if(lastImported.viewerGridCols !== undefined) setViewerGridCols(lastImported.viewerGridCols);
+            const handleImportJSON = async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                try {
+                    const importedData = await readJsonFile(file);
+                    applyWorkspaceData(importedData);
                 } catch (err) {
                     alert("JSONファイルの読み込みに失敗しました。ファイル形式が正しいか確認してください。");
                 }
@@ -1502,6 +1550,70 @@
                 setVisibleProjects(prev => [...new Set([...prev, name])]);
                 setSelectedProject(name);
                 setNewProjectName('');
+            };
+
+            const handleCreateProjectFromPrompt = () => {
+                const name = window.prompt('新規プロジェクト名を入力してください', `Project ${projects.length + 1}`);
+                if (!name) return;
+                const trimmed = name.trim();
+                if (!trimmed || projects.includes(trimmed)) return;
+                setProjects(prev => [...prev, trimmed]);
+                setVisibleProjects(prev => [...new Set([...prev, trimmed])]);
+                setSelectedProject(trimmed);
+                setShowProjectAddMenu(false);
+            };
+
+            const handleEditProjectStart = (projectName) => {
+                setEditingProjectName(projectName);
+                setEditingProjectValue(projectName);
+            };
+
+            const handleEditProjectSave = (oldName) => {
+                const newName = editingProjectValue.trim();
+                if (!newName || newName === oldName) {
+                    setEditingProjectName(null);
+                    return;
+                }
+                if (projects.includes(newName)) {
+                    alert('すでに存在するプロジェクト名です。');
+                    setEditingProjectName(null);
+                    return;
+                }
+                setProjects(prev => prev.map(p => p === oldName ? newName : p));
+                setGroupProjects(prev => Object.fromEntries(Object.entries(prev).map(([g, p]) => [g, p === oldName ? newName : p])));
+                setVisibleProjects(prev => prev.map(p => p === oldName ? newName : p));
+                if (selectedProject === oldName) setSelectedProject(newName);
+                setEditingProjectName(null);
+            };
+
+            const handleProjectImportJSON = async (e) => {
+                const files = Array.from(e.target.files || []);
+                if (files.length === 0) return;
+                try {
+                    const importedList = await Promise.all(files.map(readJsonFile));
+                    const merged = importedList.reduce(buildMergedProjectData, {
+                        projects,
+                        groups,
+                        groupProjects,
+                        dataItems,
+                        bgNoiseData,
+                        groupOctaveModes,
+                        visibleProjects
+                    });
+                    setProjects(merged.projects);
+                    setGroups(merged.groups);
+                    setGroupProjects(merged.groupProjects);
+                    setDataItems(merged.dataItems);
+                    setBgNoiseData(merged.bgNoiseData);
+                    setGroupOctaveModes(merged.groupOctaveModes);
+                    setVisibleProjects(merged.visibleProjects);
+                    const newProject = merged.projects.find(p => !projects.includes(p));
+                    if (newProject) setSelectedProject(newProject);
+                } catch (err) {
+                    alert('プロジェクトJSONの読み込みに失敗しました。');
+                }
+                setShowProjectAddMenu(false);
+                e.target.value = null;
             };
 
             const handleAddGroup = () => {
@@ -1573,10 +1685,10 @@
                 setVisibleProjects(prev => prev.includes(projectName) ? prev : [...prev, projectName]);
             };
 
-            const handleDuplicateGroup = (groupName) => {
+            const handleDuplicateGroup = (groupName, targetProject = groupProjects[groupName] || selectedProject) => {
                 const newGroupName = makeUniqueName(`${groupName} Copy`, groups);
                 setGroups(prev => [...prev, newGroupName]);
-                setGroupProjects(prev => ({ ...prev, [newGroupName]: prev[groupName] || selectedProject }));
+                setGroupProjects(prev => ({ ...prev, [newGroupName]: targetProject || prev[groupName] || selectedProject }));
                 setDataItems(prev => [
                     ...prev,
                     ...prev.filter(item => item.groupName === groupName).map(item => ({
@@ -1634,12 +1746,18 @@
                 if (files.length === 0) return;
                 setErrorMsg('');
 
+                const existingProjectGroups = groups.filter(g => (groupProjects[g] || defaultProjectName) === selectedProject);
+                const uploadDefaultGroup = existingProjectGroups.length > 0 ? existingProjectGroups[0] : makeUniqueName(`${selectedProject} Group 1`, groups);
+                if (existingProjectGroups.length === 0) {
+                    setGroups(prev => [...prev, uploadDefaultGroup]);
+                    setGroupProjects(prev => ({ ...prev, [uploadDefaultGroup]: selectedProject }));
+                }
+
                 for(let file of files) {
                     try {
                         const parsed = await readAndParseFile(file);
                         const defaultLegend = file.name.replace(/\.[^/.]+$/, "");
-                        const projectGroups = groups.filter(g => (groupProjects[g] || defaultProjectName) === selectedProject);
-                        const defaultGroup = projectGroups.length > 0 ? projectGroups[0] : (groups.length > 0 ? groups[0] : "Group 1");
+                        const defaultGroup = uploadDefaultGroup;
 
                         if (parsed.isThirdOct) {
                             setGroupOctaveModes(prev => {
@@ -1755,6 +1873,10 @@
                 }, {});
             }, [bgNoiseMode, bgNoiseData, groups, dataItems, groupOctaveModes]);
 
+            const selectedProjectGroups = React.useMemo(() => {
+                return groups.filter(g => (groupProjects[g] || defaultProjectName) === selectedProject);
+            }, [groups, groupProjects, selectedProject]);
+
             const displayItems = React.useMemo(() => {
                 const arr = [];
                 // dataItemsの順番ベースで表示用配列を構築
@@ -1765,11 +1887,12 @@
                         return found;
                     });
                     return found || origItem;
-                });
-            }, [dataItems, groupedDataWithBg]);
+                }).filter(item => selectedProjectGroups.includes(item.groupName));
+            }, [dataItems, groupedDataWithBg, selectedProjectGroups]);
 
-            const handleExportExcel = async () => {
-                if (dataItems.length === 0 || !window.pyodideInstance) return;
+            const handleExportExcel = async (projectNameFilter = null) => {
+                const hasExportData = projectNameFilter ? dataItems.some(item => (groupProjects[item.groupName] || defaultProjectName) === projectNameFilter) : dataItems.length > 0;
+                if (!hasExportData || !window.pyodideInstance) return;
                 setIsExporting(true);
                 try {
                     const ncCurvesForExport = {};
@@ -1781,6 +1904,7 @@
 
                     const groupsForPy = {};
                     groups.forEach(gName => {
+                        if (projectNameFilter && (groupProjects[gName] || defaultProjectName) !== projectNameFilter) return;
                         const items = groupedDataWithBg[gName];
                         if(!items) return;
 
@@ -2022,7 +2146,7 @@ def create_excel():
                                         </button>
                                     )}
                                     <button 
-                                        onClick={handleExportExcel}
+                                        onClick={() => handleExportExcel()}
                                         disabled={!isPyodideReady || isExporting || dataItems.length === 0}
                                         className={`py-2 px-6 rounded-lg shadow text-sm font-bold text-white transition-colors flex items-center space-x-2
                                             ${!isPyodideReady || isExporting || dataItems.length === 0 ? 'bg-green-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'}`}
@@ -2094,14 +2218,14 @@ def create_excel():
                         <div className="flex flex-col space-y-2 items-end">
                             <div className="flex space-x-2">
                                 <label className="cursor-pointer py-1 px-3 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-bold rounded shadow-sm transition-colors">
-                                    📁 JSON結合読込
-                                    <input type="file" className="hidden" accept=".json" multiple onChange={handleImportJSON} />
+                                    📁 ワークスペース読込
+                                    <input type="file" className="hidden" accept=".json" onChange={handleImportJSON} />
                                 </label>
                                 <button 
                                     onClick={handleExportJSON}
                                     className="py-1 px-3 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-bold rounded shadow-sm transition-colors"
                                 >
-                                    💾 JSON保存
+                                    💾 ワークスペース保存
                                 </button>
                                 <button 
                                     onClick={() => setIsPreviewMode(true)}
@@ -2116,26 +2240,7 @@ def create_excel():
                                     🌐 HTML出力
                                 </button>
                             </div>
-                            {dataItems.length > 0 && (
-                                <div className="flex space-x-2">
-                                    <button 
-                                        onClick={handleExportZip}
-                                        disabled={isExporting}
-                                        className="py-1.5 px-4 rounded-lg shadow text-sm font-bold bg-indigo-500 hover:bg-indigo-600 text-white transition-colors flex items-center space-x-2"
-                                    >
-                                        <span>🗜️ ZIPで元データ出力</span>
-                                    </button>
-                                    <button 
-                                        onClick={handleExportExcel}
-                                        disabled={!isPyodideReady || isExporting}
-                                        className={`py-1.5 px-4 rounded-lg shadow text-sm font-bold text-white transition-colors flex items-center space-x-2
-                                            ${!isPyodideReady || isExporting ? 'bg-green-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'}`}
-                                    >
-                                        {isExporting ? <div className="loader border-white/30 border-t-white"></div> : <span>📊 全グループをExcel出力</span>}
-                                    </button>
-                                </div>
-                            )}
-                        </div>
+                       </div>
                     </header>
 
                     {errorMsg && (
@@ -2143,6 +2248,45 @@ def create_excel():
                             {errorMsg}
                         </div>
                     )}
+
+                    <div className="mb-4 bg-white border border-gray-200 rounded-xl shadow-sm overflow-visible">
+                        <div className="flex items-center border-b border-gray-200 overflow-x-auto">
+                            {projects.map(p => (
+                                <div key={p} className={`flex items-center px-3 py-2 border-r border-gray-200 whitespace-nowrap ${selectedProject === p ? 'bg-purple-50 text-purple-800 font-bold' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
+                                    {editingProjectName === p ? (
+                                        <input
+                                            value={editingProjectValue}
+                                            onChange={(e) => setEditingProjectValue(e.target.value)}
+                                            onBlur={() => handleEditProjectSave(p)}
+                                            onKeyDown={(e) => { if(e.key === 'Enter') handleEditProjectSave(p); if(e.key === 'Escape') setEditingProjectName(null); }}
+                                            autoFocus
+                                            className="w-36 px-2 py-0.5 border border-purple-300 rounded text-xs"
+                                        />
+                                    ) : (
+                                        <button onClick={() => setSelectedProject(p)} onDoubleClick={() => handleEditProjectStart(p)} className="text-sm" title="ダブルクリックでプロジェクト名を変更">
+                                            {p}
+                                        </button>
+                                    )}
+                                </div>
+                            ))}
+                            <div className="relative">
+                                <button onClick={() => setShowProjectAddMenu(prev => !prev)} className="px-3 py-2 text-lg font-bold text-purple-600 hover:bg-purple-50" title="プロジェクトを追加">＋</button>
+                                {showProjectAddMenu && (
+                                    <div className="absolute left-0 top-full z-50 mt-1 bg-white border border-gray-200 rounded shadow-xl min-w-[200px] py-1 text-sm">
+                                        <button onClick={handleCreateProjectFromPrompt} className="block w-full text-left px-4 py-2 hover:bg-purple-50">新規プロジェクト作成</button>
+                                        <button onClick={() => projectImportInputRef.current?.click()} className="block w-full text-left px-4 py-2 hover:bg-purple-50">既存プロジェクトを読み込み</button>
+                                        <input ref={projectImportInputRef} type="file" className="hidden" accept=".json" multiple onChange={handleProjectImportJSON} />
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-2 px-3 py-2 text-xs bg-gray-50">
+                            <span className="font-bold text-gray-600">{selectedProject}</span>
+                            <button onClick={() => handleExportProjectJSON(selectedProject)} className="px-2 py-1 bg-white hover:bg-gray-100 border border-gray-300 rounded" title="このプロジェクトをJSON保存">💾 プロジェクト保存</button>
+                            <button onClick={() => handleExportZip(selectedProject)} disabled={isExporting || selectedProjectGroups.length === 0} className="px-2 py-1 bg-white hover:bg-gray-100 border border-gray-300 rounded disabled:opacity-50" title="このプロジェクトの元データをZIP出力">🗜️ ZIP</button>
+                            <button onClick={() => handleExportExcel(selectedProject)} disabled={!isPyodideReady || isExporting || selectedProjectGroups.length === 0} className="px-2 py-1 bg-white hover:bg-gray-100 border border-gray-300 rounded disabled:opacity-50" title="このプロジェクトをExcel出力">📊 Excel</button>
+                        </div>
+                    </div>
 
                     <div className="grid grid-cols-1 xl:grid-cols-4 gap-4">
                         {/* 左カラム: データ管理 */}
@@ -2236,7 +2380,7 @@ def create_excel():
                                         <button onClick={handleAddGroup} className="px-2 py-1 bg-gray-200 text-gray-700 rounded text-xs hover:bg-gray-300 font-medium">追加</button>
                                     </div>
                                     <div className="flex flex-wrap gap-1">
-                                        {groups.map(g => (
+                                        {selectedProjectGroups.map(g => (
                                             <span key={g} className="inline-flex items-center bg-blue-50 border border-blue-200 rounded px-1.5 py-0.5 text-[10px] text-blue-800">
                                                 {editingGroup === g ? (
                                                     <input 
@@ -2349,7 +2493,7 @@ def create_excel():
                                         <div className="absolute inset-0">
                                             <DataTable 
                                                 displayItems={displayItems}
-                                                groups={groups}
+                                                groups={selectedProjectGroups}
                                                 columns={mainColumns}
                                                 setGroups={setGroups}
                                                 projects={projects}
@@ -2373,7 +2517,7 @@ def create_excel():
                                 </div>
                             ) : (
                                 <div className="space-y-4">
-                                    {groups.map(gName => {
+                                    {selectedProjectGroups.map(gName => {
                                         const items = groupedDataWithBg[gName];
                                         if(!items) return null;
                                         return (
