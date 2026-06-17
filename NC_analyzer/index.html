@@ -103,6 +103,14 @@
         const targetOctFreqs = [63, 125, 250, 500, 1000, 2000, 4000, 8000];
         const allFreqs = [63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000];
 
+        function entriesToObject(entries) {
+            const obj = {};
+            entries.forEach(([key, value]) => {
+                obj[key] = value;
+            });
+            return obj;
+        }
+
         function getLabelStr(f) {
             return f >= 1000 ? (f/1000).toString() + 'k' : f.toString();
         }
@@ -1126,7 +1134,7 @@
             const defaultProjectName = initState?.projects?.[0] || 'Project 1';
             const [projects, setProjects] = React.useState(initState?.projects || [defaultProjectName]);
             const [selectedProject, setSelectedProject] = React.useState(defaultProjectName);
-            const [groupProjects, setGroupProjects] = React.useState(() => initState?.groupProjects || Object.fromEntries((initState?.groups || ['Group 1', 'Group 2', 'Group 3']).map(g => [g, defaultProjectName])));
+            const [groupProjects, setGroupProjects] = React.useState(() => initState?.groupProjects || entriesToObject((initState?.groups || ['Group 1', 'Group 2', 'Group 3']).map(g => [g, defaultProjectName])));
             const [visibleProjects, setVisibleProjects] = React.useState(initState?.visibleProjects || (initState?.projects || [defaultProjectName]));
             const [editingProjectName, setEditingProjectName] = React.useState(null);
             const [editingProjectValue, setEditingProjectValue] = React.useState('');
@@ -1270,7 +1278,7 @@
                     dataItems: dataItems.filter(item => projectGroupSet.has(item.groupName)),
                     groups: projectGroups,
                     projects: [projectName],
-                    groupProjects: Object.fromEntries(projectGroups.map(g => [g, projectName])),
+                    groupProjects: entriesToObject(projectGroups.map(g => [g, projectName])),
                     visibleProjects: [projectName],
                     bgNoiseData: projectBgNoiseData,
                     bgCorrectionMethod,
@@ -1403,7 +1411,7 @@
             const buildMergedProjectData = (baseState, importedData) => {
                 const importedProjects = importedData.projects || ['Imported Project'];
                 const importedGroups = importedData.groups || [];
-                const importedGroupProjects = importedData.groupProjects || Object.fromEntries(importedGroups.map(g => [g, importedProjects[0]]));
+                const importedGroupProjects = importedData.groupProjects || entriesToObject(importedGroups.map(g => [g, importedProjects[0]]));
                 const projectMap = {};
                 const groupMap = {};
                 const nextProjects = [...baseState.projects];
@@ -1465,7 +1473,7 @@
                 setSelectedProject(importedProjects[0] || defaultProjectName);
                 setVisibleProjects(importedData.visibleProjects || importedProjects);
                 setGroups(importedGroups);
-                setGroupProjects(importedData.groupProjects || Object.fromEntries(importedGroups.map(g => [g, importedProjects[0] || defaultProjectName])));
+                setGroupProjects(importedData.groupProjects || entriesToObject(importedGroups.map(g => [g, importedProjects[0] || defaultProjectName])));
                 setDataItems(importedData.dataItems || []);
                 setBgNoiseData(importedData.bgNoiseData || {});
                 if(importedData.bgCorrectionMethod !== undefined) setBgCorrectionMethod(importedData.bgCorrectionMethod);
@@ -1568,7 +1576,7 @@
                     return;
                 }
                 setProjects(prev => prev.map(p => p === oldName ? newName : p));
-                setGroupProjects(prev => Object.fromEntries(Object.entries(prev).map(([g, p]) => [g, p === oldName ? newName : p])));
+                setGroupProjects(prev => entriesToObject(Object.entries(prev).map(([g, p]) => [g, p === oldName ? newName : p])));
                 setVisibleProjects(prev => prev.map(p => p === oldName ? newName : p));
                 if (selectedProject === oldName) setSelectedProject(newName);
                 setEditingProjectName(null);
