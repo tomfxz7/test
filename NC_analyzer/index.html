@@ -234,7 +234,7 @@
             return maxNcRequired < 15 ? "<15" : maxNcRequired;
         }
 
-        const GroupChart = ({ groupName, projectName, items, bgGraphItem, visibleNcCurves, lineWidth, pointSize, yAxisMaxAuto, yAxisMaxManual, isViewerMode, setDataItems, setGroups, onRemoveItem, onToggleVisible, onMoveItems, groups, projects, groupProjects, onDuplicateGroup, onMoveGroupToProject, onDragStart, onDragOver, onDrop, isDraggingThis }) => {
+        const GroupChart = ({ groupName, projectName, items, bgGraphItem, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, isViewerMode, setDataItems, setGroups, onRemoveItem, onToggleVisible, onMoveItems, groups, projects, groupProjects, onDuplicateGroup, onMoveGroupToProject, onDragStart, onDragOver, onDrop, isDraggingThis }) => {
             const chartRef = React.useRef(null);
             const chartInstance = React.useRef(null);
             
@@ -378,6 +378,18 @@
                     chart.data.labels = activeFreqs.map(getLabelStr);
                     chart.data.datasets = datasets;
                     chart.options.scales.y.max = yMax;
+                    chart.options.scales.y.border = chart.options.scales.y.border || {};
+                    chart.options.scales.x.border = chart.options.scales.x.border || {};
+                    chart.options.scales.y.title.font = chart.options.scales.y.title.font || {};
+                    chart.options.scales.x.title.font = chart.options.scales.x.title.font || {};
+                    chart.options.scales.y.ticks.font = chart.options.scales.y.ticks.font || {};
+                    chart.options.scales.x.ticks.font = chart.options.scales.x.ticks.font || {};
+                    chart.options.scales.y.border.width = axisLineWidth;
+                    chart.options.scales.x.border.width = axisLineWidth;
+                    chart.options.scales.y.title.font.size = axisLabelFontSize;
+                    chart.options.scales.x.title.font.size = axisLabelFontSize;
+                    chart.options.scales.y.ticks.font.size = tickFontSize;
+                    chart.options.scales.x.ticks.font.size = tickFontSize;
                     chart.options.plugins.title.text = groupName;
                     chart.update('none'); // アニメーションなしで即時更新
                 } else {
@@ -415,12 +427,16 @@
                                 y: {
                                     min: 0,
                                     max: yMax,
-                                    title: { display: true, text: '音圧レベル (dB)', font: { size: 14 } },
-                                    grid: { color: '#e5e7eb' }
+                                    title: { display: true, text: '音圧レベル (dB)', font: { size: axisLabelFontSize } },
+                                    ticks: { font: { size: tickFontSize } },
+                                    grid: { color: '#e5e7eb' },
+                                    border: { color: '#374151', width: axisLineWidth }
                                 },
                                 x: {
-                                    title: { display: true, text: '周波数帯域 (Hz)', font: { size: 14 } },
-                                    grid: { color: '#e5e7eb' }
+                                    title: { display: true, text: '周波数帯域 (Hz)', font: { size: axisLabelFontSize } },
+                                    ticks: { font: { size: tickFontSize } },
+                                    grid: { color: '#e5e7eb' },
+                                    border: { color: '#374151', width: axisLineWidth }
                                 }
                             },
                             plugins: {
@@ -479,7 +495,7 @@
                         plugins: [bgPlugin]
                     });
                 }
-            }, [items, bgGraphItem, groupName, visibleNcCurves, lineWidth, pointSize, yAxisMaxAuto, yAxisMaxManual, highlightedLabel, hiddenLabels, isolatedLabels, isMaximized]);
+            }, [items, bgGraphItem, groupName, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, highlightedLabel, hiddenLabels, isolatedLabels, isMaximized]);
 
             const handleContextMenu = (e) => {
                 e.preventDefault();
@@ -501,7 +517,6 @@
                     try {
                         const clipboardItem = new window.ClipboardItem({ "image/png": blob });
                         await navigator.clipboard.write([clipboardItem]);
-                        alert(`「${groupName}」のグラフ画像をコピーしました。`);
                     } catch (err) {
                         alert("コピーに失敗しました。グラフを右クリックして「画像をコピー」を選択してください。");
                     }
@@ -625,7 +640,7 @@
         };
 
         // --- スプレッドシート型編集コンポーネント ---
-        const DataTable = ({ displayItems, groups, projects, groupProjects, columns, setDataItems, setGroups, onRemoveItem, onToggleVisible, onMoveItems }) => {
+        const DataTable = ({ displayItems, groups, projects, groupProjects, columns, setDataItems, setGroups, onRemoveItem, onRemoveItems, onToggleVisible, onMoveItems }) => {
             const [selectedCells, setSelectedCells] = React.useState(new Set());
             const [activeCell, setActiveCell] = React.useState(null);
             const [isDragging, setIsDragging] = React.useState(false);
@@ -885,6 +900,18 @@
                 }
             };
 
+            const handleRemoveSelectedRows = () => {
+                const rows = getSelectedRowIndices();
+                if (rows.length === 0 || !onRemoveItems) return;
+                const selectedIds = rows.map(r => displayItems[r]?.id).filter(Boolean);
+                if (selectedIds.length === 0) return;
+                if (onRemoveItems(selectedIds)) {
+                    setSelectedCells(new Set());
+                    setActiveCell(null);
+                    setEditingCell(null);
+                }
+            };
+
             const handleMoveSelectedRows = (direction) => {
                 const rows = getSelectedRowIndices();
                 if (rows.length === 0) return;
@@ -1040,6 +1067,13 @@
                         >
                             ▼ 下へ
                         </button>
+                        <button 
+                            onClick={handleRemoveSelectedRows}
+                            disabled={selectedCells.size === 0 || !onRemoveItems}
+                            className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-700 text-xs rounded border border-red-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                            選択行を削除
+                        </button>
                     </div>
 
                     <div 
@@ -1125,13 +1159,11 @@
             const [groups, setGroups] = React.useState(initState?.groups || ['Group 1', 'Group 2', 'Group 3']);
             const defaultProjectName = initState?.projects?.[0] || 'Project 1';
             const [projects, setProjects] = React.useState(initState?.projects || [defaultProjectName]);
-            const [newProjectName, setNewProjectName] = React.useState('');
             const [selectedProject, setSelectedProject] = React.useState(defaultProjectName);
             const [groupProjects, setGroupProjects] = React.useState(() => initState?.groupProjects || Object.fromEntries((initState?.groups || ['Group 1', 'Group 2', 'Group 3']).map(g => [g, defaultProjectName])));
             const [visibleProjects, setVisibleProjects] = React.useState(initState?.visibleProjects || (initState?.projects || [defaultProjectName]));
             const [editingProjectName, setEditingProjectName] = React.useState(null);
             const [editingProjectValue, setEditingProjectValue] = React.useState('');
-            const [showProjectAddMenu, setShowProjectAddMenu] = React.useState(false);
             const projectImportInputRef = React.useRef(null);
             const [newGroupName, setNewGroupName] = React.useState('');
             const [editingGroup, setEditingGroup] = React.useState(null);
@@ -1143,6 +1175,9 @@
             const [visibleNcCurves, setVisibleNcCurves] = React.useState(initState?.visibleNcCurves || [15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65]);
             const [lineWidth, setLineWidth] = React.useState(initState?.lineWidth || 3);
             const [pointSize, setPointSize] = React.useState(initState?.pointSize || 4);
+            const [axisLineWidth, setAxisLineWidth] = React.useState(initState?.axisLineWidth || 2);
+            const [axisLabelFontSize, setAxisLabelFontSize] = React.useState(initState?.axisLabelFontSize || 14);
+            const [tickFontSize, setTickFontSize] = React.useState(initState?.tickFontSize || 12);
             const [yAxisMaxAuto, setYAxisMaxAuto] = React.useState(initState?.yAxisMaxAuto ?? true);
             const [yAxisMaxManual, setYAxisMaxManual] = React.useState(initState?.yAxisMaxManual || 100);
             const [viewerGridCols, setViewerGridCols] = React.useState(initState?.viewerGridCols || 2);
@@ -1236,6 +1271,9 @@
                     visibleNcCurves, 
                     lineWidth, 
                     pointSize, 
+                    axisLineWidth,
+                    axisLabelFontSize,
+                    tickFontSize,
                     yAxisMaxAuto, 
                     yAxisMaxManual,
                     viewerGridCols
@@ -1245,7 +1283,7 @@
             const handleExportJSON = () => {
                 const exportData = {
                     version: "1.4", dataItems, groups, projects, groupProjects, visibleProjects, bgNoiseData, bgCorrectionMethod, bgNoiseMode,
-                    groupOctaveModes, visibleNcCurves, lineWidth, pointSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols
+                    groupOctaveModes, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols
                 };
                 const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
                 const url = URL.createObjectURL(blob);
@@ -1281,6 +1319,9 @@
                     visibleNcCurves,
                     lineWidth,
                     pointSize,
+                    axisLineWidth,
+                    axisLabelFontSize,
+                    tickFontSize,
                     yAxisMaxAuto,
                     yAxisMaxManual,
                     viewerGridCols
@@ -1476,6 +1517,9 @@
                 if(importedData.visibleNcCurves !== undefined) setVisibleNcCurves(importedData.visibleNcCurves);
                 if(importedData.lineWidth !== undefined) setLineWidth(importedData.lineWidth);
                 if(importedData.pointSize !== undefined) setPointSize(importedData.pointSize);
+                if(importedData.axisLineWidth !== undefined) setAxisLineWidth(importedData.axisLineWidth);
+                if(importedData.axisLabelFontSize !== undefined) setAxisLabelFontSize(importedData.axisLabelFontSize);
+                if(importedData.tickFontSize !== undefined) setTickFontSize(importedData.tickFontSize);
                 if(importedData.yAxisMaxAuto !== undefined) setYAxisMaxAuto(importedData.yAxisMaxAuto);
                 if(importedData.yAxisMaxManual !== undefined) setYAxisMaxManual(importedData.yAxisMaxManual);
                 if(importedData.viewerGridCols !== undefined) setViewerGridCols(importedData.viewerGridCols);
@@ -1493,6 +1537,42 @@
                 e.target.value = null;
             };
 
+            const parseCsvLine = (line) => line.split(',').map(cell => cell.trim());
+
+            const parseFrequencyLabel = (label) => {
+                const normalized = label.trim().toLowerCase();
+                const match = normalized.match(/^(\d+(?:\.\d+)?)(k)?$/);
+                if (!match) return NaN;
+                const value = parseFloat(match[1]);
+                return match[2] ? value * 1000 : value;
+            };
+
+            const parseLpeqCsv = (lines) => {
+                const headerLine = lines.find(line => /^\s*Mode\s*,/i.test(line));
+                if (!headerLine) return null;
+
+                const headers = parseCsvLine(headerLine);
+                const lpeqLine = lines.find(line => /^\s*Lpeq\s*,/i.test(line));
+                if (!lpeqLine) return null;
+
+                const values = parseCsvLine(lpeqLine);
+                const rawFreqs = [];
+                const rawValues = [];
+                headers.forEach((header, index) => {
+                    const freq = parseFrequencyLabel(header);
+                    if (freq >= 63 && freq <= 8000) {
+                        const value = parseFloat(values[index]);
+                        if (!isNaN(value)) {
+                            rawFreqs.push(freq);
+                            rawValues.push(value);
+                        }
+                    }
+                });
+
+                if (rawFreqs.length === 0) return null;
+                return { isThirdOct: false, rawFreqs, rawValues };
+            };
+
             const readAndParseFile = (file) => {
                 return new Promise((resolve, reject) => {
                     const reader = new FileReader();
@@ -1500,6 +1580,13 @@
                         try {
                             const text = event.target.result;
                             const lines = text.split(/\r?\n/);
+
+                            const csvParsed = parseLpeqCsv(lines);
+                            if (csvParsed) {
+                                resolve({ ...csvParsed, fileName: file.name, rawText: text });
+                                return;
+                            }
+
                             let isThirdOct = false;
                             let hzLine = null;
                             let eqLine = null;
@@ -1543,15 +1630,6 @@
                 initEngine();
             }, []);
 
-            const handleAddProject = () => {
-                const name = newProjectName.trim();
-                if (!name || projects.includes(name)) return;
-                setProjects(prev => [...prev, name]);
-                setVisibleProjects(prev => [...new Set([...prev, name])]);
-                setSelectedProject(name);
-                setNewProjectName('');
-            };
-
             const handleCreateProjectFromPrompt = () => {
                 const name = window.prompt('新規プロジェクト名を入力してください', `Project ${projects.length + 1}`);
                 if (!name) return;
@@ -1560,7 +1638,6 @@
                 setProjects(prev => [...prev, trimmed]);
                 setVisibleProjects(prev => [...new Set([...prev, trimmed])]);
                 setSelectedProject(trimmed);
-                setShowProjectAddMenu(false);
             };
 
             const handleEditProjectStart = (projectName) => {
@@ -1584,6 +1661,33 @@
                 setVisibleProjects(prev => prev.map(p => p === oldName ? newName : p));
                 if (selectedProject === oldName) setSelectedProject(newName);
                 setEditingProjectName(null);
+            };
+
+            const handleCloseProject = (projectName) => {
+                if (projects.length <= 1) {
+                    alert('最後のプロジェクトは閉じられません。');
+                    return;
+                }
+                const targetGroups = groups.filter(g => (groupProjects[g] || defaultProjectName) === projectName);
+                if (targetGroups.length > 0 && !window.confirm(`「${projectName}」を閉じますか？\nこのプロジェクト内のグループとデータもワークスペースから削除されます。`)) {
+                    return;
+                }
+                const targetGroupSet = new Set(targetGroups);
+                const nextProjects = projects.filter(p => p !== projectName);
+                const nextSelectedProject = selectedProject === projectName ? nextProjects[0] : selectedProject;
+
+                setProjects(nextProjects);
+                setSelectedProject(nextSelectedProject);
+                setVisibleProjects(prev => {
+                    const nextVisible = prev.filter(p => p !== projectName && nextProjects.includes(p));
+                    return nextVisible.length > 0 ? nextVisible : [nextSelectedProject];
+                });
+                setGroups(prev => prev.filter(g => !targetGroupSet.has(g)));
+                setGroupProjects(prev => Object.fromEntries(Object.entries(prev).filter(([g]) => !targetGroupSet.has(g))));
+                setDataItems(prev => prev.filter(item => !targetGroupSet.has(item.groupName)));
+                setBgNoiseData(prev => Object.fromEntries(Object.entries(prev).filter(([g]) => !targetGroupSet.has(g))));
+                setGroupOctaveModes(prev => Object.fromEntries(Object.entries(prev).filter(([g]) => !targetGroupSet.has(g))));
+                if (editingProjectName === projectName) setEditingProjectName(null);
             };
 
             const handleProjectImportJSON = async (e) => {
@@ -1612,7 +1716,6 @@
                 } catch (err) {
                     alert('プロジェクトJSONの読み込みに失敗しました。');
                 }
-                setShowProjectAddMenu(false);
                 e.target.value = null;
             };
 
@@ -1790,6 +1893,14 @@
             const handleRemoveItem = (id) => {
                 if(!window.confirm("本当に削除しますか？")) return;
                 setDataItems(prev => prev.filter(item => item.id !== id));
+            };
+
+            const handleRemoveItems = (ids) => {
+                if (!ids || ids.length === 0) return false;
+                if(!window.confirm(`${ids.length}件のデータを削除しますか？`)) return false;
+                const idSet = new Set(ids);
+                setDataItems(prev => prev.filter(item => !idSet.has(item.id)));
+                return true;
             };
 
             const handleMoveItems = (selectedIds, direction) => {
@@ -2177,6 +2288,9 @@ def create_excel():
                                         visibleNcCurves={visibleNcCurves} 
                                         lineWidth={lineWidth} 
                                         pointSize={pointSize}
+                                        axisLineWidth={axisLineWidth}
+                                        axisLabelFontSize={axisLabelFontSize}
+                                        tickFontSize={tickFontSize}
                                         yAxisMaxAuto={yAxisMaxAuto}
                                         yAxisMaxManual={yAxisMaxManual}
                                         isViewerMode={true}
@@ -2269,20 +2383,15 @@ def create_excel():
                                     )}
                                 </div>
                             ))}
-                            <div className="relative">
-                                <button onClick={() => setShowProjectAddMenu(prev => !prev)} className="px-3 py-2 text-lg font-bold text-purple-600 hover:bg-purple-50" title="プロジェクトを追加">＋</button>
-                                {showProjectAddMenu && (
-                                    <div className="absolute left-0 top-full z-50 mt-1 bg-white border border-gray-200 rounded shadow-xl min-w-[200px] py-1 text-sm">
-                                        <button onClick={handleCreateProjectFromPrompt} className="block w-full text-left px-4 py-2 hover:bg-purple-50">新規プロジェクト作成</button>
-                                        <button onClick={() => projectImportInputRef.current?.click()} className="block w-full text-left px-4 py-2 hover:bg-purple-50">既存プロジェクトを読み込み</button>
-                                        <input ref={projectImportInputRef} type="file" className="hidden" accept=".json" multiple onChange={handleProjectImportJSON} />
-                                    </div>
-                                )}
-                            </div>
+                            <button onClick={handleCreateProjectFromPrompt} className="px-3 py-2 text-lg font-bold text-purple-600 hover:bg-purple-50" title="新規プロジェクトを作成">＋</button>
                         </div>
                         <div className="flex items-center gap-2 px-3 py-2 text-xs bg-gray-50">
                             <span className="font-bold text-gray-600">{selectedProject}</span>
+                            <button onClick={() => handleEditProjectStart(selectedProject)} className="px-2 py-1 bg-white hover:bg-gray-100 border border-gray-300 rounded" title="選択中のプロジェクト名を変更">✏️ 名前変更</button>
+                            <button onClick={() => handleCloseProject(selectedProject)} disabled={projects.length <= 1} className="px-2 py-1 bg-white hover:bg-red-50 border border-gray-300 rounded disabled:opacity-50 disabled:cursor-not-allowed" title="選択中のプロジェクトを閉じる">閉じる</button>
                             <button onClick={() => handleExportProjectJSON(selectedProject)} className="px-2 py-1 bg-white hover:bg-gray-100 border border-gray-300 rounded" title="このプロジェクトをJSON保存">💾 プロジェクト保存</button>
+                            <button onClick={() => projectImportInputRef.current?.click()} className="px-2 py-1 bg-white hover:bg-gray-100 border border-gray-300 rounded" title="プロジェクトJSONを読み込み">📂 プロジェクト読込</button>
+                            <input ref={projectImportInputRef} type="file" className="hidden" accept=".json" multiple onChange={handleProjectImportJSON} />
                             <button onClick={() => handleExportZip(selectedProject)} disabled={isExporting || selectedProjectGroups.length === 0} className="px-2 py-1 bg-white hover:bg-gray-100 border border-gray-300 rounded disabled:opacity-50" title="このプロジェクトの元データをZIP出力">🗜️ ZIP</button>
                             <button onClick={() => handleExportExcel(selectedProject)} disabled={!isPyodideReady || isExporting || selectedProjectGroups.length === 0} className="px-2 py-1 bg-white hover:bg-gray-100 border border-gray-300 rounded disabled:opacity-50" title="このプロジェクトをExcel出力">📊 Excel</button>
                         </div>
@@ -2295,7 +2404,7 @@ def create_excel():
                                 <h2 className="text-base font-semibold mb-2 text-gray-700">1. ファイルの追加</h2>
                                 <label className="flex flex-col items-center justify-center w-full h-16 border-2 border-blue-300 border-dashed rounded-lg cursor-pointer bg-blue-50 hover:bg-blue-100 transition">
                                     <span className="text-sm text-blue-700 font-medium">クリックしてファイル選択(複数可)</span>
-                                    <input type="file" className="hidden" accept=".txt" multiple onChange={handleFileUpload} />
+                                    <input type="file" className="hidden" accept=".txt,.csv" multiple onChange={handleFileUpload} />
                                 </label>
                             </div>
 
@@ -2315,6 +2424,27 @@ def create_excel():
                                         <div className="flex items-center space-x-1">
                                             <input type="range" min="0" max="15" value={pointSize} onChange={(e) => setPointSize(Number(e.target.value))} className="flex-1 w-full" />
                                             <span className="text-xs font-mono w-6 text-right">{pointSize}</span>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-semibold text-gray-600 mb-1">軸の太さ</label>
+                                        <div className="flex items-center space-x-1">
+                                            <input type="range" min="1" max="8" value={axisLineWidth} onChange={(e) => setAxisLineWidth(Number(e.target.value))} className="flex-1 w-full" />
+                                            <span className="text-xs font-mono w-6 text-right">{axisLineWidth}</span>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-semibold text-gray-600 mb-1">軸ラベル文字</label>
+                                        <div className="flex items-center space-x-1">
+                                            <input type="range" min="8" max="24" value={axisLabelFontSize} onChange={(e) => setAxisLabelFontSize(Number(e.target.value))} className="flex-1 w-full" />
+                                            <span className="text-xs font-mono w-6 text-right">{axisLabelFontSize}</span>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-semibold text-gray-600 mb-1">スケール文字</label>
+                                        <div className="flex items-center space-x-1">
+                                            <input type="range" min="8" max="22" value={tickFontSize} onChange={(e) => setTickFontSize(Number(e.target.value))} className="flex-1 w-full" />
+                                            <span className="text-xs font-mono w-6 text-right">{tickFontSize}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -2356,20 +2486,6 @@ def create_excel():
                                                 <span>NC{nc}</span>
                                             </label>
                                         ))}
-                                    </div>
-                                </div>
-
-                                <div className="border-t pt-2 mb-3">
-                                    <label className="block text-xs font-semibold text-gray-600 mb-1">プロジェクト管理</label>
-                                    <div className="flex space-x-2 mb-2">
-                                        <input type="text" value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} placeholder="新規プロジェクト名" className="flex-1 px-2 py-1 border border-gray-300 rounded focus:outline-none focus:border-purple-500 text-xs" />
-                                        <button onClick={handleAddProject} className="px-2 py-1 bg-purple-100 text-purple-700 rounded text-xs hover:bg-purple-200 font-medium">新規</button>
-                                    </div>
-                                    <div className="flex items-center space-x-2 text-xs">
-                                        <span className="text-gray-500">作業中:</span>
-                                        <select value={selectedProject} onChange={(e) => setSelectedProject(e.target.value)} className="flex-1 px-2 py-1 border border-gray-300 rounded bg-white focus:outline-none focus:border-purple-500">
-                                            {projects.map(p => <option key={p} value={p}>{p}</option>)}
-                                        </select>
                                     </div>
                                 </div>
 
@@ -2438,7 +2554,7 @@ def create_excel():
                                     </div>
 
                                     <div className="space-y-2">
-                                        {groups.map(g => (
+                                        {selectedProjectGroups.map(g => (
                                             <div key={g} className="bg-gray-50 p-1.5 rounded border border-gray-200">
                                                 <div className="flex items-center justify-between mb-1 border-b border-gray-200 pb-1">
                                                     <span className="font-bold text-gray-700 text-xs truncate max-w-[80px]" title={g}>{g}</span>
@@ -2458,7 +2574,7 @@ def create_excel():
                                                     <span className="w-8 text-gray-500">暗騒音:</span>
                                                     <label className="cursor-pointer bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 py-0.5 px-1.5 rounded shadow-sm">
                                                         選択
-                                                        <input type="file" className="hidden" accept=".txt" onChange={(e) => handleBgFileUpload(e, g)} />
+                                                        <input type="file" className="hidden" accept=".txt,.csv" onChange={(e) => handleBgFileUpload(e, g)} />
                                                     </label>
                                                     <span className="ml-1 text-gray-400 truncate flex-1" title={bgNoiseData[g]?.fileName}>
                                                         {bgNoiseData[g] ? `✓ ${bgNoiseData[g].fileName}` : "未設定"}
@@ -2500,6 +2616,7 @@ def create_excel():
                                                 groupProjects={groupProjects}
                                                 setDataItems={setDataItems}
                                                 onRemoveItem={handleRemoveItem}
+                                                onRemoveItems={handleRemoveItems}
                                                 onToggleVisible={handleToggleVisible}
                                                 onMoveItems={handleMoveItems}
                                             />
@@ -2530,6 +2647,9 @@ def create_excel():
                                                 visibleNcCurves={visibleNcCurves} 
                                                 lineWidth={lineWidth} 
                                                 pointSize={pointSize}
+                                                axisLineWidth={axisLineWidth}
+                                                axisLabelFontSize={axisLabelFontSize}
+                                                tickFontSize={tickFontSize}
                                                 yAxisMaxAuto={yAxisMaxAuto}
                                                 yAxisMaxManual={yAxisMaxManual}
                                                 isViewerMode={false}
