@@ -1626,6 +1626,11 @@
             const [workspaceFileName, setWorkspaceFileName] = React.useState('NC_Report_Settings.json');
             const [workspaceSaveStatus, setWorkspaceSaveStatus] = React.useState('');
             const [workspaceLastSavedAt, setWorkspaceLastSavedAt] = React.useState(null);
+            const undoStackRef = React.useRef([]);
+            const redoStackRef = React.useRef([]);
+            const lastHistorySnapshotRef = React.useRef(null);
+            const isRestoringHistoryRef = React.useRef(false);
+            const [historyVersion, setHistoryVersion] = React.useState(0);
             const [newGroupName, setNewGroupName] = React.useState('');
             const [editingGroup, setEditingGroup] = React.useState(null);
             const [editingGroupName, setEditingGroupName] = React.useState('');
@@ -1790,7 +1795,7 @@
             };
 
             const getWorkspaceExportData = () => ({
-                version: "1.4", dataItems, groups, projects, groupProjects, visibleProjects, bgNoiseData, bgCorrectionMethod, bgNoiseMode,
+                version: "1.4", dataItems, groups, projects, selectedProject, groupProjects, visibleProjects, bgNoiseData, bgCorrectionMethod, bgNoiseMode,
                 groupOctaveModes, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols
             });
 
@@ -2091,7 +2096,8 @@ ${err?.message || err}`);
                 const importedProjects = importedData.projects || [defaultProjectName];
                 const importedGroups = importedData.groups || ['Group 1'];
                 setProjects(importedProjects);
-                setSelectedProject(importedProjects[0] || defaultProjectName);
+                const importedSelectedProject = importedData.selectedProject && importedProjects.includes(importedData.selectedProject) ? importedData.selectedProject : importedProjects[0];
+                setSelectedProject(importedSelectedProject || defaultProjectName);
                 setVisibleProjects(importedData.visibleProjects || importedProjects);
                 setGroups(importedGroups);
                 setGroupProjects(importedData.groupProjects || Object.fromEntries(importedGroups.map(g => [g, importedProjects[0] || defaultProjectName])));
@@ -2154,6 +2160,76 @@ ${err?.message || err}`);
                     }
                 }
             };
+
+            const getHistorySnapshot = React.useCallback(() => JSON.stringify(getWorkspaceExportData()), [
+                dataItems, groups, projects, selectedProject, groupProjects, visibleProjects, bgNoiseData, bgCorrectionMethod, bgNoiseMode,
+                groupOctaveModes, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols
+            ]);
+
+            const applyHistorySnapshot = React.useCallback((snapshot) => {
+                isRestoringHistoryRef.current = true;
+                applyWorkspaceData(JSON.parse(snapshot));
+            }, []);
+
+            const canUndo = historyVersion >= 0 && undoStackRef.current.length > 0;
+            const canRedo = historyVersion >= 0 && redoStackRef.current.length > 0;
+
+            React.useEffect(() => {
+                const snapshot = getHistorySnapshot();
+                if (lastHistorySnapshotRef.current === null) {
+                    lastHistorySnapshotRef.current = snapshot;
+                    return;
+                }
+                if (isRestoringHistoryRef.current) {
+                    lastHistorySnapshotRef.current = snapshot;
+                    isRestoringHistoryRef.current = false;
+                    setHistoryVersion(version => version + 1);
+                    return;
+                }
+                if (snapshot === lastHistorySnapshotRef.current) return;
+                undoStackRef.current.push(lastHistorySnapshotRef.current);
+                if (undoStackRef.current.length > 100) undoStackRef.current.shift();
+                redoStackRef.current = [];
+                lastHistorySnapshotRef.current = snapshot;
+                setHistoryVersion(version => version + 1);
+            }, [getHistorySnapshot]);
+
+            const handleUndo = React.useCallback(() => {
+                const previousSnapshot = undoStackRef.current.pop();
+                if (!previousSnapshot) return;
+                const currentSnapshot = getHistorySnapshot();
+                redoStackRef.current.push(currentSnapshot);
+                applyHistorySnapshot(previousSnapshot);
+                setHistoryVersion(version => version + 1);
+            }, [applyHistorySnapshot, getHistorySnapshot]);
+
+            const handleRedo = React.useCallback(() => {
+                const nextSnapshot = redoStackRef.current.pop();
+                if (!nextSnapshot) return;
+                const currentSnapshot = getHistorySnapshot();
+                undoStackRef.current.push(currentSnapshot);
+                if (undoStackRef.current.length > 100) undoStackRef.current.shift();
+                applyHistorySnapshot(nextSnapshot);
+                setHistoryVersion(version => version + 1);
+            }, [applyHistorySnapshot, getHistorySnapshot]);
+
+            React.useEffect(() => {
+                const handleHistoryShortcut = (event) => {
+                    const key = event.key.toLowerCase();
+                    if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+                    if (key === 'z') {
+                        event.preventDefault();
+                        if (event.shiftKey) handleRedo();
+                        else handleUndo();
+                    } else if (key === 'y') {
+                        event.preventDefault();
+                        handleRedo();
+                    }
+                };
+                window.addEventListener('keydown', handleHistoryShortcut);
+                return () => window.removeEventListener('keydown', handleHistoryShortcut);
+            }, [handleUndo, handleRedo]);
+
 
             const parseCsvLine = (line) => line.split(',').map(cell => cell.trim());
 
@@ -2983,6 +3059,22 @@ def create_excel():
                                     📁 ワークスペース読込
                                 </button>
                                 <input ref={workspaceImportInputRef} type="file" className="hidden" accept=".json" onChange={handleImportJSON} />
+                                <button
+                                    onClick={handleUndo}
+                                    disabled={!canUndo}
+                                    className={`py-1 px-3 text-xs font-bold rounded shadow-sm transition-colors ${canUndo ? 'bg-amber-100 hover:bg-amber-200 text-amber-700' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
+                                    title="元に戻す (Ctrl+Z)"
+                                >
+                                    ↶ Undo
+                                </button>
+                                <button
+                                    onClick={handleRedo}
+                                    disabled={!canRedo}
+                                    className={`py-1 px-3 text-xs font-bold rounded shadow-sm transition-colors ${canRedo ? 'bg-amber-100 hover:bg-amber-200 text-amber-700' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
+                                    title="やり直し (Ctrl+Y / Ctrl+Shift+Z)"
+                                >
+                                    ↷ Redo
+                                </button>
                                 <button 
                                     onClick={handleExportJSON}
                                     className="py-1 px-3 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-bold rounded shadow-sm transition-colors"
