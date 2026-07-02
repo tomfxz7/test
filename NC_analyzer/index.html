@@ -662,16 +662,16 @@
                 return { canvas: exportCanvas, chart: exportChart };
             };
 
-            const getLegendLayout = (ctx, width, scale, columns = 1) => {
+            const getLegendLayout = (ctx, width, scale, columns = 1, fixedHeight = null, fontSize = 12 * scale) => {
                 const columnCount = Math.max(1, columns);
                 const padding = 12 * scale;
                 const columnGap = 18 * scale;
-                const lineHeight = 18 * scale;
+                const lineHeight = fontSize * 1.5;
                 const itemGap = 8 * scale;
                 const markerWidth = 24 * scale;
                 const columnWidth = (width - padding * 2 - columnGap * (columnCount - 1)) / columnCount;
                 const textOffset = markerWidth + 8 * scale;
-                ctx.font = `${12 * scale}px sans-serif`;
+                ctx.font = `${fontSize}px sans-serif`;
 
                 const rows = legendItems.map(item => ({
                     item,
@@ -682,24 +682,34 @@
 
                 const requiredColumnWidth = Math.max(columnWidth, ...rows.map(row => row.width));
                 const columnsData = Array.from({ length: columnCount }, () => ({ rows: [], height: padding }));
+                const maxColumnHeight = fixedHeight ? Math.max(padding, fixedHeight - padding) : null;
+                const rowsPerColumn = fixedHeight ? Infinity : Math.ceil(rows.length / columnCount);
+                let targetColumn = 0;
+
                 rows.forEach(row => {
-                    const targetColumn = columnsData.reduce((bestIndex, column, index) => column.height < columnsData[bestIndex].height ? index : bestIndex, 0);
+                    const column = columnsData[targetColumn];
+                    const shouldMoveByHeight = maxColumnHeight !== null && column.rows.length > 0 && column.height + row.height > maxColumnHeight;
+                    const shouldMoveByCount = maxColumnHeight === null && column.rows.length >= rowsPerColumn;
+                    if ((shouldMoveByHeight || shouldMoveByCount) && targetColumn < columnCount - 1) {
+                        targetColumn += 1;
+                    }
                     columnsData[targetColumn].rows.push(row);
                     columnsData[targetColumn].height += row.height;
                 });
+
                 const contentHeight = Math.max(...columnsData.map(column => column.height), padding);
                 const height = Math.max(1, contentHeight + padding);
-                return { columnsData, height, padding, columnGap, columnWidth, requiredColumnWidth, lineHeight, itemGap, markerWidth, textOffset };
+                return { columnsData, height, padding, columnGap, columnWidth, requiredColumnWidth, lineHeight, itemGap, markerWidth, textOffset, fontSize };
             };
 
-            const drawLegend = (ctx, x, y, width, scale, columns = 1, fixedHeight = null) => {
-                const layout = getLegendLayout(ctx, width, scale, columns);
+            const drawLegend = (ctx, x, y, width, scale, columns = 1, fixedHeight = null, fontSize = 12 * scale) => {
+                const layout = getLegendLayout(ctx, width, scale, columns, fixedHeight, fontSize);
                 const canvasHeight = fixedHeight || layout.height;
                 ctx.save();
                 ctx.translate(x, y);
                 ctx.fillStyle = '#ffffff';
                 ctx.fillRect(0, 0, width, canvasHeight);
-                ctx.font = `${12 * scale}px sans-serif`;
+                ctx.font = `${fontSize}px sans-serif`;
                 ctx.textBaseline = 'top';
                 layout.columnsData.forEach((column, columnIndex) => {
                     const columnX = layout.padding + columnIndex * (layout.requiredColumnWidth + layout.columnGap);
@@ -728,31 +738,31 @@
                 return layout.height;
             };
 
-            const createLegendCanvas = (columnWidth = 260, scale = 2, columns = 1, fixedHeight = null) => {
+            const createLegendCanvas = (columnWidth = 260, scale = 2, columns = 1, fixedHeight = null, fontSize = 12 * scale) => {
                 const columnCount = Math.max(1, columns);
                 const measureCanvas = document.createElement('canvas');
                 const measureCtx = measureCanvas.getContext('2d');
                 const basePadding = 12 * scale;
                 const baseColumnGap = 18 * scale;
                 const initialWidth = basePadding * 2 + columnWidth * columnCount + baseColumnGap * (columnCount - 1);
-                const initialLayout = getLegendLayout(measureCtx, initialWidth, scale, columnCount);
+                const initialLayout = getLegendLayout(measureCtx, initialWidth, scale, columnCount, fixedHeight, fontSize);
                 const adjustedColumnWidth = Math.max(columnWidth, Math.ceil(initialLayout.requiredColumnWidth));
                 const width = Math.ceil(initialLayout.padding * 2 + adjustedColumnWidth * columnCount + initialLayout.columnGap * (columnCount - 1));
-                const layout = getLegendLayout(measureCtx, width, scale, columnCount);
+                const layout = getLegendLayout(measureCtx, width, scale, columnCount, fixedHeight, fontSize);
                 const canvas = document.createElement('canvas');
                 canvas.width = width;
                 canvas.height = Math.ceil(fixedHeight || layout.height);
                 const ctx = canvas.getContext('2d');
-                drawLegend(ctx, 0, 0, width, scale, columnCount, fixedHeight);
+                drawLegend(ctx, 0, 0, width, scale, columnCount, fixedHeight, fontSize);
                 return canvas;
             };
 
-            const getLegendColumnsForHeight = (columnWidth, scale, targetHeight, maxColumns = 8) => {
+            const getLegendColumnsForHeight = (columnWidth, scale, targetHeight, maxColumns = 8, fontSize = 12 * scale) => {
                 const measureCanvas = document.createElement('canvas');
                 const measureCtx = measureCanvas.getContext('2d');
                 for (let columns = 1; columns <= maxColumns; columns++) {
                     const width = 12 * scale * 2 + columnWidth * columns + 18 * scale * (columns - 1);
-                    const layout = getLegendLayout(measureCtx, width, scale, columns);
+                    const layout = getLegendLayout(measureCtx, width, scale, columns, targetHeight, fontSize);
                     if (layout.height <= targetHeight) return columns;
                 }
                 return maxColumns;
@@ -789,8 +799,9 @@
                 const chartCanvas = chartResult.canvas;
                 const legendColumnWidth = 260;
                 const legendScale = 2;
-                const legendColumns = getLegendColumnsForHeight(legendColumnWidth, legendScale, chartCanvas.height);
-                const legendCanvas = createLegendCanvas(legendColumnWidth, legendScale, legendColumns, chartCanvas.height);
+                const legendFontSize = getExportDimensions(880).scaleSize(axisLabelFontSize, 1);
+                const legendColumns = getLegendColumnsForHeight(legendColumnWidth, legendScale, chartCanvas.height, 8, legendFontSize);
+                const legendCanvas = createLegendCanvas(legendColumnWidth, legendScale, legendColumns, chartCanvas.height, legendFontSize);
                 const padding = 24;
                 const combinedCanvas = document.createElement('canvas');
                 combinedCanvas.width = chartCanvas.width + legendCanvas.width + padding;
