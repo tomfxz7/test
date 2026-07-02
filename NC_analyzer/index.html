@@ -267,6 +267,17 @@
             });
         }
 
+        function getRequiredNcForFrequency(freq, value) {
+            if (value === null || isNaN(value)) return null;
+            let requiredNc = 15;
+            for (let nc = 15; nc <= 70; nc++) {
+                const threshold = getNcCurveInterpolated(nc, [freq])[0];
+                if (value <= threshold) return nc;
+                if (nc === 70 && value > threshold) requiredNc = ">70";
+            }
+            return requiredNc;
+        }
+
         function calculateNC(allFreqsValues) {
             let maxNcRequired = 14; 
             for (let i = 0; i < allFreqs.length; i++) {
@@ -302,6 +313,7 @@
             const [isolatedLabels, setIsolatedLabels] = React.useState(new Set());
             const [legendItems, setLegendItems] = React.useState([]);
             const [legendCopyColumns, setLegendCopyColumns] = React.useState(1);
+            const [showLegendCopyModal, setShowLegendCopyModal] = React.useState(false);
             
             const [isMaximized, setIsMaximized] = React.useState(false);
             const [showDataModal, setShowDataModal] = React.useState(false);
@@ -766,8 +778,9 @@
                 copyCanvasToClipboard(exportResult.canvas, () => exportResult.chart.destroy());
             };
 
-            const handleCopyLegendImage = () => {
-                copyCanvasToClipboard(createLegendCanvas(260, 2, legendCopyColumns));
+            const handleCopyLegendImage = (columns = legendCopyColumns) => {
+                copyCanvasToClipboard(createLegendCanvas(260, 2, columns));
+                setShowLegendCopyModal(false);
             };
 
             const handleCopyCombinedImage = () => {
@@ -866,23 +879,12 @@
                             <button onClick={handleCopyGraphImage} className="text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 w-8 h-8 rounded shadow-sm border border-gray-300 flex items-center justify-center" title="グラフ単体をコピー" aria-label="グラフ単体をコピー">
                                 📈
                             </button>
-                            <button onClick={handleCopyLegendImage} className="text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 w-8 h-8 rounded shadow-sm border border-gray-300 flex items-center justify-center" title="凡例単体をコピー" aria-label="凡例単体をコピー">
+                            <button onClick={() => setShowLegendCopyModal(true)} className="text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 w-8 h-8 rounded shadow-sm border border-gray-300 flex items-center justify-center" title="凡例単体をコピー" aria-label="凡例単体をコピー">
                                 🏷️
                             </button>
                             <button onClick={handleCopyCombinedImage} className="text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 w-8 h-8 rounded shadow-sm border border-gray-300 flex items-center justify-center" title="グラフと凡例を一体でコピー" aria-label="グラフと凡例を一体でコピー">
                                 🖼️
                             </button>
-                            <label className="flex items-center gap-1 text-[10px] text-gray-600" title="凡例単体コピーの段数">
-                                <span>凡例</span>
-                                <select
-                                    value={legendCopyColumns}
-                                    onChange={(e) => setLegendCopyColumns(Number(e.target.value))}
-                                    className="h-8 rounded border border-gray-300 bg-white px-1 text-xs"
-                                    aria-label="凡例単体コピーの段数"
-                                >
-                                    {[1, 2, 3, 4, 5, 6].map(count => <option key={count} value={count}>{count}段</option>)}
-                                </select>
-                            </label>
                             <button onClick={() => setIsMaximized(!isMaximized)} className="text-sm bg-blue-50 hover:bg-blue-100 text-blue-700 w-8 h-8 rounded shadow-sm border border-blue-200 font-bold flex items-center justify-center" title={isMaximized ? "縮小" : "最大化"} aria-label={isMaximized ? "縮小" : "最大化"}>
                                 {isMaximized ? "🗕" : "⛶"}
                             </button>
@@ -909,6 +911,35 @@
                             </div>
                         </div>
                     </div>
+
+                    {showLegendCopyModal && (
+                        <div className="fixed inset-0 z-[210] bg-black bg-opacity-40 flex items-center justify-center p-4">
+                            <div className="bg-white rounded-xl shadow-2xl w-[360px] max-w-full overflow-hidden">
+                                <div className="p-4 border-b bg-gray-50 flex justify-between items-center">
+                                    <h3 className="font-bold text-gray-700">凡例コピーの段数</h3>
+                                    <button onClick={() => setShowLegendCopyModal(false)} className="text-gray-500 hover:text-gray-800 text-xl font-bold">&times;</button>
+                                </div>
+                                <div className="p-4 space-y-3">
+                                    <p className="text-xs text-gray-500">凡例単体を画像コピーするときの段数を選択してください。</p>
+                                    <div className="grid grid-cols-3 gap-2">
+                                        {[1, 2, 3, 4, 5, 6].map(count => (
+                                            <button
+                                                key={count}
+                                                onClick={() => setLegendCopyColumns(count)}
+                                                className={`px-3 py-2 rounded-lg border text-sm font-bold ${legendCopyColumns === count ? 'bg-blue-100 border-blue-400 text-blue-700' : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'}`}
+                                            >
+                                                {count}段
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                                <div className="p-3 border-t bg-gray-50 flex justify-end gap-2">
+                                    <button onClick={() => setShowLegendCopyModal(false)} className="px-4 py-1.5 rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 font-bold">キャンセル</button>
+                                    <button onClick={() => handleCopyLegendImage(legendCopyColumns)} className="px-4 py-1.5 rounded bg-blue-600 hover:bg-blue-700 text-white font-bold">コピー</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
                     {showDataModal && (
                         <div className="fixed inset-0 z-[200] bg-black bg-opacity-40 flex items-center justify-center p-4">
@@ -978,7 +1009,27 @@
             const [isDragging, setIsDragging] = React.useState(false);
             const [editingCell, setEditingCell] = React.useState(null);
             const [contextMenu, setContextMenu] = React.useState(null);
+            const [detailItem, setDetailItem] = React.useState(null);
             const tableContainerRef = React.useRef(null);
+
+            const getDetailRows = (item) => {
+                if (!item) return [];
+                const activeFreqs = item.appliedOctMode === '1/3' ? allFreqs : targetOctFreqs;
+                const resultText = String(item.ncResult ?? '');
+                const numericNc = resultText === '>70' ? 70 : (resultText === '<15' ? 15 : Number(resultText));
+                return activeFreqs.map(freq => {
+                    const idx = allFreqs.indexOf(freq);
+                    const value = item.values?.[idx];
+                    const referenceValue = Number.isFinite(numericNc) ? getNcCurveInterpolated(numericNc, [freq])[0] : null;
+                    const requiredNc = getRequiredNcForFrequency(freq, value);
+                    const isCause = resultText === '>70'
+                        ? requiredNc === '>70'
+                        : Number.isFinite(Number(resultText)) && requiredNc === Number(resultText);
+                    return { freq, value, referenceValue, requiredNc, isCause };
+                }).filter(row => row.value !== null && row.value !== undefined && !isNaN(row.value));
+            };
+
+            const formatDetailValue = (value) => (value === null || value === undefined || isNaN(value) ? '-' : Math.round(value * 10) / 10);
 
             const getSelectedRowIndices = () => {
                 const rows = new Set();
@@ -1337,11 +1388,16 @@
                 if (col.id === 'fileName') {
                     return (
                         <td key={cIndex} className={cellClass} onMouseDown={(e) => handleMouseDown(e, rIndex, cIndex)} onMouseEnter={() => handleMouseEnter(rIndex, cIndex)}>
-                            <div className="flex items-center space-x-1" title={item.fileName}>
+                            <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); setDetailItem(item); }}
+                                className="flex items-center space-x-1 w-full text-left hover:text-blue-700 hover:underline"
+                                title={`${item.fileName} のオクターブ分析結果を表示`}
+                            >
                                 <span className="truncate">{item.fileName}</span>
                                 {item.isOriginalThird && <span className="text-[9px] font-bold text-gray-500 bg-gray-200 px-1 rounded flex-shrink-0 no-underline">1/3</span>}
                                 {item.isCorrected && <span className="text-[9px] font-bold text-blue-500 bg-blue-100 px-1 rounded flex-shrink-0 no-underline">補正</span>}
-                            </div>
+                            </button>
                         </td>
                     );
                 }
@@ -1494,6 +1550,49 @@
                             </div>
                         )}
                     </div>
+
+                    {detailItem && (
+                        <div className="fixed inset-0 z-[220] bg-black bg-opacity-40 flex items-center justify-center p-4">
+                            <div className="bg-white rounded-xl shadow-2xl w-[760px] max-w-full max-h-[85vh] flex flex-col overflow-hidden">
+                                <div className="p-4 border-b bg-gray-50 flex justify-between items-start gap-4 shrink-0">
+                                    <div className="min-w-0">
+                                        <h3 className="font-bold text-gray-800 text-lg truncate" title={detailItem.fileName}>{detailItem.fileName}</h3>
+                                        <p className="text-xs text-gray-500 mt-1">
+                                            オクターブ分析結果 / 判定: <span className="font-bold text-blue-700">NC-{detailItem.ncResult}</span>
+                                            <span className="ml-2">凡例: {detailItem.legendName}</span>
+                                        </p>
+                                    </div>
+                                    <button onClick={() => setDetailItem(null)} className="text-gray-500 hover:text-gray-800 text-xl font-bold shrink-0">&times;</button>
+                                </div>
+                                <div className="p-4 overflow-auto">
+                                    <p className="text-xs text-gray-500 mb-3">赤字の周波数が、このデータのNC判定値を決めた原因周波数です。リファレンス値は判定NC値の規格値です。</p>
+                                    <table className="w-full text-sm border-collapse">
+                                        <thead className="bg-gray-100 text-gray-700 sticky top-0">
+                                            <tr>
+                                                <th className="border border-gray-300 px-3 py-2 text-left">周波数</th>
+                                                <th className="border border-gray-300 px-3 py-2 text-right">分析値 (dB)</th>
+                                                <th className="border border-gray-300 px-3 py-2 text-right">NC-{detailItem.ncResult} リファレンス値</th>
+                                                <th className="border border-gray-300 px-3 py-2 text-center">この周波数の判定</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {getDetailRows(detailItem).map(row => (
+                                                <tr key={row.freq} className={row.isCause ? 'bg-red-50 text-red-700 font-bold' : ''}>
+                                                    <td className="border border-gray-300 px-3 py-2">{getLabelStr(row.freq)} Hz</td>
+                                                    <td className="border border-gray-300 px-3 py-2 text-right">{formatDetailValue(row.value)}</td>
+                                                    <td className="border border-gray-300 px-3 py-2 text-right">{formatDetailValue(row.referenceValue)}</td>
+                                                    <td className="border border-gray-300 px-3 py-2 text-center">{row.requiredNc ? `NC-${row.requiredNc}` : '-'}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <div className="p-3 border-t bg-gray-50 flex justify-end shrink-0">
+                                    <button onClick={() => setDetailItem(null)} className="px-5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg">閉じる</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
             );
         };
@@ -1504,6 +1603,7 @@
             const defaultProjectName = initState?.projects?.[0] || 'Project 1';
             const [projects, setProjects] = React.useState(initState?.projects || [defaultProjectName]);
             const [htmlExportProjects, setHtmlExportProjects] = React.useState(initState?.projects || [defaultProjectName]);
+            const [showHtmlExportModal, setShowHtmlExportModal] = React.useState(false);
             const [selectedProject, setSelectedProject] = React.useState(defaultProjectName);
             const [groupProjects, setGroupProjects] = React.useState(() => initState?.groupProjects || Object.fromEntries((initState?.groups || ['Group 1', 'Group 2', 'Group 3']).map(g => [g, defaultProjectName])));
             const [visibleProjects, setVisibleProjects] = React.useState(initState?.visibleProjects || (initState?.projects || [defaultProjectName]));
@@ -1865,6 +1965,7 @@ ${err?.message || err}`);
                 a.click();
                 document.body.removeChild(a);
                 URL.revokeObjectURL(url);
+                setShowHtmlExportModal(false);
             };
 
             const handleExportZip = async (projectNameFilter = null) => {
@@ -2866,7 +2967,7 @@ def create_excel():
                                     👁️ プレビュー
                                 </button>
                                 <button 
-                                    onClick={handleExportHTML}
+                                    onClick={() => setShowHtmlExportModal(true)}
                                     className="py-1 px-3 bg-blue-100 hover:bg-blue-200 text-blue-700 text-xs font-bold rounded shadow-sm transition-colors"
                                 >
                                     🌐 HTML出力
@@ -2879,28 +2980,43 @@ def create_excel():
                                 {workspaceSaveStatus && <span className="ml-2">{workspaceSaveStatus}</span>}
                                 {workspaceLastSavedAt && <span className="ml-2">最終保存: {new Date(workspaceLastSavedAt).toLocaleString()}</span>}
                             </div>
-                            <div className="flex flex-col items-end gap-1 text-[10px] text-gray-600">
-                                <div className="flex items-center gap-2">
-                                    <span className="font-bold">HTML出力プロジェクト:</span>
-                                    <button onClick={() => setHtmlExportProjects([...projects])} className="text-blue-600 hover:underline">全選択</button>
-                                    <button onClick={() => setHtmlExportProjects([])} className="text-blue-600 hover:underline">全解除</button>
-                                </div>
-                                <div className="flex flex-wrap justify-end gap-x-3 gap-y-1 max-w-xl">
-                                    {projects.map(p => (
-                                        <label key={p} className="flex items-center gap-1 cursor-pointer">
-                                            <input
-                                                type="checkbox"
-                                                checked={htmlExportProjects.includes(p)}
-                                                onChange={() => setHtmlExportProjects(prev => prev.includes(p) ? prev.filter(v => v !== p) : [...prev, p])}
-                                                className="rounded text-blue-600 w-3 h-3"
-                                            />
-                                            <span>{p}</span>
-                                        </label>
-                                    ))}
-                                </div>
-                            </div>
                        </div>
                     </header>
+
+                    {showHtmlExportModal && (
+                        <div className="fixed inset-0 z-[230] bg-black bg-opacity-40 flex items-center justify-center p-4">
+                            <div className="bg-white rounded-xl shadow-2xl w-[480px] max-w-full overflow-hidden">
+                                <div className="p-4 border-b bg-gray-50 flex justify-between items-center">
+                                    <h3 className="font-bold text-gray-800">HTML出力するプロジェクト</h3>
+                                    <button onClick={() => setShowHtmlExportModal(false)} className="text-gray-500 hover:text-gray-800 text-xl font-bold">&times;</button>
+                                </div>
+                                <div className="p-4 space-y-3">
+                                    <p className="text-xs text-gray-500">出力HTMLに含めるプロジェクトを選択してください。</p>
+                                    <div className="flex items-center gap-2 text-xs">
+                                        <button onClick={() => setHtmlExportProjects([...projects])} className="px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded border border-gray-300 font-bold">全選択</button>
+                                        <button onClick={() => setHtmlExportProjects([])} className="px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded border border-gray-300 font-bold">全解除</button>
+                                    </div>
+                                    <div className="max-h-64 overflow-y-auto border border-gray-200 rounded-lg p-2 space-y-1">
+                                        {projects.map(p => (
+                                            <label key={p} className="flex items-center gap-2 cursor-pointer hover:bg-blue-50 rounded px-2 py-1 text-sm">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={htmlExportProjects.includes(p)}
+                                                    onChange={() => setHtmlExportProjects(prev => prev.includes(p) ? prev.filter(v => v !== p) : [...prev, p])}
+                                                    className="rounded text-blue-600"
+                                                />
+                                                <span>{p}</span>
+                                            </label>
+                                        ))}
+                                    </div>
+                                </div>
+                                <div className="p-3 border-t bg-gray-50 flex justify-end gap-2">
+                                    <button onClick={() => setShowHtmlExportModal(false)} className="px-4 py-1.5 rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 font-bold">キャンセル</button>
+                                    <button onClick={handleExportHTML} className="px-4 py-1.5 rounded bg-blue-600 hover:bg-blue-700 text-white font-bold">HTML出力</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
                     {errorMsg && (
                         <div className="bg-red-50 text-red-600 p-2 rounded mb-3 whitespace-pre-wrap border border-red-200 text-sm">
