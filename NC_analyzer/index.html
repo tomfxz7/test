@@ -505,14 +505,89 @@
             };
 
             const handleCopyImage = () => {
-                const canvas = chartRef.current;
-                if (!canvas) return;
-                canvas.toBlob(async (blob) => {
+                const sourceChart = chartInstance.current;
+                if (!sourceChart) return;
+
+                const exportCanvas = document.createElement('canvas');
+                const sourceWidth = sourceChart.width || chartRef.current?.clientWidth || 1200;
+                const sourceHeight = sourceChart.height || chartRef.current?.clientHeight || 700;
+                const exportWidth = 1200;
+                const exportHeight = Math.max(1, Math.round(exportWidth * (sourceHeight / sourceWidth)));
+                exportCanvas.width = exportWidth;
+                exportCanvas.height = exportHeight;
+                const exportCtx = exportCanvas.getContext('2d');
+                const exportDatasets = sourceChart.data.datasets.map(dataset => ({
+                    ...dataset,
+                    data: [...dataset.data],
+                    borderDash: dataset.borderDash ? [...dataset.borderDash] : undefined
+                }));
+
+                const bgPlugin = {
+                    id: 'exportCanvasBackgroundColor',
+                    beforeDraw: (chart) => {
+                        const {ctx} = chart;
+                        ctx.save();
+                        ctx.globalCompositeOperation = 'destination-over';
+                        ctx.fillStyle = '#ffffff';
+                        ctx.fillRect(0, 0, chart.width, chart.height);
+                        ctx.restore();
+                    }
+                };
+
+                const exportChart = new Chart(exportCtx, {
+                    type: 'line',
+                    data: {
+                        labels: [...sourceChart.data.labels],
+                        datasets: exportDatasets
+                    },
+                    options: {
+                        responsive: false,
+                        maintainAspectRatio: false,
+                        animation: false,
+                        scales: {
+                            y: {
+                                min: 0,
+                                max: sourceChart.options.scales.y.max,
+                                title: { display: true, text: '音圧レベル (dB)', font: { size: axisLabelFontSize } },
+                                ticks: { font: { size: tickFontSize } },
+                                border: { width: axisLineWidth },
+                                grid: { color: '#e5e7eb' }
+                            },
+                            x: {
+                                title: { display: true, text: '周波数帯域 (Hz)', font: { size: axisLabelFontSize } },
+                                ticks: { font: { size: tickFontSize } },
+                                border: { width: axisLineWidth },
+                                grid: { color: '#e5e7eb' }
+                            }
+                        },
+                        plugins: {
+                            legend: {
+                                position: 'right',
+                                labels: {
+                                    usePointStyle: true,
+                                    pointStyle: 'line',
+                                    generateLabels: (chart) => {
+                                        const labels = Chart.defaults.plugins.legend.labels.generateLabels(chart);
+                                        labels.forEach(label => { label.lineWidth = 8; });
+                                        return labels;
+                                    }
+                                }
+                            },
+                            title: { display: true, text: groupName, font: { size: 16 } }
+                        }
+                    },
+                    plugins: [bgPlugin]
+                });
+
+                exportChart.update('none');
+                exportCanvas.toBlob(async (blob) => {
                     try {
                         const clipboardItem = new window.ClipboardItem({ "image/png": blob });
                         await navigator.clipboard.write([clipboardItem]);
                     } catch (err) {
                         alert("コピーに失敗しました。グラフを右クリックして「画像をコピー」を選択してください。");
+                    } finally {
+                        exportChart.destroy();
                     }
                 });
             };
@@ -539,11 +614,11 @@
                     onDragOver={!isMaximized && isViewerMode ? onDragOver : undefined}
                     onDrop={!isMaximized && isViewerMode ? onDrop : undefined}
                 >
-                    <div className="flex justify-between items-center shrink-0 flex-wrap gap-2">
-                        <h3 className="font-bold text-gray-700 text-lg flex items-center">
+                    <div className="flex flex-col items-start shrink-0 gap-2">
+                        <h3 className="font-bold text-gray-700 text-lg flex items-center min-w-0 w-full">
                             {(!isMaximized && isViewerMode) && (
-                                <span 
-                                    className="drag-handle mr-2 text-gray-400 hover:text-gray-600 bg-gray-100 hover:bg-gray-200 rounded p-1 cursor-grab flex items-center justify-center transition-colors" 
+                                <span
+                                    className="drag-handle mr-2 text-gray-400 hover:text-gray-600 bg-gray-100 hover:bg-gray-200 rounded p-1 cursor-grab flex items-center justify-center transition-colors shrink-0"
                                     title="ドラッグして並べ替え"
                                     onMouseEnter={() => setIsDraggable(true)}
                                     onMouseLeave={() => setIsDraggable(false)}
@@ -553,18 +628,18 @@
                                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 8h16M4 16h16"></path></svg>
                                 </span>
                             )}
-                            <span>{groupName}</span>
-                            {projectName && <span className="ml-2 text-[10px] font-semibold text-purple-700 bg-purple-50 border border-purple-200 rounded px-1.5 py-0.5">{projectName}</span>}
-                            <button onClick={() => setShowDataModal(true)} className="ml-3 text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 py-1 px-2 rounded shadow-sm border border-indigo-200 font-bold">
-                                ⚙️ データ設定
-                            </button>
+                            <span className="truncate" title={groupName}>{groupName}</span>
+                            {projectName && <span className="ml-2 text-[10px] font-semibold text-purple-700 bg-purple-50 border border-purple-200 rounded px-1.5 py-0.5 shrink-0">{projectName}</span>}
                         </h3>
                         <div className="flex items-center space-x-2">
-                            <button onClick={handleCopyImage} className="text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 py-1 px-3 rounded shadow-sm border border-gray-300">
-                                📷 コピー
+                            <button onClick={() => setShowDataModal(true)} className="text-sm bg-indigo-50 hover:bg-indigo-100 text-indigo-700 w-8 h-8 rounded shadow-sm border border-indigo-200 font-bold flex items-center justify-center" title="データ設定" aria-label="データ設定">
+                                ⚙️
                             </button>
-                            <button onClick={() => setIsMaximized(!isMaximized)} className="text-sm bg-blue-50 hover:bg-blue-100 text-blue-700 py-1 px-3 rounded shadow-sm border border-blue-200 font-bold">
-                                {isMaximized ? "🗕 縮小" : "⛶ 最大化"}
+                            <button onClick={handleCopyImage} className="text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 w-8 h-8 rounded shadow-sm border border-gray-300 flex items-center justify-center" title="グラフ画像をコピー" aria-label="グラフ画像をコピー">
+                                📷
+                            </button>
+                            <button onClick={() => setIsMaximized(!isMaximized)} className="text-sm bg-blue-50 hover:bg-blue-100 text-blue-700 w-8 h-8 rounded shadow-sm border border-blue-200 font-bold flex items-center justify-center" title={isMaximized ? "縮小" : "最大化"} aria-label={isMaximized ? "縮小" : "最大化"}>
+                                {isMaximized ? "🗕" : "⛶"}
                             </button>
                         </div>
                     </div>
