@@ -1621,6 +1621,7 @@
             const [editingProjectName, setEditingProjectName] = React.useState(null);
             const [editingProjectValue, setEditingProjectValue] = React.useState('');
             const projectImportInputRef = React.useRef(null);
+            const workspaceImportInputRef = React.useRef(null);
             const [workspaceFileHandle, setWorkspaceFileHandle] = React.useState(null);
             const [workspaceFileName, setWorkspaceFileName] = React.useState('NC_Report_Settings.json');
             const [workspaceSaveStatus, setWorkspaceSaveStatus] = React.useState('');
@@ -2120,10 +2121,40 @@ ${err?.message || err}`);
                     applyWorkspaceData(importedData);
                     setWorkspaceFileName(file.name || 'NC_Report_Settings.json');
                     setWorkspaceFileHandle(null);
+                    try { await workspaceDbSet(WORKSPACE_HANDLE_KEY, null); } catch (persistErr) { console.warn('保存先情報のクリアに失敗しました:', persistErr); }
+                    setWorkspaceSaveStatus('ワークスペースを読み込みました。このブラウザでは読み込んだファイルを上書き先に自動設定できません。');
                 } catch (err) {
                     alert("JSONファイルの読み込みに失敗しました。ファイル形式が正しいか確認してください。");
                 }
                 e.target.value = null;
+            };
+
+            const handleOpenWorkspace = async () => {
+                if (!window.showOpenFilePicker) {
+                    workspaceImportInputRef.current?.click();
+                    return;
+                }
+                try {
+                    const [fileHandle] = await window.showOpenFilePicker({
+                        types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }],
+                        excludeAcceptAllOption: false,
+                        multiple: false
+                    });
+                    if (!fileHandle) return;
+                    const hasPermission = await verifyFileHandlePermission(fileHandle, false);
+                    if (!hasPermission) throw new Error('読み込みファイルへのアクセス権限がありません。');
+                    const file = await fileHandle.getFile();
+                    const importedData = await readJsonFile(file);
+                    applyWorkspaceData(importedData);
+                    await persistWorkspaceHandle(fileHandle);
+                    setWorkspaceSaveStatus(`ワークスペースを読み込み、上書き先を設定しました: ${fileHandle.name}`);
+                } catch (err) {
+                    if (err?.name !== 'AbortError') {
+                        console.error('ワークスペースの読み込みに失敗しました:', err);
+                        alert(`ワークスペースの読み込みに失敗しました。ファイル形式が正しいか確認してください。
+${err?.message || err}`);
+                    }
+                }
             };
 
             const parseCsvLine = (line) => line.split(',').map(cell => cell.trim());
@@ -2946,10 +2977,14 @@ def create_excel():
                         </div>
                         <div className="flex flex-col space-y-2 items-end">
                             <div className="flex space-x-2">
-                                <label className="cursor-pointer py-1 px-3 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-bold rounded shadow-sm transition-colors">
+                                <button
+                                    onClick={handleOpenWorkspace}
+                                    className="py-1 px-3 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-bold rounded shadow-sm transition-colors"
+                                    title="読み込んだファイルを、以後の上書き保存先にします"
+                                >
                                     📁 ワークスペース読込
-                                    <input type="file" className="hidden" accept=".json" onChange={handleImportJSON} />
-                                </label>
+                                </button>
+                                <input ref={workspaceImportInputRef} type="file" className="hidden" accept=".json" onChange={handleImportJSON} />
                                 <button 
                                     onClick={handleExportJSON}
                                     className="py-1 px-3 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-bold rounded shadow-sm transition-colors"
