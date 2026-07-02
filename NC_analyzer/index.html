@@ -60,6 +60,65 @@
         const initState = getInitialState();
         const isExportedViewerMode = initState !== null; // 出力されたHTMLビューアーかどうかの判定
 
+
+        const WORKSPACE_DB_NAME = 'nc_analyzer_workspace_db';
+        const WORKSPACE_DB_VERSION = 1;
+        const WORKSPACE_DB_STORE = 'workspace_data';
+        const WORKSPACE_HANDLE_KEY = 'workspace_file_handle_v1';
+        const WORKSPACE_FILE_NAME_KEY = 'workspace_file_name_v1';
+
+        const openWorkspaceDB = () => new Promise((resolve, reject) => {
+            if (typeof indexedDB === 'undefined') {
+                reject(new Error('IndexedDB is not supported in this environment.'));
+                return;
+            }
+            const request = indexedDB.open(WORKSPACE_DB_NAME, WORKSPACE_DB_VERSION);
+            request.onupgradeneeded = (event) => {
+                const db = event.target.result;
+                if (!db.objectStoreNames.contains(WORKSPACE_DB_STORE)) db.createObjectStore(WORKSPACE_DB_STORE);
+            };
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error || new Error('Failed to open IndexedDB.'));
+        });
+
+        const workspaceDbGet = async (key) => {
+            const db = await openWorkspaceDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(WORKSPACE_DB_STORE, 'readonly');
+                const store = tx.objectStore(WORKSPACE_DB_STORE);
+                const request = store.get(key);
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error || new Error('IndexedDB read failed.'));
+                tx.oncomplete = () => db.close();
+                tx.onabort = tx.onerror = () => db.close();
+            });
+        };
+
+        const workspaceDbSet = async (key, value) => {
+            const db = await openWorkspaceDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(WORKSPACE_DB_STORE, 'readwrite');
+                const store = tx.objectStore(WORKSPACE_DB_STORE);
+                store.put(value, key);
+                tx.oncomplete = () => { db.close(); resolve(); };
+                tx.onabort = tx.onerror = () => { db.close(); reject(tx.error || new Error('IndexedDB write failed.')); };
+            });
+        };
+
+        const verifyFileHandlePermission = async (fileHandle, readWrite = false) => {
+            if (!fileHandle) return false;
+            const options = readWrite ? { mode: 'readwrite' } : {};
+            if (typeof fileHandle.queryPermission === 'function') {
+                const queryState = await fileHandle.queryPermission(options);
+                if (queryState === 'granted') return true;
+                if (queryState === 'denied' && typeof fileHandle.requestPermission !== 'function') return false;
+            }
+            if (typeof fileHandle.requestPermission === 'function') {
+                return (await fileHandle.requestPermission(options)) === 'granted';
+            }
+            return true;
+        };
+
         // NC曲線の基準テーブル
         const ncBaseTables = {
             15: [47, 36, 29, 22, 17, 14, 12, 11],
@@ -1453,6 +1512,8 @@
             const projectImportInputRef = React.useRef(null);
             const [workspaceFileHandle, setWorkspaceFileHandle] = React.useState(null);
             const [workspaceFileName, setWorkspaceFileName] = React.useState('NC_Report_Settings.json');
+            const [workspaceSaveStatus, setWorkspaceSaveStatus] = React.useState('');
+            const [workspaceLastSavedAt, setWorkspaceLastSavedAt] = React.useState(null);
             const [newGroupName, setNewGroupName] = React.useState('');
             const [editingGroup, setEditingGroup] = React.useState(null);
             const [editingGroupName, setEditingGroupName] = React.useState('');
@@ -1477,6 +1538,36 @@
             const [isExporting, setIsExporting] = React.useState(false);
 
             const activeViewerMode = isExportedViewerMode || isPreviewMode; // ビューアーとして機能させるかどうか
+
+            React.useEffect(() => {
+                if (isExportedViewerMode) return;
+                const loadWorkspaceHandle = async () => {
+                    try {
+                        const [savedHandle, savedName] = await Promise.all([
+                            workspaceDbGet(WORKSPACE_HANDLE_KEY),
+                            workspaceDbGet(WORKSPACE_FILE_NAME_KEY)
+                        ]);
+                        if (savedHandle) setWorkspaceFileHandle(savedHandle);
+                        if (savedName) setWorkspaceFileName(savedName);
+                    } catch (err) {
+                        console.warn('保存先情報の復元に失敗しました:', err);
+                    }
+                };
+                loadWorkspaceHandle();
+            }, []);
+
+            const persistWorkspaceHandle = React.useCallback(async (fileHandle) => {
+                setWorkspaceFileHandle(fileHandle);
+                setWorkspaceFileName(fileHandle?.name || 'NC_Report_Settings.json');
+                try {
+                    await Promise.all([
+                        workspaceDbSet(WORKSPACE_HANDLE_KEY, fileHandle),
+                        workspaceDbSet(WORKSPACE_FILE_NAME_KEY, fileHandle?.name || 'NC_Report_Settings.json')
+                    ]);
+                } catch (err) {
+                    console.warn('保存先情報の記録に失敗しました:', err);
+                }
+            }, []);
 
             React.useEffect(() => {
                 setVisibleProjects(prev => {
@@ -1606,18 +1697,31 @@
             };
 
             const writeWorkspaceFile = async (fileHandle) => {
+                const hasPermission = await verifyFileHandlePermission(fileHandle, true);
+                if (!hasPermission) throw new Error('保存先ファイルへの書き込み権限がありません。');
                 const writable = await fileHandle.createWritable();
-                await writable.write(JSON.stringify(getWorkspaceExportData(), null, 2));
-                await writable.close();
+                try {
+                    await writable.write(JSON.stringify(getWorkspaceExportData(), null, 2));
+                } finally {
+                    await writable.close();
+                }
+            };
+
+            const markWorkspaceSaved = (fileHandle, messagePrefix = '保存しました') => {
+                const now = new Date();
+                setWorkspaceLastSavedAt(now.toISOString());
+                setWorkspaceSaveStatus(`${messagePrefix}: ${fileHandle?.name || workspaceFileName} (${now.toLocaleTimeString()})`);
             };
 
             const handleExportJSON = () => {
                 downloadWorkspaceJSON('NC_Report_Settings.json');
+                setWorkspaceSaveStatus('ダウンロード保存しました。ブラウザのダウンロード先を確認してください。');
             };
 
             const handleSaveWorkspaceAs = async () => {
                 if (!window.showSaveFilePicker) {
                     downloadWorkspaceJSON(workspaceFileName);
+                    setWorkspaceSaveStatus('このブラウザは保存先の保持に非対応です。JSONをダウンロードしました。');
                     return;
                 }
                 try {
@@ -1626,23 +1730,39 @@
                         types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }]
                     });
                     await writeWorkspaceFile(fileHandle);
-                    setWorkspaceFileHandle(fileHandle);
-                    setWorkspaceFileName(fileHandle.name || workspaceFileName);
+                    await persistWorkspaceHandle(fileHandle);
+                    markWorkspaceSaved(fileHandle, '保存先を設定して保存しました');
                 } catch (err) {
-                    if (err?.name !== 'AbortError') alert('ワークスペースの保存に失敗しました。');
+                    if (err?.name !== 'AbortError') {
+                        console.error('ワークスペースの保存に失敗しました:', err);
+                        setWorkspaceSaveStatus('保存に失敗しました。');
+                        alert(`ワークスペースの保存に失敗しました。
+${err?.message || err}`);
+                    }
                 }
             };
 
             const handleOverwriteWorkspace = async () => {
+                if (!window.showSaveFilePicker) {
+                    downloadWorkspaceJSON(workspaceFileName);
+                    setWorkspaceSaveStatus('このブラウザは上書き保存に非対応です。JSONをダウンロードしました。');
+                    return;
+                }
                 if (!workspaceFileHandle) {
+                    setWorkspaceSaveStatus('上書き保存先が未設定です。保存先を選択してください。');
                     await handleSaveWorkspaceAs();
                     return;
                 }
                 try {
                     await writeWorkspaceFile(workspaceFileHandle);
+                    markWorkspaceSaved(workspaceFileHandle, '上書き保存しました');
                 } catch (err) {
-                    alert('ワークスペースの上書き保存に失敗しました。保存先を選び直してください。');
+                    console.error('ワークスペースの上書き保存に失敗しました:', err);
                     setWorkspaceFileHandle(null);
+                    try { await workspaceDbSet(WORKSPACE_HANDLE_KEY, null); } catch (persistErr) { console.warn('保存先情報のクリアに失敗しました:', persistErr); }
+                    setWorkspaceSaveStatus('上書き保存に失敗しました。保存先を選び直してください。');
+                    alert(`ワークスペースの上書き保存に失敗しました。保存先を選び直してください。
+${err?.message || err}`);
                 }
             };
 
@@ -2751,6 +2871,13 @@ def create_excel():
                                 >
                                     🌐 HTML出力
                                 </button>
+                            </div>
+                            <div className="text-[11px] text-gray-500 text-right max-w-xl">
+                                <span className={workspaceFileHandle ? 'text-emerald-700 font-semibold' : 'text-amber-700 font-semibold'}>
+                                    {workspaceFileHandle ? `上書き先: ${workspaceFileName}` : '上書き先: 未設定'}
+                                </span>
+                                {workspaceSaveStatus && <span className="ml-2">{workspaceSaveStatus}</span>}
+                                {workspaceLastSavedAt && <span className="ml-2">最終保存: {new Date(workspaceLastSavedAt).toLocaleString()}</span>}
                             </div>
                             <div className="flex flex-col items-end gap-1 text-[10px] text-gray-600">
                                 <div className="flex items-center gap-2">
