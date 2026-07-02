@@ -513,13 +513,17 @@
                 const sourceHeight = sourceChart.height || chartRef.current?.clientHeight || 700;
                 const exportWidth = 1200;
                 const exportHeight = Math.max(1, Math.round(exportWidth * (sourceHeight / sourceWidth)));
+                const exportScale = exportWidth / sourceWidth;
+                const scaleSize = (value, min = 0) => Math.max(min, Math.round(value * exportScale * 10) / 10);
                 exportCanvas.width = exportWidth;
                 exportCanvas.height = exportHeight;
                 const exportCtx = exportCanvas.getContext('2d');
                 const exportDatasets = sourceChart.data.datasets.map(dataset => ({
                     ...dataset,
                     data: [...dataset.data],
-                    borderDash: dataset.borderDash ? [...dataset.borderDash] : undefined
+                    borderWidth: scaleSize(dataset.borderWidth || lineWidth, 1),
+                    pointRadius: scaleSize(dataset.pointRadius || 0, 0),
+                    borderDash: dataset.borderDash ? dataset.borderDash.map(value => scaleSize(value, 1)) : undefined
                 }));
 
                 const bgPlugin = {
@@ -548,15 +552,15 @@
                             y: {
                                 min: 0,
                                 max: sourceChart.options.scales.y.max,
-                                title: { display: true, text: '音圧レベル (dB)', font: { size: axisLabelFontSize } },
-                                ticks: { font: { size: tickFontSize } },
-                                border: { width: axisLineWidth },
+                                title: { display: true, text: '音圧レベル (dB)', font: { size: scaleSize(axisLabelFontSize, 1) } },
+                                ticks: { font: { size: scaleSize(tickFontSize, 1) } },
+                                border: { width: scaleSize(axisLineWidth, 1) },
                                 grid: { color: '#e5e7eb' }
                             },
                             x: {
-                                title: { display: true, text: '周波数帯域 (Hz)', font: { size: axisLabelFontSize } },
-                                ticks: { font: { size: tickFontSize } },
-                                border: { width: axisLineWidth },
+                                title: { display: true, text: '周波数帯域 (Hz)', font: { size: scaleSize(axisLabelFontSize, 1) } },
+                                ticks: { font: { size: scaleSize(tickFontSize, 1) } },
+                                border: { width: scaleSize(axisLineWidth, 1) },
                                 grid: { color: '#e5e7eb' }
                             }
                         },
@@ -566,14 +570,15 @@
                                 labels: {
                                     usePointStyle: true,
                                     pointStyle: 'line',
+                                    font: { size: scaleSize(12, 1) },
                                     generateLabels: (chart) => {
                                         const labels = Chart.defaults.plugins.legend.labels.generateLabels(chart);
-                                        labels.forEach(label => { label.lineWidth = 8; });
+                                        labels.forEach(label => { label.lineWidth = scaleSize(8, 1); });
                                         return labels;
                                     }
                                 }
                             },
-                            title: { display: true, text: groupName, font: { size: 16 } }
+                            title: { display: true, text: groupName, font: { size: scaleSize(16, 1) } }
                         }
                     },
                     plugins: [bgPlugin]
@@ -998,7 +1003,7 @@
                 if (direction === 'down' && rows[rows.length - 1] === displayItems.length - 1) return;
                 
                 const selectedIds = rows.map(r => displayItems[r].id);
-                onMoveItems(selectedIds, direction);
+                onMoveItems(selectedIds, direction, displayItems.map(item => item.id));
                 
                 const offset = direction === 'up' ? -1 : 1;
                 const newSet = new Set();
@@ -1982,12 +1987,40 @@
                 setDataItems(prev => prev.filter(item => !ids.includes(item.id)));
             };
 
-            const handleMoveItems = (selectedIds, direction) => {
+            const handleMoveItems = (selectedIds, direction, orderedDisplayIds = null) => {
                 setDataItems(prev => {
                     const arr = [...prev];
+                    const selectedIdSet = new Set(selectedIds);
+
+                    if (orderedDisplayIds && orderedDisplayIds.length > 0) {
+                        const visibleIds = orderedDisplayIds.filter(id => arr.some(item => item.id === id));
+                        const selectedVisibleIndices = visibleIds
+                            .map((id, index) => selectedIdSet.has(id) ? index : -1)
+                            .filter(index => index !== -1);
+                        if (selectedVisibleIndices.length === 0) return prev;
+
+                        if (direction === 'up') {
+                            if (selectedVisibleIndices[0] === 0) return prev;
+                            selectedVisibleIndices.forEach(index => {
+                                [visibleIds[index - 1], visibleIds[index]] = [visibleIds[index], visibleIds[index - 1]];
+                            });
+                        } else if (direction === 'down') {
+                            if (selectedVisibleIndices[selectedVisibleIndices.length - 1] === visibleIds.length - 1) return prev;
+                            for (let i = selectedVisibleIndices.length - 1; i >= 0; i--) {
+                                const index = selectedVisibleIndices[i];
+                                [visibleIds[index + 1], visibleIds[index]] = [visibleIds[index], visibleIds[index + 1]];
+                            }
+                        }
+
+                        const visibleItemsById = Object.fromEntries(arr.filter(item => visibleIds.includes(item.id)).map(item => [item.id, item]));
+                        const reorderedVisibleItems = visibleIds.map(id => visibleItemsById[id]);
+                        let visibleCursor = 0;
+                        return arr.map(item => orderedDisplayIds.includes(item.id) ? reorderedVisibleItems[visibleCursor++] : item);
+                    }
+
                     const selectedIndices = selectedIds.map(id => arr.findIndex(i => i.id === id)).filter(idx => idx !== -1).sort((a, b) => a - b);
                     if (selectedIndices.length === 0) return prev;
-                    
+
                     if (direction === 'up') {
                         if (selectedIndices[0] === 0) return prev;
                         for (let i = 0; i < selectedIndices.length; i++) {
