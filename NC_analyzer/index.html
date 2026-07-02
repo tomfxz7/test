@@ -1653,19 +1653,17 @@
 
             React.useEffect(() => {
                 if (isExportedViewerMode) return;
-                const loadWorkspaceHandle = async () => {
+                const clearCachedWorkspaceHandle = async () => {
                     try {
-                        const [savedHandle, savedName] = await Promise.all([
-                            workspaceDbGet(WORKSPACE_HANDLE_KEY),
-                            workspaceDbGet(WORKSPACE_FILE_NAME_KEY)
+                        await Promise.all([
+                            workspaceDbSet(WORKSPACE_HANDLE_KEY, null),
+                            workspaceDbSet(WORKSPACE_FILE_NAME_KEY, 'NC_Report_Settings.json')
                         ]);
-                        if (savedHandle) setWorkspaceFileHandle(savedHandle);
-                        if (savedName) setWorkspaceFileName(savedName);
                     } catch (err) {
-                        console.warn('保存先情報の復元に失敗しました:', err);
+                        console.warn('保存先情報の初期化に失敗しました:', err);
                     }
                 };
-                loadWorkspaceHandle();
+                clearCachedWorkspaceHandle();
             }, []);
 
             const persistWorkspaceHandle = React.useCallback(async (fileHandle) => {
@@ -1673,11 +1671,11 @@
                 setWorkspaceFileName(fileHandle?.name || 'NC_Report_Settings.json');
                 try {
                     await Promise.all([
-                        workspaceDbSet(WORKSPACE_HANDLE_KEY, fileHandle),
-                        workspaceDbSet(WORKSPACE_FILE_NAME_KEY, fileHandle?.name || 'NC_Report_Settings.json')
+                        workspaceDbSet(WORKSPACE_HANDLE_KEY, null),
+                        workspaceDbSet(WORKSPACE_FILE_NAME_KEY, 'NC_Report_Settings.json')
                     ]);
                 } catch (err) {
-                    console.warn('保存先情報の記録に失敗しました:', err);
+                    console.warn('保存先情報のキャッシュ削除に失敗しました:', err);
                 }
             }, []);
 
