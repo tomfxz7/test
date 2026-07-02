@@ -241,6 +241,7 @@
             const [highlightedLabel, setHighlightedLabel] = React.useState(null);
             const [hiddenLabels, setHiddenLabels] = React.useState(new Set());
             const [isolatedLabels, setIsolatedLabels] = React.useState(new Set());
+            const [legendItems, setLegendItems] = React.useState([]);
             
             const [isMaximized, setIsMaximized] = React.useState(false);
             const [showDataModal, setShowDataModal] = React.useState(false);
@@ -371,6 +372,12 @@
                 }
 
                 const yMax = yAxisMaxAuto ? Math.max(50, Math.ceil((maxVal + 5) / 10) * 10) : yAxisMaxManual;
+                setLegendItems(datasets.map(dataset => ({
+                    label: dataset.label,
+                    color: dataset.borderColor,
+                    dash: dataset.borderDash || [],
+                    hidden: !!dataset.hidden
+                })));
 
                 // chartInstanceを再作成せず、dataとoptionsを更新して描画を維持する
                 if (chartInstance.current) {
@@ -435,6 +442,7 @@
                             },
                             plugins: {
                                 legend: { 
+                                    display: false,
                                     position: 'right',
                                     labels: {
                                         usePointStyle: true,
@@ -504,17 +512,23 @@
                 }
             };
 
-            const handleCopyImage = () => {
+            const getExportDimensions = (targetWidth = 1200) => {
                 const sourceChart = chartInstance.current;
-                if (!sourceChart) return;
-
-                const exportCanvas = document.createElement('canvas');
-                const sourceWidth = sourceChart.width || chartRef.current?.clientWidth || 1200;
-                const sourceHeight = sourceChart.height || chartRef.current?.clientHeight || 700;
-                const exportWidth = 1200;
+                const sourceWidth = sourceChart?.width || chartRef.current?.clientWidth || targetWidth;
+                const sourceHeight = sourceChart?.height || chartRef.current?.clientHeight || 700;
+                const exportWidth = targetWidth;
                 const exportHeight = Math.max(1, Math.round(exportWidth * (sourceHeight / sourceWidth)));
                 const exportScale = exportWidth / sourceWidth;
                 const scaleSize = (value, min = 0) => Math.max(min, Math.round(value * exportScale * 10) / 10);
+                return { exportWidth, exportHeight, exportScale, scaleSize };
+            };
+
+            const createExportChartCanvas = (targetWidth = 1200) => {
+                const sourceChart = chartInstance.current;
+                if (!sourceChart) return null;
+
+                const { exportWidth, exportHeight, scaleSize } = getExportDimensions(targetWidth);
+                const exportCanvas = document.createElement('canvas');
                 exportCanvas.width = exportWidth;
                 exportCanvas.height = exportHeight;
                 const exportCtx = exportCanvas.getContext('2d');
@@ -565,19 +579,7 @@
                             }
                         },
                         plugins: {
-                            legend: {
-                                position: 'right',
-                                labels: {
-                                    usePointStyle: true,
-                                    pointStyle: 'line',
-                                    font: { size: scaleSize(12, 1) },
-                                    generateLabels: (chart) => {
-                                        const labels = Chart.defaults.plugins.legend.labels.generateLabels(chart);
-                                        labels.forEach(label => { label.lineWidth = scaleSize(8, 1); });
-                                        return labels;
-                                    }
-                                }
-                            },
+                            legend: { display: false },
                             title: { display: true, text: groupName, font: { size: scaleSize(16, 1) } }
                         }
                     },
@@ -585,15 +587,150 @@
                 });
 
                 exportChart.update('none');
-                exportCanvas.toBlob(async (blob) => {
+                return { canvas: exportCanvas, chart: exportChart };
+            };
+
+            const getLegendLayout = (ctx, width, scale) => {
+                const padding = 12 * scale;
+                const lineHeight = 18 * scale;
+                const itemGap = 8 * scale;
+                const markerWidth = 24 * scale;
+                const textX = padding + markerWidth + 8 * scale;
+                const maxTextWidth = Math.max(40 * scale, width - textX - padding);
+                ctx.font = `${12 * scale}px sans-serif`;
+                const rows = legendItems.map(item => {
+                    const lines = [];
+                    let current = '';
+                    Array.from(item.label).forEach(char => {
+                        const candidate = current + char;
+                        if (ctx.measureText(candidate).width <= maxTextWidth || !current) {
+                            current = candidate;
+                        } else {
+                            lines.push(current);
+                            current = char;
+                        }
+                    });
+                    if (current) lines.push(current);
+                    return { item, lines: lines.length ? lines : [''] };
+                });
+                const height = Math.max(1, padding * 2 + rows.reduce((sum, row) => sum + row.lines.length * lineHeight + itemGap, 0));
+                return { rows, height, padding, lineHeight, itemGap, markerWidth, textX };
+            };
+
+            const drawLegend = (ctx, x, y, width, scale) => {
+                const layout = getLegendLayout(ctx, width, scale);
+                ctx.save();
+                ctx.translate(x, y);
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, width, layout.height);
+                ctx.font = `${12 * scale}px sans-serif`;
+                ctx.textBaseline = 'top';
+                let cursorY = layout.padding;
+                layout.rows.forEach(({ item, lines }) => {
+                    const markerY = cursorY + 7 * scale;
+                    ctx.save();
+                    ctx.globalAlpha = item.hidden ? 0.35 : 1;
+                    ctx.strokeStyle = item.color || '#64748b';
+                    ctx.lineWidth = Math.max(1, 3 * scale);
+                    ctx.setLineDash((item.dash || []).map(value => value * scale));
+                    ctx.beginPath();
+                    ctx.moveTo(layout.padding, markerY);
+                    ctx.lineTo(layout.padding + layout.markerWidth, markerY);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                    ctx.fillStyle = '#374151';
+                    lines.forEach((line, index) => {
+                        ctx.fillText(line, layout.textX, cursorY + index * layout.lineHeight);
+                    });
+                    ctx.restore();
+                    cursorY += lines.length * layout.lineHeight + layout.itemGap;
+                });
+                ctx.restore();
+                return layout.height;
+            };
+
+            const createLegendCanvas = (width = 420, scale = 2) => {
+                const measureCanvas = document.createElement('canvas');
+                const measureCtx = measureCanvas.getContext('2d');
+                const layout = getLegendLayout(measureCtx, width, scale);
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = Math.ceil(layout.height);
+                const ctx = canvas.getContext('2d');
+                drawLegend(ctx, 0, 0, width, scale);
+                return canvas;
+            };
+
+            const copyCanvasToClipboard = (canvas, cleanup = null) => {
+                if (!canvas) return;
+                canvas.toBlob(async (blob) => {
                     try {
                         const clipboardItem = new window.ClipboardItem({ "image/png": blob });
                         await navigator.clipboard.write([clipboardItem]);
                     } catch (err) {
                         alert("コピーに失敗しました。グラフを右クリックして「画像をコピー」を選択してください。");
                     } finally {
-                        exportChart.destroy();
+                        if (cleanup) cleanup();
                     }
+                });
+            };
+
+            const handleCopyGraphImage = () => {
+                const exportResult = createExportChartCanvas(1200);
+                if (!exportResult) return;
+                copyCanvasToClipboard(exportResult.canvas, () => exportResult.chart.destroy());
+            };
+
+            const handleCopyLegendImage = () => {
+                copyCanvasToClipboard(createLegendCanvas(520, 2));
+            };
+
+            const handleCopyCombinedImage = () => {
+                const chartResult = createExportChartCanvas(880);
+                if (!chartResult) return;
+                const chartCanvas = chartResult.canvas;
+                const legendWidth = 360;
+                const legendScale = 2;
+                const legendCanvas = createLegendCanvas(legendWidth, legendScale);
+                const padding = 24;
+                const combinedCanvas = document.createElement('canvas');
+                combinedCanvas.width = chartCanvas.width + legendWidth + padding;
+                combinedCanvas.height = Math.max(chartCanvas.height, legendCanvas.height);
+                const ctx = combinedCanvas.getContext('2d');
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, combinedCanvas.width, combinedCanvas.height);
+                ctx.drawImage(chartCanvas, 0, 0);
+                ctx.drawImage(legendCanvas, chartCanvas.width + padding, 0);
+                copyCanvasToClipboard(combinedCanvas, () => chartResult.chart.destroy());
+            };
+
+            const handleLegendClick = (label) => {
+                const now = Date.now();
+                if (now - clickState.current.lastTime < 300) {
+                    clearTimeout(clickState.current.timer);
+                    setIsolatedLabels(prev => {
+                        const next = new Set(prev);
+                        if (next.size === 0) next.add(label);
+                        else if (next.has(label)) next.delete(label);
+                        else next.add(label);
+                        return next;
+                    });
+                    clickState.current.lastTime = 0;
+                } else {
+                    clickState.current.lastTime = now;
+                    clickState.current.timer = setTimeout(() => {
+                        setHighlightedLabel(prev => prev === label ? null : label);
+                    }, 300);
+                }
+            };
+
+            const handleLegendContextMenu = (e, label) => {
+                e.preventDefault();
+                setHiddenLabels(prev => {
+                    const next = new Set(prev);
+                    if (next.has(label)) next.delete(label);
+                    else next.add(label);
+                    return next;
                 });
             };
 
@@ -640,8 +777,14 @@
                             <button onClick={() => setShowDataModal(true)} className="text-sm bg-indigo-50 hover:bg-indigo-100 text-indigo-700 w-8 h-8 rounded shadow-sm border border-indigo-200 font-bold flex items-center justify-center" title="データ設定" aria-label="データ設定">
                                 ⚙️
                             </button>
-                            <button onClick={handleCopyImage} className="text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 w-8 h-8 rounded shadow-sm border border-gray-300 flex items-center justify-center" title="グラフ画像をコピー" aria-label="グラフ画像をコピー">
-                                📷
+                            <button onClick={handleCopyGraphImage} className="text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 w-8 h-8 rounded shadow-sm border border-gray-300 flex items-center justify-center" title="グラフ単体をコピー" aria-label="グラフ単体をコピー">
+                                📈
+                            </button>
+                            <button onClick={handleCopyLegendImage} className="text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 w-8 h-8 rounded shadow-sm border border-gray-300 flex items-center justify-center" title="凡例単体をコピー" aria-label="凡例単体をコピー">
+                                🏷️
+                            </button>
+                            <button onClick={handleCopyCombinedImage} className="text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 w-8 h-8 rounded shadow-sm border border-gray-300 flex items-center justify-center" title="グラフと凡例を一体でコピー" aria-label="グラフと凡例を一体でコピー">
+                                🖼️
                             </button>
                             <button onClick={() => setIsMaximized(!isMaximized)} className="text-sm bg-blue-50 hover:bg-blue-100 text-blue-700 w-8 h-8 rounded shadow-sm border border-blue-200 font-bold flex items-center justify-center" title={isMaximized ? "縮小" : "最大化"} aria-label={isMaximized ? "縮小" : "最大化"}>
                                 {isMaximized ? "🗕" : "⛶"}
@@ -649,7 +792,25 @@
                         </div>
                     </div>
                     <div className={canvasWrapperClass}>
-                        <canvas ref={chartRef} onContextMenu={handleContextMenu}></canvas>
+                        <div className="absolute inset-0 flex min-h-0 gap-3">
+                            <div className="flex-grow min-w-0 relative">
+                                <canvas ref={chartRef} onContextMenu={handleContextMenu}></canvas>
+                            </div>
+                            <div className="w-44 lg:w-56 shrink-0 overflow-y-auto border-l border-gray-200 pl-2 pr-1 text-xs bg-white" title="凡例（スクロール可能）">
+                                {legendItems.map(item => (
+                                    <div
+                                        key={item.label}
+                                        className={`flex items-start gap-2 py-1 cursor-pointer rounded px-1 hover:bg-gray-50 ${item.hidden ? 'opacity-40' : ''}`}
+                                        onClick={() => handleLegendClick(item.label)}
+                                        onContextMenu={(e) => handleLegendContextMenu(e, item.label)}
+                                        title={item.label}
+                                    >
+                                        <span className="mt-2 inline-block w-6 border-t-2 shrink-0" style={{ borderColor: item.color, borderStyle: item.dash.length ? 'dashed' : 'solid' }}></span>
+                                        <span className="break-words leading-snug">{item.label}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
                     </div>
 
                     {showDataModal && (
