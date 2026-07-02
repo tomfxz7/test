@@ -407,7 +407,7 @@
 
 
                 if (bgGraphItem) {
-                    const bgLabel = `暗騒音: ${bgGraphItem.fileName} (NC-${bgGraphItem.ncResult})`;
+                    const bgLabel = `暗騒音 (NC-${bgGraphItem.ncResult})`;
                     const filteredBgValues = activeFreqs.map(f => {
                         const i = allFreqs.indexOf(f);
                         return bgGraphItem.values[i];
@@ -664,13 +664,13 @@
 
             const getLegendLayout = (ctx, width, scale, columns = 1, fixedHeight = null, fontSize = 12 * scale) => {
                 const columnCount = Math.max(1, columns);
-                const padding = 12 * scale;
-                const columnGap = 18 * scale;
-                const lineHeight = fontSize * 1.5;
-                const itemGap = 8 * scale;
-                const markerWidth = 24 * scale;
+                const padding = 8 * scale;
+                const columnGap = 8 * scale;
+                const lineHeight = fontSize * 1.15;
+                const itemGap = 2 * scale;
+                const markerWidth = 18 * scale;
                 const columnWidth = (width - padding * 2 - columnGap * (columnCount - 1)) / columnCount;
-                const textOffset = markerWidth + 8 * scale;
+                const textOffset = markerWidth + 4 * scale;
                 ctx.font = `${fontSize}px sans-serif`;
 
                 const rows = legendItems.map(item => ({
@@ -715,7 +715,7 @@
                     const columnX = layout.padding + columnIndex * (layout.requiredColumnWidth + layout.columnGap);
                     let cursorY = layout.padding;
                     column.rows.forEach(({ item, lines }) => {
-                        const markerY = cursorY + 7 * scale;
+                        const markerY = cursorY + fontSize * 0.55;
                         ctx.save();
                         ctx.globalAlpha = item.hidden ? 0.35 : 1;
                         ctx.strokeStyle = item.color || '#64748b';
@@ -742,8 +742,8 @@
                 const columnCount = Math.max(1, columns);
                 const measureCanvas = document.createElement('canvas');
                 const measureCtx = measureCanvas.getContext('2d');
-                const basePadding = 12 * scale;
-                const baseColumnGap = 18 * scale;
+                const basePadding = 8 * scale;
+                const baseColumnGap = 8 * scale;
                 const initialWidth = basePadding * 2 + columnWidth * columnCount + baseColumnGap * (columnCount - 1);
                 const initialLayout = getLegendLayout(measureCtx, initialWidth, scale, columnCount, fixedHeight, fontSize);
                 const adjustedColumnWidth = Math.max(columnWidth, Math.ceil(initialLayout.requiredColumnWidth));
@@ -761,7 +761,7 @@
                 const measureCanvas = document.createElement('canvas');
                 const measureCtx = measureCanvas.getContext('2d');
                 for (let columns = 1; columns <= maxColumns; columns++) {
-                    const width = 12 * scale * 2 + columnWidth * columns + 18 * scale * (columns - 1);
+                    const width = 8 * scale * 2 + columnWidth * columns + 8 * scale * (columns - 1);
                     const layout = getLegendLayout(measureCtx, width, scale, columns, targetHeight, fontSize);
                     if (layout.height <= targetHeight) return columns;
                 }
@@ -797,7 +797,7 @@
                 const chartResult = createExportChartCanvas(880);
                 if (!chartResult) return;
                 const chartCanvas = chartResult.canvas;
-                const legendColumnWidth = 260;
+                const legendColumnWidth = 220;
                 const legendScale = 2;
                 const legendFontSize = getExportDimensions(880).scaleSize(axisLabelFontSize, 1);
                 const legendColumns = getLegendColumnsForHeight(legendColumnWidth, legendScale, chartCanvas.height, 8, legendFontSize);
