@@ -142,7 +142,7 @@
         };
 
         const dataColors = ["#8B4513", "#006400", "#00008B", "#4B0082", "#8B0000", "#2F4F4F", "#D2691E", "#556B2F"];
-        const ATTACHED_COPY_ASPECT_RATIO = 1537 / 899;
+        const CHART_COPY_ASPECT_RATIO = 800 / 699;
 
         const hexToRgba = (hex, alpha) => {
             let r = 0, g = 0, b = 0;
@@ -803,7 +803,7 @@
             };
 
             const handleCopyGraphImage = () => {
-                const fixedHeight = useFixedCopyAspectRatio ? Math.round(1200 / ATTACHED_COPY_ASPECT_RATIO) : null;
+                const fixedHeight = useFixedCopyAspectRatio ? Math.round(1200 / CHART_COPY_ASPECT_RATIO) : null;
                 const exportResult = createExportChartCanvas(1200, fixedHeight);
                 if (!exportResult) return;
                 const copyCanvas = useFixedCopyAspectRatio ? addAspectRatioPadding(exportResult.canvas, ATTACHED_COPY_ASPECT_RATIO) : exportResult.canvas;
@@ -820,22 +820,22 @@
                 const legendColumnWidth = 220;
                 const legendScale = 2;
                 const padding = 24;
-                const chartResult = createExportChartCanvas(chartWidth);
+                const fixedChartHeight = useFixedCopyAspectRatio ? Math.round(chartWidth / CHART_COPY_ASPECT_RATIO) : null;
+                const chartResult = createExportChartCanvas(chartWidth, fixedChartHeight);
                 if (!chartResult) return;
                 const chartCanvas = chartResult.canvas;
-                const legendFontSize = getExportDimensions(chartWidth).scaleSize(axisLabelFontSize, 1);
+                const legendFontSize = getExportDimensions(chartWidth, fixedChartHeight).scaleSize(axisLabelFontSize, 1);
                 const legendColumns = getLegendColumnsForHeight(legendColumnWidth, legendScale, chartCanvas.height, 8, legendFontSize);
                 const legendCanvas = createLegendCanvas(legendColumnWidth, legendScale, legendColumns, chartCanvas.height, legendFontSize);
-                const contentCanvas = document.createElement('canvas');
-                contentCanvas.width = chartCanvas.width + legendCanvas.width + padding;
-                contentCanvas.height = chartCanvas.height;
-                const contentCtx = contentCanvas.getContext('2d');
-                contentCtx.fillStyle = '#ffffff';
-                contentCtx.fillRect(0, 0, contentCanvas.width, contentCanvas.height);
-                contentCtx.drawImage(chartCanvas, 0, 0);
-                contentCtx.drawImage(legendCanvas, chartCanvas.width + padding, 0);
-                const copyCanvas = useFixedCopyAspectRatio ? addAspectRatioPadding(contentCanvas, ATTACHED_COPY_ASPECT_RATIO) : contentCanvas;
-                copyCanvasToClipboard(copyCanvas, () => chartResult.chart.destroy());
+                const combinedCanvas = document.createElement('canvas');
+                combinedCanvas.width = chartCanvas.width + legendCanvas.width + padding;
+                combinedCanvas.height = chartCanvas.height;
+                const ctx = combinedCanvas.getContext('2d');
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, combinedCanvas.width, combinedCanvas.height);
+                ctx.drawImage(chartCanvas, 0, 0);
+                ctx.drawImage(legendCanvas, chartCanvas.width + padding, 0);
+                copyCanvasToClipboard(combinedCanvas, () => chartResult.chart.destroy());
             };
 
             const handleLegendClick = (label) => {
@@ -2994,7 +2994,7 @@ def create_excel():
                                         />
                                         <span className="text-xs text-gray-500">小</span>
                                     </div>
-                                    <label className="mt-1 flex items-center gap-1 text-xs text-gray-600 cursor-pointer" title="カードサイズに関係なく、添付画像と同じアスペクト比でコピーします">
+                                    <label className="mt-1 flex items-center gap-1 text-xs text-gray-600 cursor-pointer" title="カードサイズに関係なく、グラフ部分を添付2枚目と同じアスペクト比でコピーします">
                                         <input
                                             type="checkbox"
                                             checked={useFixedCopyAspectRatio}
