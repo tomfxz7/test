@@ -142,7 +142,8 @@
         };
 
         const dataColors = ["#8B4513", "#006400", "#00008B", "#4B0082", "#8B0000", "#2F4F4F", "#D2691E", "#556B2F"];
-        const CHART_COPY_ASPECT_RATIO = 800 / 699;
+        const CHART_COPY_ASPECT_RATIO = 1537 / 1287;
+        const FIXED_COPY_SCALE_BASE_WIDTH = 500;
 
         const hexToRgba = (hex, alpha) => {
             let r = 0, g = 0, b = 0;
@@ -585,7 +586,7 @@
                 }
             };
 
-            const getExportDimensions = (targetWidth = 1200, fixedHeight = null) => {
+            const getExportDimensions = (targetWidth = 1200, fixedHeight = null, fixedScaleBaseWidth = null) => {
                 const sourceChart = chartInstance.current;
                 const sourceWidth = sourceChart?.width || chartRef.current?.clientWidth || targetWidth;
                 const sourceHeight = sourceChart?.height || chartRef.current?.clientHeight || 700;
@@ -593,16 +594,16 @@
                 const exportHeight = fixedHeight !== null
                     ? Math.max(1, Math.round(fixedHeight))
                     : Math.max(1, Math.round(exportWidth * (sourceHeight / sourceWidth)));
-                const exportScale = exportWidth / sourceWidth;
+                const exportScale = exportWidth / (fixedScaleBaseWidth || sourceWidth);
                 const scaleSize = (value, min = 0) => Math.max(min, Math.round(value * exportScale * 10) / 10);
                 return { exportWidth, exportHeight, exportScale, scaleSize };
             };
 
-            const createExportChartCanvas = (targetWidth = 1200, fixedHeight = null) => {
+            const createExportChartCanvas = (targetWidth = 1200, fixedHeight = null, fixedScaleBaseWidth = null) => {
                 const sourceChart = chartInstance.current;
                 if (!sourceChart) return null;
 
-                const { exportWidth, exportHeight, scaleSize } = getExportDimensions(targetWidth, fixedHeight);
+                const { exportWidth, exportHeight, scaleSize } = getExportDimensions(targetWidth, fixedHeight, fixedScaleBaseWidth);
                 const exportCanvas = document.createElement('canvas');
                 exportCanvas.width = exportWidth;
                 exportCanvas.height = exportHeight;
@@ -803,8 +804,9 @@
             };
 
             const handleCopyGraphImage = () => {
-                const fixedHeight = useFixedCopyAspectRatio ? Math.round(1200 / CHART_COPY_ASPECT_RATIO) : null;
-                const exportResult = createExportChartCanvas(1200, fixedHeight);
+                const chartWidth = useFixedCopyAspectRatio ? 1537 : 1200;
+                const fixedHeight = useFixedCopyAspectRatio ? Math.round(chartWidth / CHART_COPY_ASPECT_RATIO) : null;
+                const exportResult = createExportChartCanvas(chartWidth, fixedHeight, useFixedCopyAspectRatio ? FIXED_COPY_SCALE_BASE_WIDTH : null);
                 if (!exportResult) return;
                 const copyCanvas = useFixedCopyAspectRatio ? addAspectRatioPadding(exportResult.canvas, ATTACHED_COPY_ASPECT_RATIO) : exportResult.canvas;
                 copyCanvasToClipboard(copyCanvas, () => exportResult.chart.destroy());
@@ -816,15 +818,15 @@
             };
 
             const handleCopyCombinedImage = () => {
-                const chartWidth = 880;
+                const chartWidth = useFixedCopyAspectRatio ? 1537 : 880;
                 const legendColumnWidth = 220;
                 const legendScale = 2;
                 const padding = 24;
                 const fixedChartHeight = useFixedCopyAspectRatio ? Math.round(chartWidth / CHART_COPY_ASPECT_RATIO) : null;
-                const chartResult = createExportChartCanvas(chartWidth, fixedChartHeight);
+                const chartResult = createExportChartCanvas(chartWidth, fixedChartHeight, useFixedCopyAspectRatio ? FIXED_COPY_SCALE_BASE_WIDTH : null);
                 if (!chartResult) return;
                 const chartCanvas = chartResult.canvas;
-                const legendFontSize = getExportDimensions(chartWidth, fixedChartHeight).scaleSize(axisLabelFontSize, 1);
+                const legendFontSize = getExportDimensions(chartWidth, fixedChartHeight, useFixedCopyAspectRatio ? FIXED_COPY_SCALE_BASE_WIDTH : null).scaleSize(axisLabelFontSize, 1);
                 const legendColumns = getLegendColumnsForHeight(legendColumnWidth, legendScale, chartCanvas.height, 8, legendFontSize);
                 const legendCanvas = createLegendCanvas(legendColumnWidth, legendScale, legendColumns, chartCanvas.height, legendFontSize);
                 const combinedCanvas = document.createElement('canvas');
