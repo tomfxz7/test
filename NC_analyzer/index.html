@@ -785,11 +785,29 @@
                 });
             };
 
+            const addAspectRatioPadding = (sourceCanvas, targetAspectRatio) => {
+                const sourceAspectRatio = sourceCanvas.width / sourceCanvas.height;
+                const outputCanvas = document.createElement('canvas');
+                if (sourceAspectRatio > targetAspectRatio) {
+                    outputCanvas.width = sourceCanvas.width;
+                    outputCanvas.height = Math.ceil(sourceCanvas.width / targetAspectRatio);
+                } else {
+                    outputCanvas.width = Math.ceil(sourceCanvas.height * targetAspectRatio);
+                    outputCanvas.height = sourceCanvas.height;
+                }
+                const ctx = outputCanvas.getContext('2d');
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, outputCanvas.width, outputCanvas.height);
+                ctx.drawImage(sourceCanvas, 0, 0);
+                return outputCanvas;
+            };
+
             const handleCopyGraphImage = () => {
                 const fixedHeight = useFixedCopyAspectRatio ? Math.round(1200 / CHART_COPY_ASPECT_RATIO) : null;
                 const exportResult = createExportChartCanvas(1200, fixedHeight);
                 if (!exportResult) return;
-                copyCanvasToClipboard(exportResult.canvas, () => exportResult.chart.destroy());
+                const copyCanvas = useFixedCopyAspectRatio ? addAspectRatioPadding(exportResult.canvas, ATTACHED_COPY_ASPECT_RATIO) : exportResult.canvas;
+                copyCanvasToClipboard(copyCanvas, () => exportResult.chart.destroy());
             };
 
             const handleCopyLegendImage = (columns = legendCopyColumns) => {
