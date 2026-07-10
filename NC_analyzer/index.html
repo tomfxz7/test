@@ -803,7 +803,8 @@
             };
 
             const handleCopyGraphImage = () => {
-                const exportResult = createExportChartCanvas(1200);
+                const fixedHeight = useFixedCopyAspectRatio ? Math.round(1200 / ATTACHED_COPY_ASPECT_RATIO) : null;
+                const exportResult = createExportChartCanvas(1200, fixedHeight);
                 if (!exportResult) return;
                 const copyCanvas = useFixedCopyAspectRatio ? addAspectRatioPadding(exportResult.canvas, ATTACHED_COPY_ASPECT_RATIO) : exportResult.canvas;
                 copyCanvasToClipboard(copyCanvas, () => exportResult.chart.destroy());
