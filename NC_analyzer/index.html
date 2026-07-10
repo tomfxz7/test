@@ -142,6 +142,7 @@
         };
 
         const dataColors = ["#8B4513", "#006400", "#00008B", "#4B0082", "#8B0000", "#2F4F4F", "#D2691E", "#556B2F"];
+        const ATTACHED_COPY_ASPECT_RATIO = 1537 / 899;
 
         const hexToRgba = (hex, alpha) => {
             let r = 0, g = 0, b = 0;
@@ -304,7 +305,7 @@
             return maxNcRequired < 15 ? "<15" : maxNcRequired;
         }
 
-        const GroupChart = ({ groupName, projectName, items, bgGraphItem, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, isViewerMode, setDataItems, setGroups, onRemoveItem, onToggleVisible, onMoveItems, groups, projects, groupProjects, onDuplicateGroup, onMoveGroupToProject, onDragStart, onDragOver, onDrop, isDraggingThis }) => {
+        const GroupChart = ({ groupName, projectName, items, bgGraphItem, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, useFixedCopyAspectRatio, isViewerMode, setDataItems, setGroups, onRemoveItem, onToggleVisible, onMoveItems, groups, projects, groupProjects, onDuplicateGroup, onMoveGroupToProject, onDragStart, onDragOver, onDrop, isDraggingThis }) => {
             const chartRef = React.useRef(null);
             const chartInstance = React.useRef(null);
             
@@ -584,22 +585,24 @@
                 }
             };
 
-            const getExportDimensions = (targetWidth = 1200) => {
+            const getExportDimensions = (targetWidth = 1200, fixedHeight = null) => {
                 const sourceChart = chartInstance.current;
                 const sourceWidth = sourceChart?.width || chartRef.current?.clientWidth || targetWidth;
                 const sourceHeight = sourceChart?.height || chartRef.current?.clientHeight || 700;
                 const exportWidth = targetWidth;
-                const exportHeight = Math.max(1, Math.round(exportWidth * (sourceHeight / sourceWidth)));
+                const exportHeight = fixedHeight !== null
+                    ? Math.max(1, Math.round(fixedHeight))
+                    : Math.max(1, Math.round(exportWidth * (sourceHeight / sourceWidth)));
                 const exportScale = exportWidth / sourceWidth;
                 const scaleSize = (value, min = 0) => Math.max(min, Math.round(value * exportScale * 10) / 10);
                 return { exportWidth, exportHeight, exportScale, scaleSize };
             };
 
-            const createExportChartCanvas = (targetWidth = 1200) => {
+            const createExportChartCanvas = (targetWidth = 1200, fixedHeight = null) => {
                 const sourceChart = chartInstance.current;
                 if (!sourceChart) return null;
 
-                const { exportWidth, exportHeight, scaleSize } = getExportDimensions(targetWidth);
+                const { exportWidth, exportHeight, scaleSize } = getExportDimensions(targetWidth, fixedHeight);
                 const exportCanvas = document.createElement('canvas');
                 exportCanvas.width = exportWidth;
                 exportCanvas.height = exportHeight;
@@ -783,7 +786,8 @@
             };
 
             const handleCopyGraphImage = () => {
-                const exportResult = createExportChartCanvas(1200);
+                const fixedHeight = useFixedCopyAspectRatio ? Math.round(1200 / ATTACHED_COPY_ASPECT_RATIO) : null;
+                const exportResult = createExportChartCanvas(1200, fixedHeight);
                 if (!exportResult) return;
                 copyCanvasToClipboard(exportResult.canvas, () => exportResult.chart.destroy());
             };
@@ -794,18 +798,34 @@
             };
 
             const handleCopyCombinedImage = () => {
-                const chartResult = createExportChartCanvas(880);
-                if (!chartResult) return;
-                const chartCanvas = chartResult.canvas;
+                const chartWidth = 880;
                 const legendColumnWidth = 220;
                 const legendScale = 2;
-                const legendFontSize = getExportDimensions(880).scaleSize(axisLabelFontSize, 1);
-                const legendColumns = getLegendColumnsForHeight(legendColumnWidth, legendScale, chartCanvas.height, 8, legendFontSize);
-                const legendCanvas = createLegendCanvas(legendColumnWidth, legendScale, legendColumns, chartCanvas.height, legendFontSize);
                 const padding = 24;
+                let chartResult = null;
+                let legendCanvas = null;
+                let chartHeight = null;
+
+                for (let i = 0; i < (useFixedCopyAspectRatio ? 2 : 1); i++) {
+                    if (chartResult) chartResult.chart.destroy();
+                    chartResult = createExportChartCanvas(chartWidth, chartHeight);
+                    if (!chartResult) return;
+                    const legendFontSize = getExportDimensions(chartWidth, chartResult.canvas.height).scaleSize(axisLabelFontSize, 1);
+                    const legendColumns = getLegendColumnsForHeight(legendColumnWidth, legendScale, chartResult.canvas.height, 8, legendFontSize);
+                    legendCanvas = createLegendCanvas(legendColumnWidth, legendScale, legendColumns, chartResult.canvas.height, legendFontSize);
+                    if (useFixedCopyAspectRatio) {
+                        const combinedWidth = chartResult.canvas.width + legendCanvas.width + padding;
+                        const nextChartHeight = Math.max(1, Math.round(combinedWidth / ATTACHED_COPY_ASPECT_RATIO));
+                        if (Math.abs(nextChartHeight - chartResult.canvas.height) <= 1) break;
+                        chartHeight = nextChartHeight;
+                    }
+                }
+
+                if (!chartResult) return;
+                const chartCanvas = chartResult.canvas;
                 const combinedCanvas = document.createElement('canvas');
                 combinedCanvas.width = chartCanvas.width + legendCanvas.width + padding;
-                combinedCanvas.height = chartCanvas.height;
+                combinedCanvas.height = useFixedCopyAspectRatio ? Math.round(combinedCanvas.width / ATTACHED_COPY_ASPECT_RATIO) : chartCanvas.height;
                 const ctx = combinedCanvas.getContext('2d');
                 ctx.fillStyle = '#ffffff';
                 ctx.fillRect(0, 0, combinedCanvas.width, combinedCanvas.height);
@@ -1647,6 +1667,7 @@
             const [yAxisMaxAuto, setYAxisMaxAuto] = React.useState(initState?.yAxisMaxAuto ?? true);
             const [yAxisMaxManual, setYAxisMaxManual] = React.useState(initState?.yAxisMaxManual || 100);
             const [viewerGridCols, setViewerGridCols] = React.useState(initState?.viewerGridCols || 2);
+            const [useFixedCopyAspectRatio, setUseFixedCopyAspectRatio] = React.useState(initState?.useFixedCopyAspectRatio || false);
             
             const [isTableMaximized, setIsTableMaximized] = React.useState(false);
             const [isPreviewMode, setIsPreviewMode] = React.useState(false); // プレビューモードのトグル
@@ -1790,13 +1811,14 @@
                     tickFontSize,
                     yAxisMaxAuto, 
                     yAxisMaxManual,
-                    viewerGridCols
+                    viewerGridCols,
+                    useFixedCopyAspectRatio
                 };
             };
 
             const getWorkspaceExportData = () => ({
                 version: "1.4", dataItems, groups, projects, selectedProject, groupProjects, visibleProjects, bgNoiseData, bgCorrectionMethod, bgNoiseMode,
-                groupOctaveModes, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols
+                groupOctaveModes, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols, useFixedCopyAspectRatio
             });
 
             const downloadWorkspaceJSON = (fileName = workspaceFileName) => {
@@ -1909,7 +1931,8 @@ ${err?.message || err}`);
                     tickFontSize,
                     yAxisMaxAuto,
                     yAxisMaxManual,
-                    viewerGridCols
+                    viewerGridCols,
+                    useFixedCopyAspectRatio
                 };
                 const safeProject = projectName.replace(/[\/:*?"<>|]/g, "_");
                 const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
@@ -2115,6 +2138,7 @@ ${err?.message || err}`);
                 if(importedData.yAxisMaxAuto !== undefined) setYAxisMaxAuto(importedData.yAxisMaxAuto);
                 if(importedData.yAxisMaxManual !== undefined) setYAxisMaxManual(importedData.yAxisMaxManual);
                 if(importedData.viewerGridCols !== undefined) setViewerGridCols(importedData.viewerGridCols);
+                if(importedData.useFixedCopyAspectRatio !== undefined) setUseFixedCopyAspectRatio(importedData.useFixedCopyAspectRatio);
             };
 
             const handleImportJSON = async (e) => {
@@ -2163,7 +2187,7 @@ ${err?.message || err}`);
 
             const getHistorySnapshot = React.useCallback(() => JSON.stringify(getWorkspaceExportData()), [
                 dataItems, groups, projects, selectedProject, groupProjects, visibleProjects, bgNoiseData, bgCorrectionMethod, bgNoiseMode,
-                groupOctaveModes, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols
+                groupOctaveModes, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols, useFixedCopyAspectRatio
             ]);
 
             const applyHistorySnapshot = React.useCallback((snapshot) => {
@@ -2966,6 +2990,15 @@ def create_excel():
                                         />
                                         <span className="text-xs text-gray-500">小</span>
                                     </div>
+                                    <label className="mt-1 flex items-center gap-1 text-xs text-gray-600 cursor-pointer" title="カードサイズに関係なく、添付画像と同じアスペクト比でコピーします">
+                                        <input
+                                            type="checkbox"
+                                            checked={useFixedCopyAspectRatio}
+                                            onChange={(e) => setUseFixedCopyAspectRatio(e.target.checked)}
+                                            className="rounded text-blue-600 w-3 h-3"
+                                        />
+                                        <span>コピー比固定</span>
+                                    </label>
                                 </div>
                                 <div className="flex space-x-2">
                                     {!isExportedViewerMode && (
@@ -3013,6 +3046,7 @@ def create_excel():
                                         tickFontSize={tickFontSize}
                                         yAxisMaxAuto={yAxisMaxAuto}
                                         yAxisMaxManual={yAxisMaxManual}
+                                        useFixedCopyAspectRatio={useFixedCopyAspectRatio}
                                         isViewerMode={true}
                                         setDataItems={setDataItems}
                                         setGroups={setGroups}
@@ -3451,6 +3485,7 @@ def create_excel():
                                                 tickFontSize={tickFontSize}
                                                 yAxisMaxAuto={yAxisMaxAuto}
                                                 yAxisMaxManual={yAxisMaxManual}
+                                                useFixedCopyAspectRatio={useFixedCopyAspectRatio}
                                                 isViewerMode={false}
                                                 setDataItems={setDataItems}
                                                 setGroups={setGroups}
