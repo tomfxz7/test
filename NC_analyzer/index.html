@@ -673,6 +673,7 @@
                 const lineHeight = fontSize * 1.15;
                 const itemGap = 2 * scale;
                 const markerWidth = 18 * scale;
+                const markerLineWidth = Math.max(1, fontSize * 0.16);
                 const columnWidth = (width - padding * 2 - columnGap * (columnCount - 1)) / columnCount;
                 const textOffset = markerWidth + 4 * scale;
                 ctx.font = `${fontSize}px sans-serif`;
@@ -703,7 +704,7 @@
 
                 const contentHeight = Math.max(...columnsData.map(column => column.height), padding);
                 const height = Math.max(1, contentHeight + padding);
-                return { columnsData, height, padding, columnGap, columnWidth, requiredColumnWidth, lineHeight, itemGap, markerWidth, textOffset, fontSize };
+                return { columnsData, height, padding, columnGap, columnWidth, requiredColumnWidth, lineHeight, itemGap, markerWidth, markerLineWidth, textOffset, fontSize };
             };
 
             const drawLegend = (ctx, x, y, width, scale, columns = 1, fixedHeight = null, fontSize = 12 * scale) => {
@@ -723,7 +724,7 @@
                         ctx.save();
                         ctx.globalAlpha = item.hidden ? 0.35 : 1;
                         ctx.strokeStyle = item.color || '#64748b';
-                        ctx.lineWidth = Math.max(1, 3 * scale);
+                        ctx.lineWidth = layout.markerLineWidth;
                         ctx.setLineDash((item.dash || []).map(value => value * scale));
                         ctx.beginPath();
                         ctx.moveTo(columnX, markerY);
