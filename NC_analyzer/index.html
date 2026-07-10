@@ -142,6 +142,8 @@
         };
 
         const dataColors = ["#8B4513", "#006400", "#00008B", "#4B0082", "#8B0000", "#2F4F4F", "#D2691E", "#556B2F"];
+        const CHART_COPY_ASPECT_RATIO = 1537 / 1287;
+        const FIXED_COPY_SCALE_BASE_WIDTH = 500;
 
         const hexToRgba = (hex, alpha) => {
             let r = 0, g = 0, b = 0;
@@ -304,7 +306,7 @@
             return maxNcRequired < 15 ? "<15" : maxNcRequired;
         }
 
-        const GroupChart = ({ groupName, projectName, items, bgGraphItem, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, isViewerMode, setDataItems, setGroups, onRemoveItem, onToggleVisible, onMoveItems, groups, projects, groupProjects, onDuplicateGroup, onMoveGroupToProject, onDragStart, onDragOver, onDrop, isDraggingThis }) => {
+        const GroupChart = ({ groupName, projectName, items, bgGraphItem, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, useFixedCopyAspectRatio, isViewerMode, setDataItems, setGroups, onRemoveItem, onToggleVisible, onMoveItems, groups, projects, groupProjects, onDuplicateGroup, onMoveGroupToProject, onDragStart, onDragOver, onDrop, isDraggingThis }) => {
             const chartRef = React.useRef(null);
             const chartInstance = React.useRef(null);
             
@@ -407,7 +409,7 @@
 
 
                 if (bgGraphItem) {
-                    const bgLabel = `暗騒音: ${bgGraphItem.fileName} (NC-${bgGraphItem.ncResult})`;
+                    const bgLabel = `暗騒音 (NC-${bgGraphItem.ncResult})`;
                     const filteredBgValues = activeFreqs.map(f => {
                         const i = allFreqs.indexOf(f);
                         return bgGraphItem.values[i];
@@ -584,22 +586,24 @@
                 }
             };
 
-            const getExportDimensions = (targetWidth = 1200) => {
+            const getExportDimensions = (targetWidth = 1200, fixedHeight = null, fixedScaleBaseWidth = null) => {
                 const sourceChart = chartInstance.current;
                 const sourceWidth = sourceChart?.width || chartRef.current?.clientWidth || targetWidth;
                 const sourceHeight = sourceChart?.height || chartRef.current?.clientHeight || 700;
                 const exportWidth = targetWidth;
-                const exportHeight = Math.max(1, Math.round(exportWidth * (sourceHeight / sourceWidth)));
-                const exportScale = exportWidth / sourceWidth;
+                const exportHeight = fixedHeight !== null
+                    ? Math.max(1, Math.round(fixedHeight))
+                    : Math.max(1, Math.round(exportWidth * (sourceHeight / sourceWidth)));
+                const exportScale = exportWidth / (fixedScaleBaseWidth || sourceWidth);
                 const scaleSize = (value, min = 0) => Math.max(min, Math.round(value * exportScale * 10) / 10);
                 return { exportWidth, exportHeight, exportScale, scaleSize };
             };
 
-            const createExportChartCanvas = (targetWidth = 1200) => {
+            const createExportChartCanvas = (targetWidth = 1200, fixedHeight = null, fixedScaleBaseWidth = null) => {
                 const sourceChart = chartInstance.current;
                 if (!sourceChart) return null;
 
-                const { exportWidth, exportHeight, scaleSize } = getExportDimensions(targetWidth);
+                const { exportWidth, exportHeight, scaleSize } = getExportDimensions(targetWidth, fixedHeight, fixedScaleBaseWidth);
                 const exportCanvas = document.createElement('canvas');
                 exportCanvas.width = exportWidth;
                 exportCanvas.height = exportHeight;
@@ -662,16 +666,16 @@
                 return { canvas: exportCanvas, chart: exportChart };
             };
 
-            const getLegendLayout = (ctx, width, scale, columns = 1) => {
+            const getLegendLayout = (ctx, width, scale, columns = 1, fixedHeight = null, fontSize = 12 * scale) => {
                 const columnCount = Math.max(1, columns);
-                const padding = 12 * scale;
-                const columnGap = 18 * scale;
-                const lineHeight = 18 * scale;
-                const itemGap = 8 * scale;
-                const markerWidth = 24 * scale;
+                const padding = 8 * scale;
+                const columnGap = 8 * scale;
+                const lineHeight = fontSize * 1.15;
+                const itemGap = 2 * scale;
+                const markerWidth = 18 * scale;
                 const columnWidth = (width - padding * 2 - columnGap * (columnCount - 1)) / columnCount;
-                const textOffset = markerWidth + 8 * scale;
-                ctx.font = `${12 * scale}px sans-serif`;
+                const textOffset = markerWidth + 4 * scale;
+                ctx.font = `${fontSize}px sans-serif`;
 
                 const rows = legendItems.map(item => ({
                     item,
@@ -682,30 +686,40 @@
 
                 const requiredColumnWidth = Math.max(columnWidth, ...rows.map(row => row.width));
                 const columnsData = Array.from({ length: columnCount }, () => ({ rows: [], height: padding }));
+                const maxColumnHeight = fixedHeight ? Math.max(padding, fixedHeight - padding) : null;
+                const rowsPerColumn = fixedHeight ? Infinity : Math.ceil(rows.length / columnCount);
+                let targetColumn = 0;
+
                 rows.forEach(row => {
-                    const targetColumn = columnsData.reduce((bestIndex, column, index) => column.height < columnsData[bestIndex].height ? index : bestIndex, 0);
+                    const column = columnsData[targetColumn];
+                    const shouldMoveByHeight = maxColumnHeight !== null && column.rows.length > 0 && column.height + row.height > maxColumnHeight;
+                    const shouldMoveByCount = maxColumnHeight === null && column.rows.length >= rowsPerColumn;
+                    if ((shouldMoveByHeight || shouldMoveByCount) && targetColumn < columnCount - 1) {
+                        targetColumn += 1;
+                    }
                     columnsData[targetColumn].rows.push(row);
                     columnsData[targetColumn].height += row.height;
                 });
+
                 const contentHeight = Math.max(...columnsData.map(column => column.height), padding);
                 const height = Math.max(1, contentHeight + padding);
-                return { columnsData, height, padding, columnGap, columnWidth, requiredColumnWidth, lineHeight, itemGap, markerWidth, textOffset };
+                return { columnsData, height, padding, columnGap, columnWidth, requiredColumnWidth, lineHeight, itemGap, markerWidth, textOffset, fontSize };
             };
 
-            const drawLegend = (ctx, x, y, width, scale, columns = 1, fixedHeight = null) => {
-                const layout = getLegendLayout(ctx, width, scale, columns);
+            const drawLegend = (ctx, x, y, width, scale, columns = 1, fixedHeight = null, fontSize = 12 * scale) => {
+                const layout = getLegendLayout(ctx, width, scale, columns, fixedHeight, fontSize);
                 const canvasHeight = fixedHeight || layout.height;
                 ctx.save();
                 ctx.translate(x, y);
                 ctx.fillStyle = '#ffffff';
                 ctx.fillRect(0, 0, width, canvasHeight);
-                ctx.font = `${12 * scale}px sans-serif`;
+                ctx.font = `${fontSize}px sans-serif`;
                 ctx.textBaseline = 'top';
                 layout.columnsData.forEach((column, columnIndex) => {
                     const columnX = layout.padding + columnIndex * (layout.requiredColumnWidth + layout.columnGap);
                     let cursorY = layout.padding;
                     column.rows.forEach(({ item, lines }) => {
-                        const markerY = cursorY + 7 * scale;
+                        const markerY = cursorY + fontSize * 0.55;
                         ctx.save();
                         ctx.globalAlpha = item.hidden ? 0.35 : 1;
                         ctx.strokeStyle = item.color || '#64748b';
@@ -728,31 +742,31 @@
                 return layout.height;
             };
 
-            const createLegendCanvas = (columnWidth = 260, scale = 2, columns = 1, fixedHeight = null) => {
+            const createLegendCanvas = (columnWidth = 260, scale = 2, columns = 1, fixedHeight = null, fontSize = 12 * scale) => {
                 const columnCount = Math.max(1, columns);
                 const measureCanvas = document.createElement('canvas');
                 const measureCtx = measureCanvas.getContext('2d');
-                const basePadding = 12 * scale;
-                const baseColumnGap = 18 * scale;
+                const basePadding = 8 * scale;
+                const baseColumnGap = 8 * scale;
                 const initialWidth = basePadding * 2 + columnWidth * columnCount + baseColumnGap * (columnCount - 1);
-                const initialLayout = getLegendLayout(measureCtx, initialWidth, scale, columnCount);
+                const initialLayout = getLegendLayout(measureCtx, initialWidth, scale, columnCount, fixedHeight, fontSize);
                 const adjustedColumnWidth = Math.max(columnWidth, Math.ceil(initialLayout.requiredColumnWidth));
                 const width = Math.ceil(initialLayout.padding * 2 + adjustedColumnWidth * columnCount + initialLayout.columnGap * (columnCount - 1));
-                const layout = getLegendLayout(measureCtx, width, scale, columnCount);
+                const layout = getLegendLayout(measureCtx, width, scale, columnCount, fixedHeight, fontSize);
                 const canvas = document.createElement('canvas');
                 canvas.width = width;
                 canvas.height = Math.ceil(fixedHeight || layout.height);
                 const ctx = canvas.getContext('2d');
-                drawLegend(ctx, 0, 0, width, scale, columnCount, fixedHeight);
+                drawLegend(ctx, 0, 0, width, scale, columnCount, fixedHeight, fontSize);
                 return canvas;
             };
 
-            const getLegendColumnsForHeight = (columnWidth, scale, targetHeight, maxColumns = 8) => {
+            const getLegendColumnsForHeight = (columnWidth, scale, targetHeight, maxColumns = 8, fontSize = 12 * scale) => {
                 const measureCanvas = document.createElement('canvas');
                 const measureCtx = measureCanvas.getContext('2d');
                 for (let columns = 1; columns <= maxColumns; columns++) {
-                    const width = 12 * scale * 2 + columnWidth * columns + 18 * scale * (columns - 1);
-                    const layout = getLegendLayout(measureCtx, width, scale, columns);
+                    const width = 8 * scale * 2 + columnWidth * columns + 8 * scale * (columns - 1);
+                    const layout = getLegendLayout(measureCtx, width, scale, columns, targetHeight, fontSize);
                     if (layout.height <= targetHeight) return columns;
                 }
                 return maxColumns;
@@ -773,7 +787,9 @@
             };
 
             const handleCopyGraphImage = () => {
-                const exportResult = createExportChartCanvas(1200);
+                const chartWidth = useFixedCopyAspectRatio ? 1537 : 1200;
+                const fixedHeight = useFixedCopyAspectRatio ? Math.round(chartWidth / CHART_COPY_ASPECT_RATIO) : null;
+                const exportResult = createExportChartCanvas(chartWidth, fixedHeight, useFixedCopyAspectRatio ? FIXED_COPY_SCALE_BASE_WIDTH : null);
                 if (!exportResult) return;
                 copyCanvasToClipboard(exportResult.canvas, () => exportResult.chart.destroy());
             };
@@ -784,14 +800,17 @@
             };
 
             const handleCopyCombinedImage = () => {
-                const chartResult = createExportChartCanvas(880);
+                const chartWidth = useFixedCopyAspectRatio ? 1537 : 880;
+                const legendColumnWidth = 220;
+                const legendScale = 2;
+                const padding = 24;
+                const fixedChartHeight = useFixedCopyAspectRatio ? Math.round(chartWidth / CHART_COPY_ASPECT_RATIO) : null;
+                const chartResult = createExportChartCanvas(chartWidth, fixedChartHeight, useFixedCopyAspectRatio ? FIXED_COPY_SCALE_BASE_WIDTH : null);
                 if (!chartResult) return;
                 const chartCanvas = chartResult.canvas;
-                const legendColumnWidth = 260;
-                const legendScale = 2;
-                const legendColumns = getLegendColumnsForHeight(legendColumnWidth, legendScale, chartCanvas.height);
-                const legendCanvas = createLegendCanvas(legendColumnWidth, legendScale, legendColumns, chartCanvas.height);
-                const padding = 24;
+                const legendFontSize = getExportDimensions(chartWidth, fixedChartHeight, useFixedCopyAspectRatio ? FIXED_COPY_SCALE_BASE_WIDTH : null).scaleSize(axisLabelFontSize, 1);
+                const legendColumns = getLegendColumnsForHeight(legendColumnWidth, legendScale, chartCanvas.height, 8, legendFontSize);
+                const legendCanvas = createLegendCanvas(legendColumnWidth, legendScale, legendColumns, chartCanvas.height, legendFontSize);
                 const combinedCanvas = document.createElement('canvas');
                 combinedCanvas.width = chartCanvas.width + legendCanvas.width + padding;
                 combinedCanvas.height = chartCanvas.height;
@@ -1610,10 +1629,16 @@
             const [editingProjectName, setEditingProjectName] = React.useState(null);
             const [editingProjectValue, setEditingProjectValue] = React.useState('');
             const projectImportInputRef = React.useRef(null);
+            const workspaceImportInputRef = React.useRef(null);
             const [workspaceFileHandle, setWorkspaceFileHandle] = React.useState(null);
             const [workspaceFileName, setWorkspaceFileName] = React.useState('NC_Report_Settings.json');
             const [workspaceSaveStatus, setWorkspaceSaveStatus] = React.useState('');
             const [workspaceLastSavedAt, setWorkspaceLastSavedAt] = React.useState(null);
+            const undoStackRef = React.useRef([]);
+            const redoStackRef = React.useRef([]);
+            const lastHistorySnapshotRef = React.useRef(null);
+            const isRestoringHistoryRef = React.useRef(false);
+            const [historyVersion, setHistoryVersion] = React.useState(0);
             const [newGroupName, setNewGroupName] = React.useState('');
             const [editingGroup, setEditingGroup] = React.useState(null);
             const [editingGroupName, setEditingGroupName] = React.useState('');
@@ -1630,6 +1655,7 @@
             const [yAxisMaxAuto, setYAxisMaxAuto] = React.useState(initState?.yAxisMaxAuto ?? true);
             const [yAxisMaxManual, setYAxisMaxManual] = React.useState(initState?.yAxisMaxManual || 100);
             const [viewerGridCols, setViewerGridCols] = React.useState(initState?.viewerGridCols || 2);
+            const [useFixedCopyAspectRatio, setUseFixedCopyAspectRatio] = React.useState(initState?.useFixedCopyAspectRatio || false);
             
             const [isTableMaximized, setIsTableMaximized] = React.useState(false);
             const [isPreviewMode, setIsPreviewMode] = React.useState(false); // プレビューモードのトグル
@@ -1641,19 +1667,17 @@
 
             React.useEffect(() => {
                 if (isExportedViewerMode) return;
-                const loadWorkspaceHandle = async () => {
+                const clearCachedWorkspaceHandle = async () => {
                     try {
-                        const [savedHandle, savedName] = await Promise.all([
-                            workspaceDbGet(WORKSPACE_HANDLE_KEY),
-                            workspaceDbGet(WORKSPACE_FILE_NAME_KEY)
+                        await Promise.all([
+                            workspaceDbSet(WORKSPACE_HANDLE_KEY, null),
+                            workspaceDbSet(WORKSPACE_FILE_NAME_KEY, 'NC_Report_Settings.json')
                         ]);
-                        if (savedHandle) setWorkspaceFileHandle(savedHandle);
-                        if (savedName) setWorkspaceFileName(savedName);
                     } catch (err) {
-                        console.warn('保存先情報の復元に失敗しました:', err);
+                        console.warn('保存先情報の初期化に失敗しました:', err);
                     }
                 };
-                loadWorkspaceHandle();
+                clearCachedWorkspaceHandle();
             }, []);
 
             const persistWorkspaceHandle = React.useCallback(async (fileHandle) => {
@@ -1661,11 +1685,11 @@
                 setWorkspaceFileName(fileHandle?.name || 'NC_Report_Settings.json');
                 try {
                     await Promise.all([
-                        workspaceDbSet(WORKSPACE_HANDLE_KEY, fileHandle),
-                        workspaceDbSet(WORKSPACE_FILE_NAME_KEY, fileHandle?.name || 'NC_Report_Settings.json')
+                        workspaceDbSet(WORKSPACE_HANDLE_KEY, null),
+                        workspaceDbSet(WORKSPACE_FILE_NAME_KEY, 'NC_Report_Settings.json')
                     ]);
                 } catch (err) {
-                    console.warn('保存先情報の記録に失敗しました:', err);
+                    console.warn('保存先情報のキャッシュ削除に失敗しました:', err);
                 }
             }, []);
 
@@ -1775,13 +1799,14 @@
                     tickFontSize,
                     yAxisMaxAuto, 
                     yAxisMaxManual,
-                    viewerGridCols
+                    viewerGridCols,
+                    useFixedCopyAspectRatio
                 };
             };
 
             const getWorkspaceExportData = () => ({
-                version: "1.4", dataItems, groups, projects, groupProjects, visibleProjects, bgNoiseData, bgCorrectionMethod, bgNoiseMode,
-                groupOctaveModes, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols
+                version: "1.4", dataItems, groups, projects, selectedProject, groupProjects, visibleProjects, bgNoiseData, bgCorrectionMethod, bgNoiseMode,
+                groupOctaveModes, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols, useFixedCopyAspectRatio
             });
 
             const downloadWorkspaceJSON = (fileName = workspaceFileName) => {
@@ -1894,7 +1919,8 @@ ${err?.message || err}`);
                     tickFontSize,
                     yAxisMaxAuto,
                     yAxisMaxManual,
-                    viewerGridCols
+                    viewerGridCols,
+                    useFixedCopyAspectRatio
                 };
                 const safeProject = projectName.replace(/[\/:*?"<>|]/g, "_");
                 const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
@@ -2081,7 +2107,8 @@ ${err?.message || err}`);
                 const importedProjects = importedData.projects || [defaultProjectName];
                 const importedGroups = importedData.groups || ['Group 1'];
                 setProjects(importedProjects);
-                setSelectedProject(importedProjects[0] || defaultProjectName);
+                const importedSelectedProject = importedData.selectedProject && importedProjects.includes(importedData.selectedProject) ? importedData.selectedProject : importedProjects[0];
+                setSelectedProject(importedSelectedProject || defaultProjectName);
                 setVisibleProjects(importedData.visibleProjects || importedProjects);
                 setGroups(importedGroups);
                 setGroupProjects(importedData.groupProjects || Object.fromEntries(importedGroups.map(g => [g, importedProjects[0] || defaultProjectName])));
@@ -2099,6 +2126,7 @@ ${err?.message || err}`);
                 if(importedData.yAxisMaxAuto !== undefined) setYAxisMaxAuto(importedData.yAxisMaxAuto);
                 if(importedData.yAxisMaxManual !== undefined) setYAxisMaxManual(importedData.yAxisMaxManual);
                 if(importedData.viewerGridCols !== undefined) setViewerGridCols(importedData.viewerGridCols);
+                if(importedData.useFixedCopyAspectRatio !== undefined) setUseFixedCopyAspectRatio(importedData.useFixedCopyAspectRatio);
             };
 
             const handleImportJSON = async (e) => {
@@ -2109,11 +2137,111 @@ ${err?.message || err}`);
                     applyWorkspaceData(importedData);
                     setWorkspaceFileName(file.name || 'NC_Report_Settings.json');
                     setWorkspaceFileHandle(null);
+                    try { await workspaceDbSet(WORKSPACE_HANDLE_KEY, null); } catch (persistErr) { console.warn('保存先情報のクリアに失敗しました:', persistErr); }
+                    setWorkspaceSaveStatus('ワークスペースを読み込みました。このブラウザでは読み込んだファイルを上書き先に自動設定できません。');
                 } catch (err) {
                     alert("JSONファイルの読み込みに失敗しました。ファイル形式が正しいか確認してください。");
                 }
                 e.target.value = null;
             };
+
+            const handleOpenWorkspace = async () => {
+                if (!window.showOpenFilePicker) {
+                    workspaceImportInputRef.current?.click();
+                    return;
+                }
+                try {
+                    const [fileHandle] = await window.showOpenFilePicker({
+                        types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }],
+                        excludeAcceptAllOption: false,
+                        multiple: false
+                    });
+                    if (!fileHandle) return;
+                    const hasPermission = await verifyFileHandlePermission(fileHandle, false);
+                    if (!hasPermission) throw new Error('読み込みファイルへのアクセス権限がありません。');
+                    const file = await fileHandle.getFile();
+                    const importedData = await readJsonFile(file);
+                    applyWorkspaceData(importedData);
+                    await persistWorkspaceHandle(fileHandle);
+                    setWorkspaceSaveStatus(`ワークスペースを読み込み、上書き先を設定しました: ${fileHandle.name}`);
+                } catch (err) {
+                    if (err?.name !== 'AbortError') {
+                        console.error('ワークスペースの読み込みに失敗しました:', err);
+                        alert(`ワークスペースの読み込みに失敗しました。ファイル形式が正しいか確認してください。
+${err?.message || err}`);
+                    }
+                }
+            };
+
+            const getHistorySnapshot = React.useCallback(() => JSON.stringify(getWorkspaceExportData()), [
+                dataItems, groups, projects, selectedProject, groupProjects, visibleProjects, bgNoiseData, bgCorrectionMethod, bgNoiseMode,
+                groupOctaveModes, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols, useFixedCopyAspectRatio
+            ]);
+
+            const applyHistorySnapshot = React.useCallback((snapshot) => {
+                isRestoringHistoryRef.current = true;
+                applyWorkspaceData(JSON.parse(snapshot));
+            }, []);
+
+            const canUndo = historyVersion >= 0 && undoStackRef.current.length > 0;
+            const canRedo = historyVersion >= 0 && redoStackRef.current.length > 0;
+
+            React.useEffect(() => {
+                const snapshot = getHistorySnapshot();
+                if (lastHistorySnapshotRef.current === null) {
+                    lastHistorySnapshotRef.current = snapshot;
+                    return;
+                }
+                if (isRestoringHistoryRef.current) {
+                    lastHistorySnapshotRef.current = snapshot;
+                    isRestoringHistoryRef.current = false;
+                    setHistoryVersion(version => version + 1);
+                    return;
+                }
+                if (snapshot === lastHistorySnapshotRef.current) return;
+                undoStackRef.current.push(lastHistorySnapshotRef.current);
+                if (undoStackRef.current.length > 100) undoStackRef.current.shift();
+                redoStackRef.current = [];
+                lastHistorySnapshotRef.current = snapshot;
+                setHistoryVersion(version => version + 1);
+            }, [getHistorySnapshot]);
+
+            const handleUndo = React.useCallback(() => {
+                const previousSnapshot = undoStackRef.current.pop();
+                if (!previousSnapshot) return;
+                const currentSnapshot = getHistorySnapshot();
+                redoStackRef.current.push(currentSnapshot);
+                applyHistorySnapshot(previousSnapshot);
+                setHistoryVersion(version => version + 1);
+            }, [applyHistorySnapshot, getHistorySnapshot]);
+
+            const handleRedo = React.useCallback(() => {
+                const nextSnapshot = redoStackRef.current.pop();
+                if (!nextSnapshot) return;
+                const currentSnapshot = getHistorySnapshot();
+                undoStackRef.current.push(currentSnapshot);
+                if (undoStackRef.current.length > 100) undoStackRef.current.shift();
+                applyHistorySnapshot(nextSnapshot);
+                setHistoryVersion(version => version + 1);
+            }, [applyHistorySnapshot, getHistorySnapshot]);
+
+            React.useEffect(() => {
+                const handleHistoryShortcut = (event) => {
+                    const key = event.key.toLowerCase();
+                    if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+                    if (key === 'z') {
+                        event.preventDefault();
+                        if (event.shiftKey) handleRedo();
+                        else handleUndo();
+                    } else if (key === 'y') {
+                        event.preventDefault();
+                        handleRedo();
+                    }
+                };
+                window.addEventListener('keydown', handleHistoryShortcut);
+                return () => window.removeEventListener('keydown', handleHistoryShortcut);
+            }, [handleUndo, handleRedo]);
+
 
             const parseCsvLine = (line) => line.split(',').map(cell => cell.trim());
 
@@ -2850,6 +2978,15 @@ def create_excel():
                                         />
                                         <span className="text-xs text-gray-500">小</span>
                                     </div>
+                                    <label className="mt-1 flex items-center gap-1 text-xs text-gray-600 cursor-pointer" title="カードサイズに関係なく、グラフ部分を添付2枚目と同じアスペクト比でコピーします">
+                                        <input
+                                            type="checkbox"
+                                            checked={useFixedCopyAspectRatio}
+                                            onChange={(e) => setUseFixedCopyAspectRatio(e.target.checked)}
+                                            className="rounded text-blue-600 w-3 h-3"
+                                        />
+                                        <span>コピー比固定</span>
+                                    </label>
                                 </div>
                                 <div className="flex space-x-2">
                                     {!isExportedViewerMode && (
@@ -2897,6 +3034,7 @@ def create_excel():
                                         tickFontSize={tickFontSize}
                                         yAxisMaxAuto={yAxisMaxAuto}
                                         yAxisMaxManual={yAxisMaxManual}
+                                        useFixedCopyAspectRatio={useFixedCopyAspectRatio}
                                         isViewerMode={true}
                                         setDataItems={setDataItems}
                                         setGroups={setGroups}
@@ -2935,10 +3073,30 @@ def create_excel():
                         </div>
                         <div className="flex flex-col space-y-2 items-end">
                             <div className="flex space-x-2">
-                                <label className="cursor-pointer py-1 px-3 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-bold rounded shadow-sm transition-colors">
+                                <button
+                                    onClick={handleOpenWorkspace}
+                                    className="py-1 px-3 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-bold rounded shadow-sm transition-colors"
+                                    title="読み込んだファイルを、以後の上書き保存先にします"
+                                >
                                     📁 ワークスペース読込
-                                    <input type="file" className="hidden" accept=".json" onChange={handleImportJSON} />
-                                </label>
+                                </button>
+                                <input ref={workspaceImportInputRef} type="file" className="hidden" accept=".json" onChange={handleImportJSON} />
+                                <button
+                                    onClick={handleUndo}
+                                    disabled={!canUndo}
+                                    className={`py-1 px-3 text-xs font-bold rounded shadow-sm transition-colors ${canUndo ? 'bg-amber-100 hover:bg-amber-200 text-amber-700' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
+                                    title="元に戻す (Ctrl+Z)"
+                                >
+                                    ↶ Undo
+                                </button>
+                                <button
+                                    onClick={handleRedo}
+                                    disabled={!canRedo}
+                                    className={`py-1 px-3 text-xs font-bold rounded shadow-sm transition-colors ${canRedo ? 'bg-amber-100 hover:bg-amber-200 text-amber-700' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
+                                    title="やり直し (Ctrl+Y / Ctrl+Shift+Z)"
+                                >
+                                    ↷ Redo
+                                </button>
                                 <button 
                                     onClick={handleExportJSON}
                                     className="py-1 px-3 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-bold rounded shadow-sm transition-colors"
@@ -3315,6 +3473,7 @@ def create_excel():
                                                 tickFontSize={tickFontSize}
                                                 yAxisMaxAuto={yAxisMaxAuto}
                                                 yAxisMaxManual={yAxisMaxManual}
+                                                useFixedCopyAspectRatio={useFixedCopyAspectRatio}
                                                 isViewerMode={false}
                                                 setDataItems={setDataItems}
                                                 setGroups={setGroups}
