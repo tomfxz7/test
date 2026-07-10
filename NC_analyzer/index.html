@@ -785,11 +785,29 @@
                 });
             };
 
+            const addAspectRatioPadding = (sourceCanvas, targetAspectRatio) => {
+                const sourceAspectRatio = sourceCanvas.width / sourceCanvas.height;
+                const outputCanvas = document.createElement('canvas');
+                if (sourceAspectRatio > targetAspectRatio) {
+                    outputCanvas.width = sourceCanvas.width;
+                    outputCanvas.height = Math.ceil(sourceCanvas.width / targetAspectRatio);
+                } else {
+                    outputCanvas.width = Math.ceil(sourceCanvas.height * targetAspectRatio);
+                    outputCanvas.height = sourceCanvas.height;
+                }
+                const ctx = outputCanvas.getContext('2d');
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, outputCanvas.width, outputCanvas.height);
+                ctx.drawImage(sourceCanvas, 0, 0);
+                return outputCanvas;
+            };
+
             const handleCopyGraphImage = () => {
                 const fixedHeight = useFixedCopyAspectRatio ? Math.round(1200 / ATTACHED_COPY_ASPECT_RATIO) : null;
                 const exportResult = createExportChartCanvas(1200, fixedHeight);
                 if (!exportResult) return;
-                copyCanvasToClipboard(exportResult.canvas, () => exportResult.chart.destroy());
+                const copyCanvas = useFixedCopyAspectRatio ? addAspectRatioPadding(exportResult.canvas, ATTACHED_COPY_ASPECT_RATIO) : exportResult.canvas;
+                copyCanvasToClipboard(copyCanvas, () => exportResult.chart.destroy());
             };
 
             const handleCopyLegendImage = (columns = legendCopyColumns) => {
@@ -802,36 +820,22 @@
                 const legendColumnWidth = 220;
                 const legendScale = 2;
                 const padding = 24;
-                let chartResult = null;
-                let legendCanvas = null;
-                let chartHeight = null;
-
-                for (let i = 0; i < (useFixedCopyAspectRatio ? 2 : 1); i++) {
-                    if (chartResult) chartResult.chart.destroy();
-                    chartResult = createExportChartCanvas(chartWidth, chartHeight);
-                    if (!chartResult) return;
-                    const legendFontSize = getExportDimensions(chartWidth, chartResult.canvas.height).scaleSize(axisLabelFontSize, 1);
-                    const legendColumns = getLegendColumnsForHeight(legendColumnWidth, legendScale, chartResult.canvas.height, 8, legendFontSize);
-                    legendCanvas = createLegendCanvas(legendColumnWidth, legendScale, legendColumns, chartResult.canvas.height, legendFontSize);
-                    if (useFixedCopyAspectRatio) {
-                        const combinedWidth = chartResult.canvas.width + legendCanvas.width + padding;
-                        const nextChartHeight = Math.max(1, Math.round(combinedWidth / ATTACHED_COPY_ASPECT_RATIO));
-                        if (Math.abs(nextChartHeight - chartResult.canvas.height) <= 1) break;
-                        chartHeight = nextChartHeight;
-                    }
-                }
-
+                const chartResult = createExportChartCanvas(chartWidth);
                 if (!chartResult) return;
                 const chartCanvas = chartResult.canvas;
-                const combinedCanvas = document.createElement('canvas');
-                combinedCanvas.width = chartCanvas.width + legendCanvas.width + padding;
-                combinedCanvas.height = useFixedCopyAspectRatio ? Math.round(combinedCanvas.width / ATTACHED_COPY_ASPECT_RATIO) : chartCanvas.height;
-                const ctx = combinedCanvas.getContext('2d');
-                ctx.fillStyle = '#ffffff';
-                ctx.fillRect(0, 0, combinedCanvas.width, combinedCanvas.height);
-                ctx.drawImage(chartCanvas, 0, 0);
-                ctx.drawImage(legendCanvas, chartCanvas.width + padding, 0);
-                copyCanvasToClipboard(combinedCanvas, () => chartResult.chart.destroy());
+                const legendFontSize = getExportDimensions(chartWidth).scaleSize(axisLabelFontSize, 1);
+                const legendColumns = getLegendColumnsForHeight(legendColumnWidth, legendScale, chartCanvas.height, 8, legendFontSize);
+                const legendCanvas = createLegendCanvas(legendColumnWidth, legendScale, legendColumns, chartCanvas.height, legendFontSize);
+                const contentCanvas = document.createElement('canvas');
+                contentCanvas.width = chartCanvas.width + legendCanvas.width + padding;
+                contentCanvas.height = chartCanvas.height;
+                const contentCtx = contentCanvas.getContext('2d');
+                contentCtx.fillStyle = '#ffffff';
+                contentCtx.fillRect(0, 0, contentCanvas.width, contentCanvas.height);
+                contentCtx.drawImage(chartCanvas, 0, 0);
+                contentCtx.drawImage(legendCanvas, chartCanvas.width + padding, 0);
+                const copyCanvas = useFixedCopyAspectRatio ? addAspectRatioPadding(contentCanvas, ATTACHED_COPY_ASPECT_RATIO) : contentCanvas;
+                copyCanvasToClipboard(copyCanvas, () => chartResult.chart.destroy());
             };
 
             const handleLegendClick = (label) => {
