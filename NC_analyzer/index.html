@@ -306,7 +306,7 @@
             return maxNcRequired < 15 ? "<15" : maxNcRequired;
         }
 
-        const GroupChart = ({ groupName, projectName, items, bgGraphItem, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, useFixedCopyAspectRatio, isViewerMode, setDataItems, setGroups, onRemoveItem, onToggleVisible, onMoveItems, groups, projects, groupProjects, onDuplicateGroup, onMoveGroupToProject, onDragStart, onDragOver, onDrop, isDraggingThis }) => {
+        const GroupChart = ({ groupName, projectName, items, bgGraphItem, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, copyLegendFontSize, yAxisMaxAuto, yAxisMaxManual, useFixedCopyAspectRatio, isViewerMode, setDataItems, setGroups, onRemoveItem, onToggleVisible, onMoveItems, groups, projects, groupProjects, onDuplicateGroup, onMoveGroupToProject, onDragStart, onDragOver, onDrop, isDraggingThis }) => {
             const chartRef = React.useRef(null);
             const chartInstance = React.useRef(null);
             
@@ -813,7 +813,7 @@
             };
 
             const handleCopyLegendImage = (columns = legendCopyColumns) => {
-                copyCanvasToClipboard(createLegendCanvas(260, 2, columns));
+                copyCanvasToClipboard(createLegendCanvas(260, 2, columns, null, copyLegendFontSize * 2));
                 setShowLegendCopyModal(false);
             };
 
@@ -826,7 +826,7 @@
                 const chartResult = createExportChartCanvas(chartWidth, fixedChartHeight, useFixedCopyAspectRatio ? FIXED_COPY_SCALE_BASE_WIDTH : null);
                 if (!chartResult) return;
                 const chartCanvas = chartResult.canvas;
-                const legendFontSize = getExportDimensions(chartWidth, fixedChartHeight, useFixedCopyAspectRatio ? FIXED_COPY_SCALE_BASE_WIDTH : null).scaleSize(axisLabelFontSize, 1);
+                const legendFontSize = getExportDimensions(chartWidth, fixedChartHeight, useFixedCopyAspectRatio ? FIXED_COPY_SCALE_BASE_WIDTH : null).scaleSize(copyLegendFontSize, 1);
                 const legendColumns = getLegendColumnsForHeight(legendColumnWidth, legendScale, chartCanvas.height, 8, legendFontSize);
                 const legendCanvas = createLegendCanvas(legendColumnWidth, legendScale, legendColumns, chartCanvas.height, legendFontSize);
                 const combinedCanvas = document.createElement('canvas');
@@ -1669,6 +1669,7 @@
             const [pointSize, setPointSize] = React.useState(initState?.pointSize || 4);
             const [axisLineWidth, setAxisLineWidth] = React.useState(initState?.axisLineWidth || 1);
             const [axisLabelFontSize, setAxisLabelFontSize] = React.useState(initState?.axisLabelFontSize || 14);
+            const [copyLegendFontSize, setCopyLegendFontSize] = React.useState(initState?.copyLegendFontSize || initState?.axisLabelFontSize || 14);
             const [tickFontSize, setTickFontSize] = React.useState(initState?.tickFontSize || 12);
             const [yAxisMaxAuto, setYAxisMaxAuto] = React.useState(initState?.yAxisMaxAuto ?? true);
             const [yAxisMaxManual, setYAxisMaxManual] = React.useState(initState?.yAxisMaxManual || 100);
@@ -1814,6 +1815,7 @@
                     pointSize,
                     axisLineWidth,
                     axisLabelFontSize,
+                    copyLegendFontSize,
                     tickFontSize,
                     yAxisMaxAuto, 
                     yAxisMaxManual,
@@ -1824,7 +1826,7 @@
 
             const getWorkspaceExportData = () => ({
                 version: "1.4", dataItems, groups, projects, selectedProject, groupProjects, visibleProjects, bgNoiseData, bgCorrectionMethod, bgNoiseMode,
-                groupOctaveModes, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols, useFixedCopyAspectRatio
+                groupOctaveModes, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, copyLegendFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols, useFixedCopyAspectRatio
             });
 
             const downloadWorkspaceJSON = (fileName = workspaceFileName) => {
@@ -1934,6 +1936,7 @@ ${err?.message || err}`);
                     pointSize,
                     axisLineWidth,
                     axisLabelFontSize,
+                    copyLegendFontSize,
                     tickFontSize,
                     yAxisMaxAuto,
                     yAxisMaxManual,
@@ -2140,6 +2143,7 @@ ${err?.message || err}`);
                 if(importedData.pointSize !== undefined) setPointSize(importedData.pointSize);
                 if(importedData.axisLineWidth !== undefined) setAxisLineWidth(importedData.axisLineWidth);
                 if(importedData.axisLabelFontSize !== undefined) setAxisLabelFontSize(importedData.axisLabelFontSize);
+                if(importedData.copyLegendFontSize !== undefined) setCopyLegendFontSize(importedData.copyLegendFontSize);
                 if(importedData.tickFontSize !== undefined) setTickFontSize(importedData.tickFontSize);
                 if(importedData.yAxisMaxAuto !== undefined) setYAxisMaxAuto(importedData.yAxisMaxAuto);
                 if(importedData.yAxisMaxManual !== undefined) setYAxisMaxManual(importedData.yAxisMaxManual);
@@ -2193,7 +2197,7 @@ ${err?.message || err}`);
 
             const getHistorySnapshot = React.useCallback(() => JSON.stringify(getWorkspaceExportData()), [
                 dataItems, groups, projects, selectedProject, groupProjects, visibleProjects, bgNoiseData, bgCorrectionMethod, bgNoiseMode,
-                groupOctaveModes, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols, useFixedCopyAspectRatio
+                groupOctaveModes, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, copyLegendFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols, useFixedCopyAspectRatio
             ]);
 
             const applyHistorySnapshot = React.useCallback((snapshot) => {
@@ -3050,6 +3054,7 @@ def create_excel():
                                         axisLineWidth={axisLineWidth}
                                         axisLabelFontSize={axisLabelFontSize}
                                         tickFontSize={tickFontSize}
+                                        copyLegendFontSize={copyLegendFontSize}
                                         yAxisMaxAuto={yAxisMaxAuto}
                                         yAxisMaxManual={yAxisMaxManual}
                                         useFixedCopyAspectRatio={useFixedCopyAspectRatio}
@@ -3265,7 +3270,7 @@ def create_excel():
                                     </div>
                                 </div>
 
-                                <div className="grid grid-cols-3 gap-3 mb-3 border-t pt-2">
+                                <div className="grid grid-cols-4 gap-3 mb-3 border-t pt-2">
                                     <div>
                                         <label className="block text-xs font-semibold text-gray-600 mb-1">軸の太さ</label>
                                         <div className="flex items-center space-x-1">
@@ -3285,6 +3290,13 @@ def create_excel():
                                         <div className="flex items-center space-x-1">
                                             <input type="range" min="8" max="24" value={tickFontSize} onChange={(e) => setTickFontSize(Number(e.target.value))} className="flex-1 w-full" />
                                             <span className="text-xs font-mono w-6 text-right">{tickFontSize}</span>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-semibold text-gray-600 mb-1">コピー凡例文字</label>
+                                        <div className="flex items-center space-x-1">
+                                            <input type="range" min="8" max="40" value={copyLegendFontSize} onChange={(e) => setCopyLegendFontSize(Number(e.target.value))} className="flex-1 w-full" />
+                                            <span className="text-xs font-mono w-6 text-right">{copyLegendFontSize}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -3489,6 +3501,7 @@ def create_excel():
                                                 axisLineWidth={axisLineWidth}
                                                 axisLabelFontSize={axisLabelFontSize}
                                                 tickFontSize={tickFontSize}
+                                                copyLegendFontSize={copyLegendFontSize}
                                                 yAxisMaxAuto={yAxisMaxAuto}
                                                 yAxisMaxManual={yAxisMaxManual}
                                                 useFixedCopyAspectRatio={useFixedCopyAspectRatio}
