@@ -310,7 +310,7 @@
             const chartRef = React.useRef(null);
             const chartInstance = React.useRef(null);
             
-            const [highlightedLabel, setHighlightedLabel] = React.useState(null);
+            const [highlightedLabels, setHighlightedLabels] = React.useState(new Set());
             const [hiddenLabels, setHiddenLabels] = React.useState(new Set());
             const [isolatedLabels, setIsolatedLabels] = React.useState(new Set());
             const [legendItems, setLegendItems] = React.useState([]);
@@ -324,6 +324,19 @@
             
             const clickState = React.useRef({ lastTime: 0, timer: null });
             const hoveredLegendRef = React.useRef(null);
+
+            const toggleHighlightedLabel = React.useCallback((label) => {
+                setHighlightedLabels(prev => {
+                    const next = new Set(prev);
+                    if (next.has(label)) next.delete(label);
+                    else next.add(label);
+                    return next;
+                });
+            }, []);
+
+            const clearHighlightedLabels = React.useCallback(() => {
+                setHighlightedLabels(new Set());
+            }, []);
 
             React.useEffect(() => {
                 setTargetProjectForGroup(projectName || '');
@@ -347,7 +360,7 @@
                         const curveData = activeFreqs.map(f => getNcCurveInterpolated(nc, [f])[0]);
                         const hexColor = ncColors[nc] || '#ff4d4f';
                         
-                        const isHighlighted = highlightedLabel === label;
+                        const isHighlighted = highlightedLabels.has(label);
                         const isHidden = hiddenLabels.has(label);
                         const color = hexColor; // NCカーブは常に半透明にしない
 
@@ -388,8 +401,8 @@
                         isHidden = true; // 単独表示リストになければ非表示
                     }
 
-                    const isHighlighted = highlightedLabel === label;
-                    const isFaded = highlightedLabel !== null && !isHighlighted;
+                    const isHighlighted = highlightedLabels.has(label);
+                    const isFaded = highlightedLabels.size > 0 && !isHighlighted;
                     const color = isFaded ? hexToRgba(hexColor, 0.15) : hexColor;
 
                     datasets.push({
@@ -425,8 +438,8 @@
                     }
 
                     const bgColorBase = '#64748b';
-                    const isHighlighted = highlightedLabel === bgLabel;
-                    const isFaded = highlightedLabel !== null && !isHighlighted;
+                    const isHighlighted = highlightedLabels.has(bgLabel);
+                    const isFaded = highlightedLabels.size > 0 && !isHighlighted;
                     const bgColor = isFaded ? hexToRgba(bgColorBase, 0.15) : bgColorBase;
 
                     datasets.push({
@@ -493,9 +506,9 @@
                                 if (elements.length > 0) {
                                     const datasetIndex = elements[0].datasetIndex;
                                     const label = chart.data.datasets[datasetIndex].label;
-                                    setHighlightedLabel(prev => prev === label ? null : label);
+                                    toggleHighlightedLabel(label);
                                 } else {
-                                    setHighlightedLabel(null);
+                                    clearHighlightedLabels();
                                 }
                             },
                             scales: {
@@ -560,7 +573,7 @@
                                         } else {
                                             clickState.current.lastTime = now;
                                             clickState.current.timer = setTimeout(() => {
-                                                setHighlightedLabel(prev => prev === label ? null : label);
+                                                toggleHighlightedLabel(label);
                                             }, 300);
                                         }
                                     }
@@ -571,7 +584,7 @@
                         plugins: [bgPlugin]
                     });
                 }
-            }, [items, bgGraphItem, groupName, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, highlightedLabel, hiddenLabels, isolatedLabels, isMaximized]);
+            }, [items, bgGraphItem, groupName, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, highlightedLabels, hiddenLabels, isolatedLabels, isMaximized]);
 
             const handleContextMenu = (e) => {
                 e.preventDefault();
@@ -856,7 +869,7 @@
                 } else {
                     clickState.current.lastTime = now;
                     clickState.current.timer = setTimeout(() => {
-                        setHighlightedLabel(prev => prev === label ? null : label);
+                        toggleHighlightedLabel(label);
                     }, 300);
                 }
             };
@@ -937,7 +950,7 @@
                                 {legendItems.map(item => (
                                     <div
                                         key={item.label}
-                                        className={`flex items-start gap-2 py-1 cursor-pointer rounded px-1 hover:bg-gray-50 ${item.hidden ? 'opacity-40' : ''}`}
+                                        className={`flex items-start gap-2 py-1 cursor-pointer rounded px-1 hover:bg-gray-50 ${highlightedLabels.has(item.label) ? 'bg-yellow-50 ring-1 ring-yellow-300' : ''} ${item.hidden ? 'opacity-40' : ''}`}
                                         onClick={() => handleLegendClick(item.label)}
                                         onContextMenu={(e) => handleLegendContextMenu(e, item.label)}
                                         title={item.label}
