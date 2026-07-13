@@ -269,6 +269,17 @@
             });
         }
 
+
+        function addBackgroundNoiseArray(measuredValues, bgValues) {
+            return measuredValues.map((m, i) => {
+                if (m === null) return null;
+                const b = bgValues[i];
+                if (b === null || isNaN(b)) return m;
+                const val = 10 * Math.log10(Math.pow(10, m / 10) + Math.pow(10, b / 10));
+                return Math.round(val * 10) / 10;
+            });
+        }
+
         function getRequiredNcForFrequency(freq, value) {
             if (value === null || isNaN(value)) return null;
             let requiredNc = 15;
@@ -1447,7 +1458,7 @@
                             >
                                 <span className="truncate">{item.fileName}</span>
                                 {item.isOriginalThird && <span className="text-[9px] font-bold text-gray-500 bg-gray-200 px-1 rounded flex-shrink-0 no-underline">1/3</span>}
-                                {item.isCorrected && <span className="text-[9px] font-bold text-blue-500 bg-blue-100 px-1 rounded flex-shrink-0 no-underline">補正</span>}
+                                {item.isCorrected && <span className={`text-[9px] font-bold px-1 rounded flex-shrink-0 no-underline ${item.bgOperation === 'add' ? 'text-emerald-600 bg-emerald-100' : 'text-blue-500 bg-blue-100'}`}>{item.bgOperation === 'add' ? '加算' : '補正'}</span>}
                             </button>
                         </td>
                     );
@@ -1675,6 +1686,7 @@
             const [editingGroup, setEditingGroup] = React.useState(null);
             const [editingGroupName, setEditingGroupName] = React.useState('');
             const [bgNoiseData, setBgNoiseData] = React.useState(initState?.bgNoiseData || {});
+            const [addNoiseData, setAddNoiseData] = React.useState(initState?.addNoiseData || {});
             const [bgCorrectionMethod, setBgCorrectionMethod] = React.useState(initState?.bgCorrectionMethod || 'energy');
             const [bgNoiseMode, setBgNoiseMode] = React.useState(initState?.bgNoiseMode || 'subtract');
             const [groupOctaveModes, setGroupOctaveModes] = React.useState(initState?.groupOctaveModes || {});
@@ -1802,10 +1814,16 @@
                         return rest;
                     });
                 const htmlExportBgNoiseData = {};
+                const htmlExportAddNoiseData = {};
                 for (const [key, value] of Object.entries(bgNoiseData)) {
                     if (!htmlExportGroupSet.has(key)) continue;
                     const { rawText, ...rest } = value;
                     htmlExportBgNoiseData[key] = rest;
+                }
+                for (const [key, value] of Object.entries(addNoiseData)) {
+                    if (!htmlExportGroupSet.has(key)) continue;
+                    const { rawText, ...rest } = value;
+                    htmlExportAddNoiseData[key] = rest;
                 }
                 const htmlExportGroupProjects = Object.fromEntries(
                     Object.entries(groupProjects).filter(([groupName, projectName]) => htmlExportGroupSet.has(groupName) && targetProjectSet.has(projectName))
@@ -1821,6 +1839,7 @@
                     groupProjects: htmlExportGroupProjects,
                     visibleProjects: targetProjects,
                     bgNoiseData: htmlExportBgNoiseData, 
+                    addNoiseData: htmlExportAddNoiseData,
                     bgCorrectionMethod, 
                     bgNoiseMode,
                     groupOctaveModes: htmlExportGroupOctaveModes,
@@ -1839,7 +1858,7 @@
             };
 
             const getWorkspaceExportData = () => ({
-                version: "1.4", dataItems, groups, projects, selectedProject, groupProjects, visibleProjects, bgNoiseData, bgCorrectionMethod, bgNoiseMode,
+                version: "1.4", dataItems, groups, projects, selectedProject, groupProjects, visibleProjects, bgNoiseData, addNoiseData, bgCorrectionMethod, bgNoiseMode,
                 groupOctaveModes, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, copyLegendFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols, useFixedCopyAspectRatio
             });
 
@@ -1929,9 +1948,11 @@ ${err?.message || err}`);
                 const projectGroups = groups.filter(g => (groupProjects[g] || defaultProjectName) === projectName);
                 const projectGroupSet = new Set(projectGroups);
                 const projectBgNoiseData = {};
+                const projectAddNoiseData = {};
                 const projectGroupOctaveModes = {};
                 projectGroups.forEach(g => {
                     if (bgNoiseData[g]) projectBgNoiseData[g] = bgNoiseData[g];
+                    if (addNoiseData[g]) projectAddNoiseData[g] = addNoiseData[g];
                     if (groupOctaveModes[g]) projectGroupOctaveModes[g] = groupOctaveModes[g];
                 });
                 const exportData = {
@@ -1942,6 +1963,7 @@ ${err?.message || err}`);
                     groupProjects: Object.fromEntries(projectGroups.map(g => [g, projectName])),
                     visibleProjects: [projectName],
                     bgNoiseData: projectBgNoiseData,
+                    addNoiseData: projectAddNoiseData,
                     bgCorrectionMethod,
                     bgNoiseMode,
                     groupOctaveModes: projectGroupOctaveModes,
@@ -2117,8 +2139,12 @@ ${err?.message || err}`);
                 ];
 
                 const nextBgNoiseData = { ...baseState.bgNoiseData };
+                const nextAddNoiseData = { ...baseState.addNoiseData };
                 Object.entries(importedData.bgNoiseData || {}).forEach(([groupName, value]) => {
                     nextBgNoiseData[groupMap[groupName] || groupName] = value;
+                });
+                Object.entries(importedData.addNoiseData || {}).forEach(([groupName, value]) => {
+                    nextAddNoiseData[groupMap[groupName] || groupName] = value;
                 });
 
                 const nextGroupOctaveModes = { ...baseState.groupOctaveModes };
@@ -2133,6 +2159,7 @@ ${err?.message || err}`);
                     groupProjects: nextGroupProjects,
                     dataItems: nextDataItems,
                     bgNoiseData: nextBgNoiseData,
+                    addNoiseData: nextAddNoiseData,
                     groupOctaveModes: nextGroupOctaveModes,
                     visibleProjects: [...new Set([...baseState.visibleProjects, ...Object.values(projectMap)])]
                 };
@@ -2149,6 +2176,7 @@ ${err?.message || err}`);
                 setGroupProjects(importedData.groupProjects || Object.fromEntries(importedGroups.map(g => [g, importedProjects[0] || defaultProjectName])));
                 setDataItems(importedData.dataItems || []);
                 setBgNoiseData(importedData.bgNoiseData || {});
+                setAddNoiseData(importedData.addNoiseData || {});
                 if(importedData.bgCorrectionMethod !== undefined) setBgCorrectionMethod(importedData.bgCorrectionMethod);
                 if(importedData.bgNoiseMode !== undefined) setBgNoiseMode(importedData.bgNoiseMode);
                 setGroupOctaveModes(importedData.groupOctaveModes || {});
@@ -2210,7 +2238,7 @@ ${err?.message || err}`);
             };
 
             const getHistorySnapshot = React.useCallback(() => JSON.stringify(getWorkspaceExportData()), [
-                dataItems, groups, projects, selectedProject, groupProjects, visibleProjects, bgNoiseData, bgCorrectionMethod, bgNoiseMode,
+                dataItems, groups, projects, selectedProject, groupProjects, visibleProjects, bgNoiseData, addNoiseData, bgCorrectionMethod, bgNoiseMode,
                 groupOctaveModes, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, copyLegendFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols, useFixedCopyAspectRatio
             ]);
 
@@ -2447,6 +2475,7 @@ ${err?.message || err}`);
                         groupProjects,
                         dataItems,
                         bgNoiseData,
+                        addNoiseData,
                         groupOctaveModes,
                         visibleProjects
                     });
@@ -2455,6 +2484,7 @@ ${err?.message || err}`);
                     setGroupProjects(merged.groupProjects);
                     setDataItems(merged.dataItems);
                     setBgNoiseData(merged.bgNoiseData);
+                    setAddNoiseData(merged.addNoiseData);
                     setGroupOctaveModes(merged.groupOctaveModes);
                     setVisibleProjects(merged.visibleProjects);
                     const newProject = merged.projects.find(p => !projects.includes(p));
@@ -2484,6 +2514,16 @@ ${err?.message || err}`);
                     delete next[gToRemove];
                     return next;
                 });
+                setBgNoiseData(prev => {
+                    const next = { ...prev };
+                    delete next[gToRemove];
+                    return next;
+                });
+                setAddNoiseData(prev => {
+                    const next = { ...prev };
+                    delete next[gToRemove];
+                    return next;
+                });
             };
 
             const handleEditGroupStart = (g) => {
@@ -2504,6 +2544,18 @@ ${err?.message || err}`);
                 }
                 
                 setGroups(prev => prev.map(g => g === oldName ? newName : g));
+                setBgNoiseData(prev => {
+                    if (!prev[oldName]) return prev;
+                    const next = { ...prev, [newName]: prev[oldName] };
+                    delete next[oldName];
+                    return next;
+                });
+                setAddNoiseData(prev => {
+                    if (!prev[oldName]) return prev;
+                    const next = { ...prev, [newName]: prev[oldName] };
+                    delete next[oldName];
+                    return next;
+                });
                 setGroupProjects(prev => {
                     const next = { ...prev, [newName]: prev[oldName] || selectedProject };
                     delete next[oldName];
@@ -2548,6 +2600,7 @@ ${err?.message || err}`);
                     }))
                 ]);
                 setBgNoiseData(prev => prev[groupName] ? { ...prev, [newGroupName]: { ...prev[groupName] } } : prev);
+                setAddNoiseData(prev => prev[groupName] ? { ...prev, [newGroupName]: { ...prev[groupName] } } : prev);
                 setGroupOctaveModes(prev => prev[groupName] ? { ...prev, [newGroupName]: prev[groupName] } : prev);
             };
 
@@ -2582,12 +2635,70 @@ ${err?.message || err}`);
                 e.target.value = null;
             };
 
+
+            const handleAddNoiseFileUpload = async (e, groupName) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                try {
+                    const parsed = await readAndParseFile(file);
+                    setAddNoiseData(prev => ({
+                        ...prev,
+                        [groupName]: {
+                            fileName: parsed.fileName,
+                            rawFreqs: parsed.rawFreqs,
+                            rawValues: parsed.rawValues,
+                            isOriginalThird: parsed.isThirdOct,
+                            rawText: parsed.rawText
+                        }
+                    }));
+                } catch (err) {
+                    alert("加算音ファイルの読み込みに失敗しました:\n" + err.message);
+                }
+                e.target.value = null;
+            };
+
             const handleClearBgNoise = (groupName) => {
                 setBgNoiseData(prev => {
                     const newState = { ...prev };
                     delete newState[groupName];
                     return newState;
                 });
+            };
+
+            const handleClearAddNoise = (groupName) => {
+                setAddNoiseData(prev => {
+                    const newState = { ...prev };
+                    delete newState[groupName];
+                    return newState;
+                });
+            };
+
+
+            const handleDirectNoiseInput = (groupName, target) => {
+                const current = target === 'add' ? addNoiseData[groupName] : bgNoiseData[groupName];
+                const currentValues = current?.rawValues?.length === targetOctFreqs.length ? current.rawValues.join(', ') : '';
+                const input = window.prompt(
+                    `${target === 'add' ? '加算音' : '暗騒音'}の1/1オクターブ値を入力してください。\n周波数: ${targetOctFreqs.map(getLabelStr).join(', ')}\n値はカンマ、タブ、スペース区切りで${targetOctFreqs.length}個入力してください。`,
+                    currentValues
+                );
+                if (input === null) return;
+                const values = input.trim().split(/[\s,、]+/).filter(Boolean).map(Number);
+                if (values.length !== targetOctFreqs.length || values.some(v => Number.isNaN(v))) {
+                    alert(`${targetOctFreqs.length}個の数値を入力してください。`);
+                    return;
+                }
+                const directData = {
+                    fileName: `${target === 'add' ? '加算音' : '暗騒音'}（直接入力）`,
+                    rawFreqs: [...targetOctFreqs],
+                    rawValues: values,
+                    isOriginalThird: false,
+                    rawText: `direct octave input: ${values.join(', ')}`
+                };
+                if (target === 'add') {
+                    setAddNoiseData(prev => ({ ...prev, [groupName]: directData }));
+                } else {
+                    setBgNoiseData(prev => ({ ...prev, [groupName]: directData }));
+                }
             };
 
             const handleFileUpload = async (e) => {
@@ -2710,12 +2821,16 @@ ${err?.message || err}`);
                     
                     let corrValues = getProcessedItemData(item.rawFreqs, item.rawValues, item.isOriginalThird, octMode);
                     let isCorrected = false;
+                    let bgOperation = null;
                     
-                    if (bgNoiseMode === 'subtract' && bgNoiseData[group]) {
-                        const bgItem = bgNoiseData[group];
+                    if ((bgNoiseMode === 'subtract' && bgNoiseData[group]) || (bgNoiseMode === 'add' && addNoiseData[group])) {
+                        const bgItem = bgNoiseMode === 'add' ? addNoiseData[group] : bgNoiseData[group];
                         const bgVals = getProcessedItemData(bgItem.rawFreqs, bgItem.rawValues, bgItem.isOriginalThird, octMode);
-                        corrValues = subtractBackgroundNoiseArray(corrValues, bgVals, bgCorrectionMethod);
+                        corrValues = bgNoiseMode === 'add'
+                            ? addBackgroundNoiseArray(corrValues, bgVals)
+                            : subtractBackgroundNoiseArray(corrValues, bgVals, bgCorrectionMethod);
                         isCorrected = true;
+                        bgOperation = bgNoiseMode;
                     }
                     const ncVal = calculateNC(corrValues);
                     
@@ -2724,11 +2839,12 @@ ${err?.message || err}`);
                         values: corrValues,
                         ncResult: ncVal,
                         isCorrected: isCorrected,
+                        bgOperation: bgOperation,
                         appliedOctMode: octMode
                     });
                     return acc;
                 }, {});
-            }, [dataItems, bgNoiseData, bgCorrectionMethod, bgNoiseMode, groupOctaveModes]);
+            }, [dataItems, bgNoiseData, addNoiseData, bgCorrectionMethod, bgNoiseMode, groupOctaveModes]);
 
             const bgGraphData = React.useMemo(() => {
                 if (bgNoiseMode !== 'overlay') return {};
@@ -3402,6 +3518,10 @@ def create_excel():
                                                 <span className="text-gray-700">測定値から差し引く</span>
                                             </label>
                                             <label className="flex items-center space-x-1 cursor-pointer">
+                                                <input type="radio" name="bgMode" value="add" checked={bgNoiseMode === 'add'} onChange={() => setBgNoiseMode('add')} className="text-blue-600 w-3 h-3" />
+                                                <span className="text-gray-700">測定値に足し合わせる</span>
+                                            </label>
+                                            <label className="flex items-center space-x-1 cursor-pointer">
                                                 <input type="radio" name="bgMode" value="overlay" checked={bgNoiseMode === 'overlay'} onChange={() => setBgNoiseMode('overlay')} className="text-blue-600 w-3 h-3" />
                                                 <span className="text-gray-700">差し引かずグラフに追加</span>
                                             </label>
@@ -3437,16 +3557,31 @@ def create_excel():
                                                     </div>
                                                 </div>
                                                 <div className="flex items-center text-[10px]">
-                                                    <span className="w-8 text-gray-500">暗騒音:</span>
+                                                    <span className="w-12 text-gray-500">暗騒音:</span>
                                                     <label className="cursor-pointer bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 py-0.5 px-1.5 rounded shadow-sm">
                                                         選択
                                                         <input type="file" className="hidden" accept=".txt,.csv" onChange={(e) => handleBgFileUpload(e, g)} />
                                                     </label>
+                                                    <button onClick={() => handleDirectNoiseInput(g, 'bg')} className="ml-1 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 py-0.5 px-1.5 rounded shadow-sm" title="1/1オクターブ値を直接入力">直接入力</button>
                                                     <span className="ml-1 text-gray-400 truncate flex-1" title={bgNoiseData[g]?.fileName}>
                                                         {bgNoiseData[g] ? `✓ ${bgNoiseData[g].fileName}` : "未設定"}
                                                     </span>
                                                     {bgNoiseData[g] && (
                                                         <button onClick={() => handleClearBgNoise(g)} className="ml-1 text-red-400 hover:text-red-600 font-bold px-1" title="クリア">&times;</button>
+                                                    )}
+                                                </div>
+                                                <div className="flex items-center text-[10px] mt-1">
+                                                    <span className="w-12 text-gray-500">加算音:</span>
+                                                    <label className="cursor-pointer bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 py-0.5 px-1.5 rounded shadow-sm">
+                                                        選択
+                                                        <input type="file" className="hidden" accept=".txt,.csv" onChange={(e) => handleAddNoiseFileUpload(e, g)} />
+                                                    </label>
+                                                    <button onClick={() => handleDirectNoiseInput(g, 'add')} className="ml-1 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 py-0.5 px-1.5 rounded shadow-sm" title="1/1オクターブ値を直接入力">直接入力</button>
+                                                    <span className="ml-1 text-gray-400 truncate flex-1" title={addNoiseData[g]?.fileName}>
+                                                        {addNoiseData[g] ? `✓ ${addNoiseData[g].fileName}` : "未設定"}
+                                                    </span>
+                                                    {addNoiseData[g] && (
+                                                        <button onClick={() => handleClearAddNoise(g)} className="ml-1 text-red-400 hover:text-red-600 font-bold px-1" title="クリア">&times;</button>
                                                     )}
                                                 </div>
                                             </div>
