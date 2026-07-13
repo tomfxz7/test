@@ -195,6 +195,13 @@
                     <div class="mt-10 mb-4 px-6">
                         <div id="time-slider"></div>
                         <div id="range-text" class="text-center text-sm mt-4 text-slate-600 font-medium"></div>
+                        <div class="mt-3 flex flex-wrap items-center justify-center gap-2 text-sm">
+                            <label for="range-start-input" class="text-slate-600">解析範囲(秒):</label>
+                            <input type="number" id="range-start-input" placeholder="開始" class="border border-slate-300 rounded p-1 w-24 text-right focus:ring-1 focus:ring-blue-500 outline-none" step="any">
+                            <span class="text-slate-400">-</span>
+                            <input type="number" id="range-end-input" placeholder="終了" class="border border-slate-300 rounded p-1 w-24 text-right focus:ring-1 focus:ring-blue-500 outline-none" step="any">
+                            <button type="button" id="range-apply-btn" class="text-xs bg-blue-600 hover:bg-blue-700 text-white font-medium py-1.5 px-3 rounded-md">範囲を適用</button>
+                        </div>
                     </div>
                 </div>
                 
@@ -327,6 +334,9 @@
             const waveXMaxInput = document.getElementById('wave-x-max');
             const waveYMinInput = document.getElementById('wave-y-min');
             const waveYMaxInput = document.getElementById('wave-y-max');
+            const rangeStartInput = document.getElementById('range-start-input');
+            const rangeEndInput = document.getElementById('range-end-input');
+            const rangeApplyBtn = document.getElementById('range-apply-btn');
 
             // --- 音声再生・アニメーション用の要素・変数 ---
             const playAudioBtn = document.getElementById('play-audio-btn');
@@ -371,6 +381,8 @@
             let ambientSubtractEnabled = true;
             let rangeSliderInstance = null;
             let lastSelectedYColIdx = null; // 列名ではなくインデックスで記憶する
+            let lastRangeStartSec = null;
+            let lastRangeEndSec = null;
 
             // エクスポート用データ保持
             let exportTData = [];
@@ -511,6 +523,13 @@
                 if (currentDataType === 'csv' && xColSelect.value === "-1") {
                     applyColumnChanges();
                 }
+            });
+            rangeApplyBtn.addEventListener('click', () => applyManualRangeInput());
+            rangeStartInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') applyManualRangeInput();
+            });
+            rangeEndInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') applyManualRangeInput();
             });
 
             // エクスポートボタン
@@ -1356,9 +1375,18 @@
                 }
 
                 const maxIdx = globalYData.length - 1;
+                const minTime = globalTData[0];
+                const maxTime = globalTData[maxIdx];
+                let startIdx = 0;
+                let endIdx = maxIdx;
+                if (Number.isFinite(lastRangeStartSec) && Number.isFinite(lastRangeEndSec)) {
+                    startIdx = findNearestIndexByTime(lastRangeStartSec);
+                    endIdx = findNearestIndexByTime(lastRangeEndSec);
+                    if (startIdx > endIdx) [startIdx, endIdx] = [endIdx, startIdx];
+                }
                 
                 noUiSlider.create(sliderElem, {
-                    start: [0, maxIdx],
+                    start: [startIdx, endIdx],
                     connect: true,
                     range: {
                         'min': 0,
@@ -1373,19 +1401,21 @@
 
                 rangeSliderInstance = sliderElem.noUiSlider;
                 const rangeTextElem = document.getElementById('range-text');
+                rangeStartInput.min = minTime;
+                rangeStartInput.max = maxTime;
+                rangeEndInput.min = minTime;
+                rangeEndInput.max = maxTime;
 
                 rangeSliderInstance.on('slide', (values) => {
                     const sIdx = values[0];
                     const eIdx = values[1];
-                    updateWaveformAnnotation(sIdx, eIdx);
-                    rangeTextElem.textContent = `選択範囲: ${globalTData[sIdx].toFixed(3)}s 〜 ${globalTData[eIdx].toFixed(3)}s (${eIdx - sIdx + 1} サンプル)`;
+                    updateRangeSelectionUI(sIdx, eIdx, false);
                 });
 
                 rangeSliderInstance.on('set', (values) => {
                     const sIdx = values[0];
                     const eIdx = values[1];
-                    updateWaveformAnnotation(sIdx, eIdx);
-                    rangeTextElem.textContent = `選択範囲: ${globalTData[sIdx].toFixed(3)}s 〜 ${globalTData[eIdx].toFixed(3)}s (${eIdx - sIdx + 1} サンプル)`;
+                    updateRangeSelectionUI(sIdx, eIdx, true);
                     
                     stopAudio(); // 範囲が変わったら音を止める
 
@@ -1401,9 +1431,54 @@
                     }, 10);
                 });
 
-                rangeTextElem.textContent = `選択範囲: ${globalTData[0].toFixed(3)}s 〜 ${globalTData[maxIdx].toFixed(3)}s (${maxIdx + 1} サンプル)`;
-                performFFT(0, maxIdx);
-                updateWaveformAnnotation(0, maxIdx);
+                updateRangeSelectionUI(startIdx, endIdx, true);
+                performFFT(startIdx, endIdx);
+                updateWaveformAnnotation(startIdx, endIdx);
+            }
+
+            function findNearestIndexByTime(timeSec) {
+                if (!globalTData.length) return 0;
+                if (timeSec <= globalTData[0]) return 0;
+                const lastIdx = globalTData.length - 1;
+                if (timeSec >= globalTData[lastIdx]) return lastIdx;
+                let low = 0;
+                let high = lastIdx;
+                while (low <= high) {
+                    const mid = Math.floor((low + high) / 2);
+                    if (globalTData[mid] < timeSec) low = mid + 1;
+                    else high = mid - 1;
+                }
+                const prevIdx = Math.max(0, low - 1);
+                const nextIdx = Math.min(lastIdx, low);
+                return Math.abs(globalTData[nextIdx] - timeSec) < Math.abs(globalTData[prevIdx] - timeSec) ? nextIdx : prevIdx;
+            }
+
+            function updateRangeSelectionUI(startIdx, endIdx, saveAsLast = false) {
+                const rangeTextElem = document.getElementById('range-text');
+                updateWaveformAnnotation(startIdx, endIdx);
+                const startSec = globalTData[startIdx];
+                const endSec = globalTData[endIdx];
+                rangeTextElem.textContent = `選択範囲: ${startSec.toFixed(3)}s 〜 ${endSec.toFixed(3)}s (${endIdx - startIdx + 1} サンプル)`;
+                rangeStartInput.value = Number.isFinite(startSec) ? startSec.toFixed(6) : '';
+                rangeEndInput.value = Number.isFinite(endSec) ? endSec.toFixed(6) : '';
+                if (saveAsLast) {
+                    lastRangeStartSec = startSec;
+                    lastRangeEndSec = endSec;
+                }
+            }
+
+            function applyManualRangeInput() {
+                if (!rangeSliderInstance || !globalTData.length) return;
+                const startSec = parseFloat(rangeStartInput.value);
+                const endSec = parseFloat(rangeEndInput.value);
+                if (!Number.isFinite(startSec) || !Number.isFinite(endSec)) {
+                    showMessage('開始・終了の秒数を数値で入力してください。', 'error');
+                    return;
+                }
+                let sIdx = findNearestIndexByTime(startSec);
+                let eIdx = findNearestIndexByTime(endSec);
+                if (sIdx > eIdx) [sIdx, eIdx] = [eIdx, sIdx];
+                rangeSliderInstance.set([sIdx, eIdx]);
             }
 
             // グラフ上の赤い選択枠の更新
