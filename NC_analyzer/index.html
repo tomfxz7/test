@@ -848,12 +848,30 @@
                 });
             };
 
+            const addAspectRatioPadding = (sourceCanvas, targetAspectRatio) => {
+                const sourceAspectRatio = sourceCanvas.width / sourceCanvas.height;
+                const outputCanvas = document.createElement('canvas');
+                if (sourceAspectRatio > targetAspectRatio) {
+                    outputCanvas.width = sourceCanvas.width;
+                    outputCanvas.height = Math.ceil(sourceCanvas.width / targetAspectRatio);
+                } else {
+                    outputCanvas.width = Math.ceil(sourceCanvas.height * targetAspectRatio);
+                    outputCanvas.height = sourceCanvas.height;
+                }
+                const ctx = outputCanvas.getContext('2d');
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, outputCanvas.width, outputCanvas.height);
+                ctx.drawImage(sourceCanvas, 0, 0);
+                return outputCanvas;
+            };
+
             const handleCopyGraphImage = () => {
                 const chartWidth = useFixedCopyAspectRatio ? 1537 : 1200;
                 const fixedHeight = useFixedCopyAspectRatio ? Math.round(chartWidth / CHART_COPY_ASPECT_RATIO) : null;
                 const exportResult = createExportChartCanvas(chartWidth, fixedHeight, useFixedCopyAspectRatio ? FIXED_COPY_SCALE_BASE_WIDTH : null);
                 if (!exportResult) return;
-                copyCanvasToClipboard(exportResult.canvas, () => exportResult.chart.destroy());
+                const copyCanvas = useFixedCopyAspectRatio ? addAspectRatioPadding(exportResult.canvas, ATTACHED_COPY_ASPECT_RATIO) : exportResult.canvas;
+                copyCanvasToClipboard(copyCanvas, () => exportResult.chart.destroy());
             };
 
             const handleCopyLegendImage = (columns = legendCopyColumns) => {
@@ -2847,10 +2865,12 @@ ${err?.message || err}`);
                     let isCorrected = false;
                     let bgOperation = null;
                     
-                    if (bgNoiseMode === 'subtract' && bgNoiseData[group]) {
-                        const bgItem = bgNoiseData[group];
+                    if ((bgNoiseMode === 'subtract' && bgNoiseData[group]) || (bgNoiseMode === 'add' && addNoiseData[group])) {
+                        const bgItem = bgNoiseMode === 'add' ? addNoiseData[group] : bgNoiseData[group];
                         const bgVals = getProcessedItemData(bgItem.rawFreqs, bgItem.rawValues, bgItem.isOriginalThird, octMode);
-                        corrValues = subtractBackgroundNoiseArray(corrValues, bgVals, bgCorrectionMethod);
+                        corrValues = bgNoiseMode === 'add'
+                            ? addBackgroundNoiseArray(corrValues, bgVals)
+                            : subtractBackgroundNoiseArray(corrValues, bgVals, bgCorrectionMethod);
                         isCorrected = true;
                         bgOperation = 'subtract';
                     }
@@ -3569,6 +3589,10 @@ def create_excel():
                                             <label className="flex items-center space-x-1 cursor-pointer">
                                                 <input type="radio" name="bgMode" value="subtract" checked={bgNoiseMode === 'subtract'} onChange={() => setBgNoiseMode('subtract')} className="text-blue-600 w-3 h-3" />
                                                 <span className="text-gray-700">測定値から差し引く</span>
+                                            </label>
+                                            <label className="flex items-center space-x-1 cursor-pointer">
+                                                <input type="radio" name="bgMode" value="add" checked={bgNoiseMode === 'add'} onChange={() => setBgNoiseMode('add')} className="text-blue-600 w-3 h-3" />
+                                                <span className="text-gray-700">測定値に足し合わせる</span>
                                             </label>
                                             <label className="flex items-center space-x-1 cursor-pointer">
                                                 <input type="radio" name="bgMode" value="overlay" checked={bgNoiseMode === 'overlay'} onChange={() => setBgNoiseMode('overlay')} className="text-blue-600 w-3 h-3" />
