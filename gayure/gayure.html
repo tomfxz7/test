@@ -53,6 +53,36 @@
         </div>
       </details>
 
+
+      <!-- グラフ表示設定 -->
+      <details class="mb-4 border border-gray-300 rounded bg-white" open>
+        <summary class="font-semibold text-sm cursor-pointer p-3 bg-gray-50 rounded hover:bg-gray-100 outline-none flex justify-between items-center">
+          グラフ表示設定
+          <span class="text-xs font-normal text-gray-500">※自動保存</span>
+        </summary>
+        <div class="p-3 border-t text-sm">
+          <p class="text-xs text-gray-500 mb-3">軸ラベル・目盛文字のサイズと、軸・グリッドの線太さを調整できます。</p>
+          <div class="grid grid-cols-2 gap-3">
+            <label class="block">
+              <span class="block mb-1 font-semibold text-xs text-gray-600">軸ラベルサイズ</span>
+              <input type="number" id="axis-label-font-size" value="14" min="6" max="48" step="1" onchange="updateChartStyleSettings()" class="w-full border border-gray-300 p-2 rounded text-sm text-center">
+            </label>
+            <label class="block">
+              <span class="block mb-1 font-semibold text-xs text-gray-600">目盛文字サイズ</span>
+              <input type="number" id="tick-font-size" value="12" min="6" max="48" step="1" onchange="updateChartStyleSettings()" class="w-full border border-gray-300 p-2 rounded text-sm text-center">
+            </label>
+            <label class="block">
+              <span class="block mb-1 font-semibold text-xs text-gray-600">軸の線太さ</span>
+              <input type="number" id="axis-line-width" value="1" min="0" max="10" step="0.1" onchange="updateChartStyleSettings()" class="w-full border border-gray-300 p-2 rounded text-sm text-center">
+            </label>
+            <label class="block">
+              <span class="block mb-1 font-semibold text-xs text-gray-600">グリッド線太さ</span>
+              <input type="number" id="grid-line-width" value="1" min="0" max="10" step="0.1" onchange="updateChartStyleSettings()" class="w-full border border-gray-300 p-2 rounded text-sm text-center">
+            </label>
+          </div>
+        </div>
+      </details>
+
       <!-- 差分グラフ設定 -->
       <div class="mb-4">
         <label class="block mb-1 font-semibold text-sm">角度差分グラフ Y軸固定範囲</label>
@@ -220,6 +250,56 @@
     let currentSortOrder = 'speedAsc'; // デフォルト速度昇順
     let currentBlockSize = 250; 
 
+    // --- グラフ表示設定 ---
+    const defaultChartStyleSettings = {
+      axisLabelFontSize: 14,
+      tickFontSize: 12,
+      axisLineWidth: 1,
+      gridLineWidth: 1
+    };
+
+    let chartStyleSettings = {
+      ...defaultChartStyleSettings,
+      ...(JSON.parse(localStorage.getItem('ptzChartStyleSettings') || '{}'))
+    };
+
+    function normalizePositiveNumber(value, fallback) {
+      const parsed = parseFloat(value);
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+    }
+
+    function applyChartStyleSettingsToInputs() {
+      document.getElementById('axis-label-font-size').value = chartStyleSettings.axisLabelFontSize;
+      document.getElementById('tick-font-size').value = chartStyleSettings.tickFontSize;
+      document.getElementById('axis-line-width').value = chartStyleSettings.axisLineWidth;
+      document.getElementById('grid-line-width').value = chartStyleSettings.gridLineWidth;
+    }
+
+    function saveChartStyleSettings() {
+      localStorage.setItem('ptzChartStyleSettings', JSON.stringify(chartStyleSettings));
+    }
+
+    async function updateChartStyleSettings() {
+      chartStyleSettings = {
+        axisLabelFontSize: normalizePositiveNumber(document.getElementById('axis-label-font-size').value, defaultChartStyleSettings.axisLabelFontSize),
+        tickFontSize: normalizePositiveNumber(document.getElementById('tick-font-size').value, defaultChartStyleSettings.tickFontSize),
+        axisLineWidth: normalizePositiveNumber(document.getElementById('axis-line-width').value, defaultChartStyleSettings.axisLineWidth),
+        gridLineWidth: normalizePositiveNumber(document.getElementById('grid-line-width').value, defaultChartStyleSettings.gridLineWidth)
+      };
+      saveChartStyleSettings();
+      await rerenderAllCharts();
+    }
+
+    async function rerenderAllCharts() {
+      const keys = Object.keys(fileDataMap);
+      if (keys.length === 0) return;
+      for (const key of keys) {
+        const data = fileDataMap[key];
+        await execCalcAndRender(key, data.startSec || 5, data.endSec || 8);
+      }
+      renderResults();
+    }
+
     // --- プリセット管理 ---
     const defaultYPresets = [
       {min: -50, max: 10}, {min: -10, max: 50}, {min: -100, max: 20}, {min: -20, max: 100},
@@ -234,6 +314,7 @@
 
     document.addEventListener('DOMContentLoaded', () => {
       renderPresets();
+      applyChartStyleSettingsToInputs();
     });
 
     function renderPresets() {
@@ -294,7 +375,8 @@
         diffMin: document.getElementById('diff-min').value,
         diffMax: document.getElementById('diff-max').value,
         projectName: projectName,
-        appendFileName: document.getElementById('append-filename').checked
+        appendFileName: document.getElementById('append-filename').checked,
+        chartStyleSettings
       };
       const blob = new Blob([JSON.stringify(settings, null, 2)], {type: "application/json"});
       const link = document.createElement("a");
@@ -319,6 +401,12 @@
           if(settings.diffMax !== undefined) document.getElementById('diff-max').value = settings.diffMax;
           if(settings.projectName !== undefined) document.getElementById('project-name').value = settings.projectName;
           if(settings.appendFileName !== undefined) document.getElementById('append-filename').checked = settings.appendFileName;
+          if(settings.chartStyleSettings && typeof settings.chartStyleSettings === 'object') {
+            chartStyleSettings = { ...defaultChartStyleSettings, ...settings.chartStyleSettings };
+            saveChartStyleSettings();
+            applyChartStyleSettingsToInputs();
+            rerenderAllCharts();
+          }
           
           updateProjectNameDisplay();
           alert("設定をインポートしました。");
@@ -817,6 +905,30 @@
       document.getElementById('image-modal').classList.add('hidden');
     }
 
+    function createScaleOptions(yTitle, yMin, yMax) {
+      const { axisLabelFontSize, tickFontSize, axisLineWidth, gridLineWidth } = chartStyleSettings;
+      return {
+        x: {
+          title: { display: true, text: '時間 [s]', font: { size: axisLabelFontSize } },
+          ticks: {
+            maxTicksLimit: 15,
+            font: { size: tickFontSize },
+            callback: function(value) { return Number(this.getLabelForValue(value)).toFixed(0); }
+          },
+          border: { width: axisLineWidth },
+          grid: { lineWidth: gridLineWidth }
+        },
+        y: {
+          title: { display: true, text: yTitle, font: { size: axisLabelFontSize } },
+          ticks: { font: { size: tickFontSize } },
+          border: { width: axisLineWidth },
+          grid: { lineWidth: gridLineWidth },
+          min: yMin,
+          max: yMax
+        }
+      };
+    }
+
     // --- グラフ画像の生成 ---
     async function renderCharts(J, K, N, presetMin, presetMax, diffMin, diffMax, isHighRes = false) {
       const dpr = isHighRes ? 6 : (window.devicePixelRatio || 1);
@@ -828,14 +940,14 @@
         data: { labels: J, datasets: [{ label: '角速度 [°/s]', data: K, borderColor: '#2563eb', borderWidth: 1.5, pointRadius: 0, tension: 0 }] },
         options: {
           devicePixelRatio: dpr,
-          animation: false, responsive: false, plugins: { customCanvasBackgroundColor: { color: 'white' } },
-          scales: {
-            x: { 
-              title: { display: true, text: '時間 [s]', font: { size: 14 } }, 
-              ticks: { maxTicksLimit: 15, callback: function(value) { return Number(this.getLabelForValue(value)).toFixed(0); } } 
-            },
-            y: { title: { display: true, text: '角速度 [°/s]', font: { size: 14 } }, min: presetMin, max: presetMax }
-          }
+          animation: false,
+          responsive: false,
+          plugins: {
+            customCanvasBackgroundColor: { color: 'white' },
+            legend: { display: false },
+            title: { display: false }
+          },
+          scales: createScaleOptions('角速度 [°/s]', presetMin, presetMax)
         }
       });
 
@@ -846,14 +958,14 @@
         data: { labels: J, datasets: [{ label: '1msごとの角度差分 [°]', data: N, borderColor: '#2563eb', borderWidth: 1.5, pointRadius: 0, tension: 0 }] },
         options: {
           devicePixelRatio: dpr,
-          animation: false, responsive: false, plugins: { customCanvasBackgroundColor: { color: 'white' } },
-          scales: {
-            x: { 
-              title: { display: true, text: '時間 [s]', font: { size: 14 } }, 
-              ticks: { maxTicksLimit: 15, callback: function(value) { return Number(this.getLabelForValue(value)).toFixed(0); } } 
-            },
-            y: { title: { display: true, text: '回転角度の差分 [°]', font: { size: 14 } }, min: isNaN(diffMin) ? undefined : diffMin, max: isNaN(diffMax) ? undefined : diffMax }
-          }
+          animation: false,
+          responsive: false,
+          plugins: {
+            customCanvasBackgroundColor: { color: 'white' },
+            legend: { display: false },
+            title: { display: false }
+          },
+          scales: createScaleOptions('回転角度の差分 [°]', isNaN(diffMin) ? undefined : diffMin, isNaN(diffMax) ? undefined : diffMax)
         }
       });
 
