@@ -6,6 +6,8 @@
   <title>PTZカメラ 振動データ一括解析</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- 選択範囲の赤枠描画用 -->
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@2.2.1/dist/chartjs-plugin-annotation.min.js"></script>
   <!-- エクスポート用ライブラリ -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
@@ -194,6 +196,11 @@
             <input type="range" id="block-size" min="100" max="600" value="250" oninput="updateBlockSize()" class="w-16 sm:w-24 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer">
           </div>
           
+          <div class="flex bg-gray-200 rounded p-1 shadow-inner">
+            <button id="btn-mode-speed" onclick="setAnalysisMode('speed')" class="px-2 py-1 rounded text-sm bg-white shadow-sm font-bold text-gray-800 transition">速度解析</button>
+            <button id="btn-mode-drive" onclick="setAnalysisMode('driveTime')" class="px-2 py-1 rounded text-sm text-gray-600 hover:bg-gray-300 transition">駆動時間算出</button>
+          </div>
+
           <div class="flex bg-gray-200 rounded p-1 ml-auto shadow-inner">
             <button id="btn-view-card" onclick="setViewMode('card')" class="px-2 py-1 rounded text-sm bg-white shadow-sm font-bold text-gray-800 transition">カード</button>
             <button id="btn-view-table" onclick="setViewMode('table')" class="px-2 py-1 rounded text-sm text-gray-600 hover:bg-gray-300 transition">テーブル</button>
@@ -244,11 +251,23 @@
     // 各ファイルのデータを保持
     const fileDataMap = {}; 
 
+    function isDriveTimeMode() { return currentAnalysisMode === 'driveTime'; }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    }
+
+    function clampValue(value, min, max) {
+      return Math.min(Math.max(value, min), max);
+    }
+
+
     // 表示設定状態
     let currentViewMode = 'card';
     let currentFilterDirection = 'ALL';
     let currentSortOrder = 'speedAsc'; // デフォルト速度昇順
     let currentBlockSize = 250; 
+    let currentAnalysisMode = 'speed'; // speed | driveTime
 
     // --- グラフ表示設定 ---
     const defaultChartStyleSettings = {
@@ -471,6 +490,7 @@
             progressBar.style.width = `${((i) / keys.length) * 100}%`;
             await new Promise(r => setTimeout(r, 20)); 
             
+            ensureDriveTimeDefaults(dataToImport[k]);
             await execCalcAndRender(k, dataToImport[k].startSec || 5, dataToImport[k].endSec || 8);
           }
           
@@ -619,8 +639,12 @@
       for(let i=0; i<K.length; i++) if(isPos ? K[i]>thresholdV : K[i]<thresholdV) { edge1 = i; break; }
       for(let i=K.length-1; i>=0; i--) if(isPos ? K[i]>thresholdV : K[i]<thresholdV) { edge2 = i; break; }
       
+      let driveStartSec = 0;
+      let driveEndSec = J[J.length - 1] || 0;
       if(edge1 !== -1 && edge2 !== -1 && edge1 < edge2) {
         let tStart = J[edge1], tEnd = J[edge2], duration = tEnd - tStart;
+        driveStartSec = Math.round(tStart * 1000) / 1000;
+        driveEndSec = Math.round(tEnd * 1000) / 1000;
         let margin = duration < 1.0 ? duration * 0.2 : (duration < 2.0 ? 0.3 : 0.5);
         startSec = Math.round((tStart + margin) * 10) / 10;
         endSec = Math.round((tEnd - margin) * 10) / 10;
@@ -639,7 +663,8 @@
       fileDataMap[fileId] = { 
         fileId, originalIndex: index, fileName: file.name, project: projectName, 
         appendFilename, direction, axisName, J, K, L, baseOffset,
-        presetMin: bestPreset.min, presetMax: bestPreset.max, diffMin, diffMax 
+        presetMin: bestPreset.min, presetMax: bestPreset.max, diffMin, diffMax,
+        driveStartSec, driveEndSec, defaultDriveStartSec: driveStartSec, defaultDriveEndSec: driveEndSec 
       };
 
       await execCalcAndRender(fileId, startSec, endSec);
@@ -680,7 +705,10 @@
       data.b = b;
       data.speed = realSpeed; 
 
-      const { imgUrl1, imgUrl2 } = await renderCharts(data.J, data.K, N, data.presetMin, data.presetMax, data.diffMin, data.diffMax);
+      ensureDriveTimeDefaults(data);
+      data.driveDuration = Math.max(0, data.driveEndSec - data.driveStartSec);
+
+      const { imgUrl1, imgUrl2 } = await renderCharts(data.J, data.K, N, data.presetMin, data.presetMax, data.diffMin, data.diffMax, false, isDriveTimeMode() ? {start: data.driveStartSec, end: data.driveEndSec} : null);
       data.imgUrl1 = imgUrl1;
       data.imgUrl2 = imgUrl2;
     }
@@ -723,6 +751,44 @@
       const endSec = parseFloat(document.getElementById(`end-${fileId}`).value);
       await execCalcAndRender(fileId, startSec, endSec);
       renderResults(); 
+    }
+
+    function ensureDriveTimeDefaults(data) {
+      const lastTime = data.J && data.J.length ? data.J[data.J.length - 1] : 0;
+      if (!Number.isFinite(data.driveStartSec)) data.driveStartSec = Number.isFinite(data.startSec) ? data.startSec : 0;
+      if (!Number.isFinite(data.driveEndSec)) data.driveEndSec = Number.isFinite(data.endSec) ? data.endSec : lastTime;
+      if (!Number.isFinite(data.defaultDriveStartSec)) data.defaultDriveStartSec = data.driveStartSec;
+      if (!Number.isFinite(data.defaultDriveEndSec)) data.defaultDriveEndSec = data.driveEndSec;
+      data.driveStartSec = clampValue(data.driveStartSec, 0, lastTime);
+      data.driveEndSec = clampValue(data.driveEndSec, data.driveStartSec, lastTime);
+      data.driveDuration = Math.max(0, data.driveEndSec - data.driveStartSec);
+    }
+
+    async function setAnalysisMode(mode) {
+      currentAnalysisMode = mode;
+      document.getElementById('btn-mode-speed').className = mode === 'speed' ? 'px-2 py-1 rounded text-sm bg-white shadow-sm font-bold text-gray-800 transition' : 'px-2 py-1 rounded text-sm text-gray-600 hover:bg-gray-300 transition';
+      document.getElementById('btn-mode-drive').className = mode === 'driveTime' ? 'px-2 py-1 rounded text-sm bg-white shadow-sm font-bold text-gray-800 transition' : 'px-2 py-1 rounded text-sm text-gray-600 hover:bg-gray-300 transition';
+      await rerenderAllCharts();
+    }
+
+    async function applyDriveRange(fileId) {
+      const data = fileDataMap[fileId];
+      const lastTime = data.J[data.J.length - 1] || 0;
+      const start = parseFloat(document.getElementById(`drive-start-${fileId}`).value);
+      const end = parseFloat(document.getElementById(`drive-end-${fileId}`).value);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end) return alert('駆動開始時間は駆動終了時間より小さくしてください。');
+      data.driveStartSec = clampValue(start, 0, lastTime);
+      data.driveEndSec = clampValue(end, data.driveStartSec, lastTime);
+      await execCalcAndRender(fileId, data.startSec, data.endSec);
+      renderResults();
+    }
+
+    async function resetDriveRange(fileId) {
+      const data = fileDataMap[fileId];
+      data.driveStartSec = data.defaultDriveStartSec;
+      data.driveEndSec = data.defaultDriveEndSec;
+      await execCalcAndRender(fileId, data.startSec, data.endSec);
+      renderResults();
     }
 
     // --- ブロックサイズの変更 (スライダー連動) ---
@@ -872,6 +938,29 @@
               </div>
             </div>
             
+            ${isDriveTimeMode() ? `
+            <div class="mb-4 bg-red-50 p-3 rounded border border-red-200">
+              <div class="flex flex-col lg:flex-row lg:items-center gap-3">
+                <div class="font-bold text-sm text-red-700 min-w-[9rem]">駆動時間: ${data.driveDuration.toFixed(3)} 秒</div>
+                <div class="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <label class="text-xs text-gray-700">駆動開始時間
+                    <input type="range" min="0" max="${data.J[data.J.length - 1]}" step="0.001" value="${data.driveStartSec}" oninput="document.getElementById('drive-start-${k}').value=this.value" class="w-full accent-red-500">
+                  </label>
+                  <label class="text-xs text-gray-700">駆動終了時間
+                    <input type="range" min="0" max="${data.J[data.J.length - 1]}" step="0.001" value="${data.driveEndSec}" oninput="document.getElementById('drive-end-${k}').value=this.value" class="w-full accent-red-500">
+                  </label>
+                </div>
+                <div class="flex flex-wrap items-center gap-2 text-sm">
+                  <input type="number" id="drive-start-${k}" value="${data.driveStartSec.toFixed(3)}" step="0.001" class="border border-gray-300 p-1 w-24 text-center rounded bg-white">
+                  <span>〜</span>
+                  <input type="number" id="drive-end-${k}" value="${data.driveEndSec.toFixed(3)}" step="0.001" class="border border-gray-300 p-1 w-24 text-center rounded bg-white">
+                  <button onclick="applyDriveRange('${k}')" class="bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded text-xs font-bold transition shadow-sm">範囲を適用</button>
+                  <button onclick="resetDriveRange('${k}')" class="bg-white hover:bg-gray-100 text-gray-700 border border-gray-300 px-3 py-1.5 rounded text-xs font-bold transition shadow-sm">変更リセット</button>
+                </div>
+              </div>
+              <p class="text-xs text-red-700 mt-2">赤い選択範囲は、動き始めから停止時まで（加速時間・減速時間を含む）の駆動時間です。</p>
+            </div>` : ''}
+
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <div class="border border-gray-200 rounded bg-white p-1 relative group cursor-zoom-in" ondblclick="openModal('${data.imgUrl1}')">
                 <img src="${data.imgUrl1}" class="w-full h-auto" alt="角速度グラフ">
@@ -930,7 +1019,7 @@
     }
 
     // --- グラフ画像の生成 ---
-    async function renderCharts(J, K, N, presetMin, presetMax, diffMin, diffMax, isHighRes = false) {
+    async function renderCharts(J, K, N, presetMin, presetMax, diffMin, diffMax, isHighRes = false, selectedRange = null) {
       const dpr = isHighRes ? 6 : (window.devicePixelRatio || 1);
 
       const ctx1 = document.getElementById('hidden-chart1').getContext('2d');
@@ -945,7 +1034,21 @@
           plugins: {
             customCanvasBackgroundColor: { color: 'white' },
             legend: { display: false },
-            title: { display: false }
+            title: { display: false },
+            annotation: selectedRange ? {
+              annotations: {
+                driveRange: {
+                  type: 'box',
+                  xMin: selectedRange.start,
+                  xMax: selectedRange.end,
+                  yMin: presetMin,
+                  yMax: presetMax,
+                  backgroundColor: 'rgba(239, 68, 68, 0.14)',
+                  borderColor: 'rgba(239, 68, 68, 0.95)',
+                  borderWidth: 2
+                }
+              }
+            } : undefined
           },
           scales: createScaleOptions('角速度 [°/s]', presetMin, presetMax)
         }
