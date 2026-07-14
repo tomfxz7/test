@@ -188,6 +188,14 @@
             </select>
           </div>
 
+          <div class="flex items-center gap-1 bg-white border border-gray-300 rounded p-1.5 shadow-sm">
+            <span class="text-xs text-gray-500 font-bold pl-1">モード:</span>
+            <select id="analysis-mode" onchange="updateViewSettings()" class="border-none text-sm bg-transparent focus:outline-none cursor-pointer text-gray-800 w-[110px]">
+              <option value="speed" selected>速度算出</option>
+              <option value="duration">駆動時間算出</option>
+            </select>
+          </div>
+
           <!-- サイズスライダー (テーブルモード時のみ表示) -->
           <div id="size-slider-container" class="hidden items-center gap-1 bg-white border border-gray-300 rounded p-1.5 shadow-sm">
             <span class="text-xs text-gray-500 font-bold pl-1">縮尺:</span>
@@ -238,6 +246,26 @@
       }
     });
 
+    Chart.register({
+      id: 'driveRangeOverlay',
+      beforeDatasetsDraw: (chart, args, options) => {
+        if (!options || !options.enabled) return;
+        const { start, end, color = 'rgba(251, 191, 36, 0.25)' } = options;
+        if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end) return;
+        const xScale = chart.scales.x;
+        const area = chart.chartArea;
+        if (!xScale || !area) return;
+        const left = Math.max(area.left, xScale.getPixelForValue(start));
+        const right = Math.min(area.right, xScale.getPixelForValue(end));
+        if (right <= left) return;
+        const {ctx} = chart;
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.fillRect(left, area.top, right - left, area.bottom - area.top);
+        ctx.restore();
+      }
+    });
+
     let hiddenChart1 = null;
     let hiddenChart2 = null;
 
@@ -248,6 +276,7 @@
     let currentViewMode = 'card';
     let currentFilterDirection = 'ALL';
     let currentSortOrder = 'speedAsc'; // デフォルト速度昇順
+    let currentAnalysisMode = 'speed';
     let currentBlockSize = 250; 
 
     // --- グラフ表示設定 ---
@@ -555,6 +584,24 @@
       renderResults();
     }
 
+    function estimateDriveRange(J, K) {
+      if (!J.length || !K.length) return { driveStartSec: 0, driveEndSec: 0 };
+      const maxK = Math.max(...K);
+      const minK = Math.min(...K);
+      const isPos = Math.abs(maxK) > Math.abs(minK);
+      const sortedK = [...K].sort((a,b) => a-b);
+      const steadyV = isPos ? average(sortedK.slice(Math.floor(K.length*0.85), Math.floor(K.length*0.95)))
+                            : average(sortedK.slice(Math.floor(K.length*0.05), Math.floor(K.length*0.15)));
+      const thresholdV = steadyV * 0.85;
+      let edge1 = -1, edge2 = -1;
+      for(let i=0; i<K.length; i++) if(isPos ? K[i]>thresholdV : K[i]<thresholdV) { edge1 = i; break; }
+      for(let i=K.length-1; i>=0; i--) if(isPos ? K[i]>thresholdV : K[i]<thresholdV) { edge2 = i; break; }
+      if(edge1 === -1 || edge2 === -1 || edge1 >= edge2) {
+        return { driveStartSec: J[0] || 0, driveEndSec: J[J.length - 1] || 0 };
+      }
+      return { driveStartSec: Math.round(J[edge1] * 1000) / 1000, driveEndSec: Math.round(J[edge2] * 1000) / 1000 };
+    }
+
     // --- 単一ファイルの解析処理 ---
     async function processSingleFile(file, text, projectName, appendFilename, diffMin, diffMax, index) {
       const fileId = `f${Date.now()}_${index}`;
@@ -605,6 +652,7 @@
         L.push(i === 0 ? kVal * 0.001 : L[i-1] + kVal * 0.001);
       }
 
+      const driveRange = estimateDriveRange(J, K);
       let startSec = 5, endSec = 8;
       
       let maxK = Math.max(...K), minK = Math.min(...K);
@@ -639,6 +687,7 @@
       fileDataMap[fileId] = { 
         fileId, originalIndex: index, fileName: file.name, project: projectName, 
         appendFilename, direction, axisName, J, K, L, baseOffset,
+        driveStartSec: driveRange.driveStartSec, driveEndSec: driveRange.driveEndSec,
         presetMin: bestPreset.min, presetMax: bestPreset.max, diffMin, diffMax 
       };
 
@@ -650,6 +699,11 @@
       const data = fileDataMap[fileId];
       data.startSec = startSec;
       data.endSec = endSec;
+      if (!Number.isFinite(data.driveStartSec) || !Number.isFinite(data.driveEndSec)) {
+        const driveRange = estimateDriveRange(data.J, data.K);
+        data.driveStartSec = driveRange.driveStartSec;
+        data.driveEndSec = driveRange.driveEndSec;
+      }
       
       let sumX=0, sumY=0, sumXY=0, sumXX=0, count=0;
       for(let i=0; i<data.J.length; i++) {
@@ -680,7 +734,8 @@
       data.b = b;
       data.speed = realSpeed; 
 
-      const { imgUrl1, imgUrl2 } = await renderCharts(data.J, data.K, N, data.presetMin, data.presetMax, data.diffMin, data.diffMax);
+      const shadeRange = currentAnalysisMode === 'duration' ? { start: data.driveStartSec, end: data.driveEndSec } : null;
+      const { imgUrl1, imgUrl2 } = await renderCharts(data.J, data.K, N, data.presetMin, data.presetMax, data.diffMin, data.diffMax, false, shadeRange);
       data.imgUrl1 = imgUrl1;
       data.imgUrl2 = imgUrl2;
     }
@@ -717,6 +772,25 @@
       return keys;
     }
 
+    function getDriveDuration(data) {
+      return Math.max(0, (data.driveEndSec || 0) - (data.driveStartSec || 0));
+    }
+
+    async function updateDriveRange(fileId, edge, value) {
+      const data = fileDataMap[fileId];
+      const maxTime = data.J[data.J.length - 1] || 0;
+      const parsed = Math.min(maxTime, Math.max(0, parseFloat(value)));
+      if (edge === 'start') {
+        data.driveStartSec = Math.min(parsed, data.driveEndSec - 0.001);
+      } else {
+        data.driveEndSec = Math.max(parsed, data.driveStartSec + 0.001);
+      }
+      data.driveStartSec = Math.round(data.driveStartSec * 1000) / 1000;
+      data.driveEndSec = Math.round(data.driveEndSec * 1000) / 1000;
+      await execCalcAndRender(fileId, data.startSec, data.endSec);
+      renderResults();
+    }
+
     // --- UIからの再計算 ---
     async function recalc(fileId) {
       const startSec = parseFloat(document.getElementById(`start-${fileId}`).value);
@@ -738,7 +812,8 @@
     function updateViewSettings() {
       currentFilterDirection = document.getElementById('filter-direction').value;
       currentSortOrder = document.getElementById('sort-order').value;
-      renderResults();
+      currentAnalysisMode = document.getElementById('analysis-mode').value;
+      rerenderAllCharts();
     }
 
     function setViewMode(mode) {
@@ -819,7 +894,7 @@
           html += `
           <div class="flex flex-col bg-white border border-gray-300 rounded shadow-sm overflow-hidden hover:shadow-md transition">
             <div class="bg-blue-50 text-center font-bold text-gray-800 text-[10px] sm:text-xs py-1 px-1 border-b border-gray-300 truncate" title="${data.title} (補正: ${data.baseOffset.toFixed(2)})">
-              ${data.title}
+              ${data.title}${currentAnalysisMode === 'duration' ? ` / 駆動 ${getDriveDuration(data).toFixed(3)}秒` : ''}
             </div>
             <div class="p-1 flex-1 flex flex-col gap-1">
               <div class="relative group cursor-zoom-in border border-gray-100 rounded hover:opacity-90 transition" ondblclick="openModal('${data.imgUrl1}')">
@@ -871,6 +946,30 @@
                 v = ${data.speed.toFixed(1)}
               </div>
             </div>
+            ${currentAnalysisMode === 'duration' ? `
+            <div class="mb-4 bg-amber-50 p-3 rounded border border-amber-200">
+              <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+                <div class="font-bold text-amber-800">駆動時間: ${getDriveDuration(data).toFixed(3)} 秒</div>
+                <div class="text-xs text-amber-700">網掛け範囲: ${data.driveStartSec.toFixed(3)}s 〜 ${data.driveEndSec.toFixed(3)}s</div>
+              </div>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                <label class="block">
+                  <span class="block font-semibold text-xs text-gray-600 mb-1">駆動開始</span>
+                  <div class="flex items-center gap-2">
+                    <input type="range" min="0" max="${(data.J[data.J.length - 1] || 0).toFixed(3)}" step="0.001" value="${data.driveStartSec}" oninput="updateDriveRange('${k}', 'start', this.value)" class="w-full">
+                    <span class="w-16 text-right font-mono text-xs">${data.driveStartSec.toFixed(3)}s</span>
+                  </div>
+                </label>
+                <label class="block">
+                  <span class="block font-semibold text-xs text-gray-600 mb-1">駆動停止</span>
+                  <div class="flex items-center gap-2">
+                    <input type="range" min="0" max="${(data.J[data.J.length - 1] || 0).toFixed(3)}" step="0.001" value="${data.driveEndSec}" oninput="updateDriveRange('${k}', 'end', this.value)" class="w-full">
+                    <span class="w-16 text-right font-mono text-xs">${data.driveEndSec.toFixed(3)}s</span>
+                  </div>
+                </label>
+              </div>
+            </div>
+            ` : ''}
             
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <div class="border border-gray-200 rounded bg-white p-1 relative group cursor-zoom-in" ondblclick="openModal('${data.imgUrl1}')">
@@ -930,7 +1029,7 @@
     }
 
     // --- グラフ画像の生成 ---
-    async function renderCharts(J, K, N, presetMin, presetMax, diffMin, diffMax, isHighRes = false) {
+    async function renderCharts(J, K, N, presetMin, presetMax, diffMin, diffMax, isHighRes = false, shadeRange = null) {
       const dpr = isHighRes ? 6 : (window.devicePixelRatio || 1);
 
       const ctx1 = document.getElementById('hidden-chart1').getContext('2d');
@@ -944,6 +1043,7 @@
           responsive: false,
           plugins: {
             customCanvasBackgroundColor: { color: 'white' },
+            driveRangeOverlay: { enabled: !!shadeRange, start: shadeRange?.start, end: shadeRange?.end },
             legend: { display: false },
             title: { display: false }
           },
@@ -962,6 +1062,7 @@
           responsive: false,
           plugins: {
             customCanvasBackgroundColor: { color: 'white' },
+            driveRangeOverlay: { enabled: !!shadeRange, start: shadeRange?.start, end: shadeRange?.end },
             legend: { display: false },
             title: { display: false }
           },
@@ -1442,8 +1543,9 @@
             const N = [];
             for(let j=0; j<data.J.length; j++) N.push(data.L[j] - (data.a * data.J[j] + data.b));
 
+            const pdfShadeRange = currentAnalysisMode === 'duration' ? { start: data.driveStartSec, end: data.driveEndSec } : null;
             const { imgUrl1: pdfImgUrl1, imgUrl2: pdfImgUrl2 } = await renderCharts(
-              data.J, data.K, N, data.presetMin, data.presetMax, data.diffMin, data.diffMax, true
+              data.J, data.K, N, data.presetMin, data.presetMax, data.diffMin, data.diffMax, true, pdfShadeRange
             );
             data.pdfImgUrl1 = pdfImgUrl1;
             data.pdfImgUrl2 = pdfImgUrl2;
