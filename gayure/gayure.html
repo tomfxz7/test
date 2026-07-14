@@ -284,7 +284,7 @@
       id: 'driveRangeOverlay',
       beforeDatasetsDraw: (chart, args, options) => {
         if (!options || !options.enabled) return;
-        const { start, end, color = 'rgba(251, 191, 36, 0.25)' } = options;
+        const { start, end, color = 'rgba(239, 68, 68, 0.10)', borderColor = '#ef4444' } = options;
         if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end) return;
         const xScale = chart.scales.x;
         const area = chart.chartArea;
@@ -296,6 +296,9 @@
         ctx.save();
         ctx.fillStyle = color;
         ctx.fillRect(left, area.top, right - left, area.bottom - area.top);
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(left, area.top, right - left, area.bottom - area.top);
         ctx.restore();
       }
     });
@@ -721,6 +724,7 @@
       fileDataMap[fileId] = { 
         fileId, originalIndex: index, fileName: file.name, project: projectName, 
         appendFilename, direction, axisName, J, K, L, baseOffset,
+        autoDriveStartSec: driveRange.driveStartSec, autoDriveEndSec: driveRange.driveEndSec,
         driveStartSec: driveRange.driveStartSec, driveEndSec: driveRange.driveEndSec,
         presetMin: bestPreset.min, presetMax: bestPreset.max, diffMin, diffMax 
       };
@@ -733,10 +737,14 @@
       const data = fileDataMap[fileId];
       data.startSec = startSec;
       data.endSec = endSec;
-      if (!Number.isFinite(data.driveStartSec) || !Number.isFinite(data.driveEndSec)) {
+      if (!Number.isFinite(data.autoDriveStartSec) || !Number.isFinite(data.autoDriveEndSec)) {
         const driveRange = estimateDriveRange(data.J, data.K);
-        data.driveStartSec = driveRange.driveStartSec;
-        data.driveEndSec = driveRange.driveEndSec;
+        data.autoDriveStartSec = driveRange.driveStartSec;
+        data.autoDriveEndSec = driveRange.driveEndSec;
+      }
+      if (!Number.isFinite(data.driveStartSec) || !Number.isFinite(data.driveEndSec)) {
+        data.driveStartSec = data.autoDriveStartSec;
+        data.driveEndSec = data.autoDriveEndSec;
       }
       
       let sumX=0, sumY=0, sumXY=0, sumXX=0, count=0;
@@ -855,6 +863,16 @@
         document.getElementById(`drive-start-${fileId}`).value,
         document.getElementById(`drive-end-${fileId}`).value
       );
+    }
+
+    async function resetDriveRange(fileId) {
+      const data = fileDataMap[fileId];
+      if (!Number.isFinite(data.autoDriveStartSec) || !Number.isFinite(data.autoDriveEndSec)) {
+        const driveRange = estimateDriveRange(data.J, data.K);
+        data.autoDriveStartSec = driveRange.driveStartSec;
+        data.autoDriveEndSec = driveRange.driveEndSec;
+      }
+      await applyDriveRange(fileId, data.autoDriveStartSec, data.autoDriveEndSec);
     }
 
     function initDriveRangeSliders() {
@@ -1053,6 +1071,7 @@
                 <span class="text-slate-400">-</span>
                 <input type="number" id="drive-end-${k}" value="${data.driveEndSec.toFixed(6)}" class="border border-slate-300 rounded p-1 w-24 text-right focus:ring-1 focus:ring-blue-500 outline-none" step="any">
                 <button type="button" onclick="applyDriveRangeFromInputs('${k}')" class="text-xs bg-blue-600 hover:bg-blue-700 text-white font-medium py-1.5 px-3 rounded-md">範囲を適用</button>
+                <button type="button" onclick="resetDriveRange('${k}')" class="text-xs bg-white hover:bg-slate-50 text-slate-600 border border-slate-300 font-medium py-1.5 px-3 rounded-md">変更リセット</button>
               </div>
             </div>
             ` : ''}
