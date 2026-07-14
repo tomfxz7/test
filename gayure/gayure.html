@@ -8,10 +8,19 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <!-- 選択範囲の赤枠描画用 -->
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@2.2.1/dist/chartjs-plugin-annotation.min.js"></script>
+  <!-- FFTanalyzer と同じ範囲選択スライダー -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.7.1/nouislider.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.7.1/nouislider.min.js"></script>
   <!-- エクスポート用ライブラリ -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <style>
+    .drive-time-slider .noUi-connect { background: rgba(239, 68, 68, 0.55); }
+    .drive-time-slider .noUi-handle { border-radius: 9999px; background: #ef4444; border-color: #ef4444; box-shadow: none; cursor: grab; }
+    .drive-time-slider .noUi-handle::before,
+    .drive-time-slider .noUi-handle::after { display: none; }
+  </style>
 </head>
 <body class="bg-gray-100 h-screen flex flex-col font-sans text-gray-800 overflow-hidden">
   
@@ -942,13 +951,11 @@
             <div class="mb-4 bg-red-50 p-3 rounded border border-red-200">
               <div class="flex flex-col lg:flex-row lg:items-center gap-3">
                 <div class="font-bold text-sm text-red-700 min-w-[9rem]">駆動時間: ${data.driveDuration.toFixed(3)} 秒</div>
-                <div class="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <label class="text-xs text-gray-700">駆動開始時間
-                    <input type="range" min="0" max="${data.J[data.J.length - 1]}" step="0.001" value="${data.driveStartSec}" oninput="document.getElementById('drive-start-${k}').value=this.value" class="w-full accent-red-500">
-                  </label>
-                  <label class="text-xs text-gray-700">駆動終了時間
-                    <input type="range" min="0" max="${data.J[data.J.length - 1]}" step="0.001" value="${data.driveEndSec}" oninput="document.getElementById('drive-end-${k}').value=this.value" class="w-full accent-red-500">
-                  </label>
+                <div class="flex-1 px-3 min-w-[220px]">
+                  <div id="drive-slider-${k}" class="drive-time-slider mt-2"></div>
+                  <div id="drive-range-text-${k}" class="text-center text-xs mt-3 text-red-700 font-medium">
+                    選択範囲: ${data.driveStartSec.toFixed(3)}s 〜 ${data.driveEndSec.toFixed(3)}s (${data.driveDuration.toFixed(3)}秒)
+                  </div>
                 </div>
                 <div class="flex flex-wrap items-center gap-2 text-sm">
                   <input type="number" id="drive-start-${k}" value="${data.driveStartSec.toFixed(3)}" step="0.001" class="border border-gray-300 p-1 w-24 text-center rounded bg-white">
@@ -982,6 +989,35 @@
       }
 
       container.innerHTML = html;
+      initDriveTimeSliders();
+    }
+
+    function initDriveTimeSliders() {
+      if (!isDriveTimeMode() || typeof noUiSlider === 'undefined') return;
+      getFilteredAndSortedKeys().forEach(fileId => {
+        const data = fileDataMap[fileId];
+        const sliderElem = document.getElementById(`drive-slider-${fileId}`);
+        if (!sliderElem) return;
+        if (sliderElem.noUiSlider) sliderElem.noUiSlider.destroy();
+        const lastTime = data.J[data.J.length - 1] || 0;
+        noUiSlider.create(sliderElem, {
+          start: [data.driveStartSec, data.driveEndSec],
+          connect: true,
+          range: { min: 0, max: lastTime },
+          step: 0.001,
+          format: {
+            to: value => Number(value).toFixed(3),
+            from: value => Number(value)
+          }
+        });
+        sliderElem.noUiSlider.on('slide', values => {
+          const [start, end] = values.map(Number);
+          document.getElementById(`drive-start-${fileId}`).value = start.toFixed(3);
+          document.getElementById(`drive-end-${fileId}`).value = end.toFixed(3);
+          const textElem = document.getElementById(`drive-range-text-${fileId}`);
+          if (textElem) textElem.textContent = `選択範囲: ${start.toFixed(3)}s 〜 ${end.toFixed(3)}s (${Math.max(0, end - start).toFixed(3)}秒)`;
+        });
+      });
     }
 
     // --- モーダル (拡大表示) 処理 ---
@@ -998,11 +1034,12 @@
       const { axisLabelFontSize, tickFontSize, axisLineWidth, gridLineWidth } = chartStyleSettings;
       return {
         x: {
+          type: 'linear',
           title: { display: true, text: '時間 [s]', font: { size: axisLabelFontSize } },
           ticks: {
             maxTicksLimit: 15,
             font: { size: tickFontSize },
-            callback: function(value) { return Number(this.getLabelForValue(value)).toFixed(0); }
+            callback: value => Number(value).toFixed(3)
           },
           border: { width: axisLineWidth },
           grid: { lineWidth: gridLineWidth }
@@ -1026,7 +1063,7 @@
       if (hiddenChart1) hiddenChart1.destroy();
       hiddenChart1 = new Chart(ctx1, {
         type: 'line',
-        data: { labels: J, datasets: [{ label: '角速度 [°/s]', data: K, borderColor: '#2563eb', borderWidth: 1.5, pointRadius: 0, tension: 0 }] },
+        data: { datasets: [{ label: '角速度 [°/s]', data: J.map((x, i) => ({ x, y: K[i] })), borderColor: '#2563eb', borderWidth: 1.5, pointRadius: 0, tension: 0 }] },
         options: {
           devicePixelRatio: dpr,
           animation: false,
@@ -1045,7 +1082,8 @@
                   yMax: presetMax,
                   backgroundColor: 'rgba(239, 68, 68, 0.14)',
                   borderColor: 'rgba(239, 68, 68, 0.95)',
-                  borderWidth: 2
+                  borderWidth: 2,
+                  drawTime: 'beforeDatasetsDraw'
                 }
               }
             } : undefined
@@ -1058,7 +1096,7 @@
       if (hiddenChart2) hiddenChart2.destroy();
       hiddenChart2 = new Chart(ctx2, {
         type: 'line',
-        data: { labels: J, datasets: [{ label: '1msごとの角度差分 [°]', data: N, borderColor: '#2563eb', borderWidth: 1.5, pointRadius: 0, tension: 0 }] },
+        data: { datasets: [{ label: '1msごとの角度差分 [°]', data: J.map((x, i) => ({ x, y: N[i] })), borderColor: '#2563eb', borderWidth: 1.5, pointRadius: 0, tension: 0 }] },
         options: {
           devicePixelRatio: dpr,
           animation: false,
@@ -1130,6 +1168,7 @@
     .zoom-img { cursor: zoom-in; transition: opacity 0.2s; }
     .zoom-img:hover { opacity: 0.9; }
   </style>
+
 </head>
 <body class="p-4 sm:p-6 text-gray-800 flex flex-col h-screen overflow-hidden">
   <div class="max-w-[98%] mx-auto w-full flex flex-col h-full">
