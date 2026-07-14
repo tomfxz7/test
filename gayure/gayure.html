@@ -236,8 +236,12 @@
   <div id="image-modal" class="fixed inset-0 z-50 hidden bg-black bg-opacity-80 flex items-center justify-center p-4 cursor-pointer" onclick="closeModal()">
     <div class="relative w-[95vw] max-w-6xl max-h-[95vh] flex flex-col items-stretch gap-3" onclick="event.stopPropagation()">
       <button class="absolute -top-10 right-0 text-white text-3xl font-bold cursor-pointer hover:text-gray-300" onclick="closeModal()">&times;</button>
-      <div class="flex-1 min-h-0 flex items-center justify-center overflow-auto bg-white p-2 rounded shadow-lg">
-        <img id="modal-image" src="" class="max-w-full max-h-[78vh] object-contain cursor-default">
+      <div class="flex-1 min-h-0 bg-white p-2 rounded shadow-lg">
+        <img id="modal-image" src="" class="max-w-full max-h-[78vh] mx-auto object-contain cursor-default">
+        <div id="modal-chart-wrap" class="hidden relative h-[72vh] w-full">
+          <canvas id="modal-chart"></canvas>
+          <button onclick="resetModalChartZoom()" class="absolute top-2 right-2 bg-white/90 hover:bg-white text-gray-700 border border-gray-300 px-3 py-1 rounded text-xs font-bold shadow">ズームリセット</button>
+        </div>
       </div>
       <div id="modal-drive-controls" class="hidden bg-white rounded shadow-lg p-4 border border-red-200">
         <div class="flex flex-col md:flex-row md:items-center gap-3">
@@ -299,6 +303,9 @@
     const driveRangeRenderTimers = {};
     let modalDriveFileId = null;
     let modalDriveSlider = null;
+    let modalChart = null;
+    let modalChartXMin = null;
+    let modalChartXMax = null;
 
     // --- グラフ表示設定 ---
     const defaultChartStyleSettings = {
@@ -1050,12 +1057,20 @@
       document.getElementById('modal-image').src = src;
       document.getElementById('image-modal').classList.remove('hidden');
       setupModalDriveControls();
+      if (modalDriveFileId) renderModalDriveChart();
+      else {
+        document.getElementById('modal-chart-wrap').classList.add('hidden');
+        document.getElementById('modal-image').classList.remove('hidden');
+      }
     }
     
     function closeModal() {
       document.getElementById('image-modal').classList.add('hidden');
       modalDriveFileId = null;
       if (modalDriveSlider) { modalDriveSlider.destroy(); modalDriveSlider = null; }
+      if (modalChart) { modalChart.destroy(); modalChart = null; }
+      document.getElementById('modal-chart-wrap').classList.add('hidden');
+      document.getElementById('modal-image').classList.remove('hidden');
     }
 
     function updateDriveRangeInputs(fileId, start, end) {
@@ -1069,7 +1084,10 @@
       if (endInput) endInput.value = end.toFixed(3);
       const textElem = document.getElementById(`drive-range-text-${fileId}`);
       if (textElem) textElem.textContent = `選択範囲: ${start.toFixed(3)}s 〜 ${end.toFixed(3)}s (${data.driveDuration.toFixed(3)}秒)`;
-      if (modalDriveFileId === fileId) updateModalDriveText(start, end);
+      if (modalDriveFileId === fileId) {
+        updateModalDriveText(start, end);
+        updateModalChartAnnotation(start, end);
+      }
     }
 
     function updateModalDriveText(start, end) {
@@ -1088,8 +1106,91 @@
       driveRangeRenderTimers[fileId] = setTimeout(async () => {
         await execCalcAndRender(fileId, data.startSec, data.endSec);
         document.querySelectorAll(`[data-velocity-img="${fileId}"]`).forEach(img => { img.src = data.imgUrl1; });
-        if (modalDriveFileId === fileId) document.getElementById('modal-image').src = data.imgUrl1;
+        if (modalDriveFileId === fileId && !modalChart) document.getElementById('modal-image').src = data.imgUrl1;
       }, delay);
+    }
+
+    function renderModalDriveChart() {
+      const data = fileDataMap[modalDriveFileId];
+      if (!data) return;
+      document.getElementById('modal-image').classList.add('hidden');
+      document.getElementById('modal-chart-wrap').classList.remove('hidden');
+      const ctx = document.getElementById('modal-chart').getContext('2d');
+      if (modalChart) modalChart.destroy();
+      modalChartXMin = data.J[0] || 0;
+      modalChartXMax = data.J[data.J.length - 1] || 0;
+      modalChart = new Chart(ctx, {
+        type: 'line',
+        data: { datasets: [{ label: '角速度 [°/s]', data: data.J.map((x, i) => ({ x, y: data.K[i] })), borderColor: '#2563eb', borderWidth: 1.4, pointRadius: 0, tension: 0 }] },
+        options: {
+          devicePixelRatio: Math.max(window.devicePixelRatio || 1, 2),
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          parsing: false,
+          plugins: {
+            legend: { display: false },
+            annotation: {
+              annotations: {
+                driveRange: {
+                  type: 'box',
+                  xMin: data.driveStartSec,
+                  xMax: data.driveEndSec,
+                  yMin: data.presetMin,
+                  yMax: data.presetMax,
+                  backgroundColor: 'rgba(239, 68, 68, 0.14)',
+                  borderColor: 'rgba(239, 68, 68, 0.95)',
+                  borderWidth: 2,
+                  drawTime: 'beforeDatasetsDraw'
+                }
+              }
+            }
+          },
+          scales: createScaleOptions('角速度 [°/s]', data.presetMin, data.presetMax)
+        }
+      });
+      const canvas = document.getElementById('modal-chart');
+      canvas.onwheel = handleModalChartWheel;
+    }
+
+    function handleModalChartWheel(event) {
+      if (!modalChart || !modalDriveFileId) return;
+      event.preventDefault();
+      const data = fileDataMap[modalDriveFileId];
+      const xScale = modalChart.scales.x;
+      const rect = modalChart.canvas.getBoundingClientRect();
+      const cursorX = event.clientX - rect.left;
+      const centerValue = xScale.getValueForPixel(cursorX);
+      if (!Number.isFinite(centerValue)) return;
+      const fullMin = data.J[0] || 0;
+      const fullMax = data.J[data.J.length - 1] || 0;
+      const currentMin = Number.isFinite(modalChart.options.scales.x.min) ? modalChart.options.scales.x.min : fullMin;
+      const currentMax = Number.isFinite(modalChart.options.scales.x.max) ? modalChart.options.scales.x.max : fullMax;
+      const zoomFactor = event.deltaY < 0 ? 0.8 : 1.25;
+      const newRange = Math.min(fullMax - fullMin, Math.max(0.005, (currentMax - currentMin) * zoomFactor));
+      const leftRatio = (centerValue - currentMin) / (currentMax - currentMin || 1);
+      let nextMin = centerValue - newRange * leftRatio;
+      let nextMax = nextMin + newRange;
+      if (nextMin < fullMin) { nextMin = fullMin; nextMax = fullMin + newRange; }
+      if (nextMax > fullMax) { nextMax = fullMax; nextMin = fullMax - newRange; }
+      modalChart.options.scales.x.min = nextMin;
+      modalChart.options.scales.x.max = nextMax;
+      modalChart.update('none');
+    }
+
+    function resetModalChartZoom() {
+      if (!modalChart || !modalDriveFileId) return;
+      const data = fileDataMap[modalDriveFileId];
+      modalChart.options.scales.x.min = data.J[0] || 0;
+      modalChart.options.scales.x.max = data.J[data.J.length - 1] || 0;
+      modalChart.update('none');
+    }
+
+    function updateModalChartAnnotation(start, end) {
+      if (!modalChart?.options?.plugins?.annotation?.annotations?.driveRange) return;
+      modalChart.options.plugins.annotation.annotations.driveRange.xMin = start;
+      modalChart.options.plugins.annotation.annotations.driveRange.xMax = end;
+      modalChart.update('none');
     }
 
     function setupModalDriveControls() {
@@ -1102,6 +1203,9 @@
       const data = fileDataMap[modalDriveFileId];
       const sliderElem = document.getElementById('modal-drive-slider');
       if (modalDriveSlider) { modalDriveSlider.destroy(); modalDriveSlider = null; }
+      if (modalChart) { modalChart.destroy(); modalChart = null; }
+      document.getElementById('modal-chart-wrap').classList.add('hidden');
+      document.getElementById('modal-image').classList.remove('hidden');
       const lastTime = data.J[data.J.length - 1] || 0;
       noUiSlider.create(sliderElem, {
         start: [data.driveStartSec, data.driveEndSec],
