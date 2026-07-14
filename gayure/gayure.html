@@ -621,22 +621,47 @@
       renderResults();
     }
 
+    function median(values) {
+      if (!values.length) return 0;
+      const sorted = [...values].sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    }
+
     function estimateDriveRange(J, K) {
       if (!J.length || !K.length) return { driveStartSec: 0, driveEndSec: 0 };
-      const maxK = Math.max(...K);
-      const minK = Math.min(...K);
-      const isPos = Math.abs(maxK) > Math.abs(minK);
-      const sortedK = [...K].sort((a,b) => a-b);
-      const steadyV = isPos ? average(sortedK.slice(Math.floor(K.length*0.85), Math.floor(K.length*0.95)))
-                            : average(sortedK.slice(Math.floor(K.length*0.05), Math.floor(K.length*0.15)));
-      const thresholdV = steadyV * 0.85;
-      let edge1 = -1, edge2 = -1;
-      for(let i=0; i<K.length; i++) if(isPos ? K[i]>thresholdV : K[i]<thresholdV) { edge1 = i; break; }
-      for(let i=K.length-1; i>=0; i--) if(isPos ? K[i]>thresholdV : K[i]<thresholdV) { edge2 = i; break; }
-      if(edge1 === -1 || edge2 === -1 || edge1 >= edge2) {
+
+      // 角速度センサーは停止中もオフセット付近で揺れるため、先頭/末尾の静止部分からノイズ幅を見積もり、
+      // そこから外れた時点を「動き始め」「停止」とする。一定速だけでなく加速/減速も駆動時間に含める。
+      const sampleCount = Math.min(500, Math.max(30, Math.floor(K.length * 0.08)));
+      const headAbs = K.slice(0, sampleCount).map(v => Math.abs(v));
+      const tailAbs = K.slice(-sampleCount).map(v => Math.abs(v));
+      const noiseFloor = Math.max(median(headAbs), median(tailAbs), stdevP(K.slice(0, sampleCount)), stdevP(K.slice(-sampleCount)));
+      const peakAbs = Math.max(...K.map(v => Math.abs(v)));
+      const threshold = Math.max(noiseFloor * 6, peakAbs * 0.03, 0.02);
+      const minRun = Math.max(5, Math.round(K.length * 0.002));
+
+      const hasRunAboveThreshold = (startIdx, step) => {
+        let count = 0;
+        for (let i = startIdx; i >= 0 && i < K.length; i += step) {
+          if (Math.abs(K[i]) >= threshold) count++;
+          else count = 0;
+          if (count >= minRun) return step > 0 ? i - minRun + 1 : i + minRun - 1;
+        }
+        return -1;
+      };
+
+      let startIdx = hasRunAboveThreshold(0, 1);
+      let endIdx = hasRunAboveThreshold(K.length - 1, -1);
+      if(startIdx === -1 || endIdx === -1 || startIdx >= endIdx) {
         return { driveStartSec: J[0] || 0, driveEndSec: J[J.length - 1] || 0 };
       }
-      return { driveStartSec: Math.round(J[edge1] * 1000) / 1000, driveEndSec: Math.round(J[edge2] * 1000) / 1000 };
+
+      // 閾値交差の直前/直後まで1サンプルずつ戻して、立ち上がり・立ち下がりを取りこぼさない。
+      while (startIdx > 0 && Math.abs(K[startIdx - 1]) >= noiseFloor * 2) startIdx--;
+      while (endIdx < K.length - 1 && Math.abs(K[endIdx + 1]) >= noiseFloor * 2) endIdx++;
+
+      return { driveStartSec: Math.round(J[startIdx] * 1000) / 1000, driveEndSec: Math.round(J[endIdx] * 1000) / 1000 };
     }
 
     // --- 単一ファイルの解析処理 ---
@@ -1037,6 +1062,7 @@
               </div>
             </div>
             
+            ${currentAnalysisMode === 'speed' ? `
             <div class="flex flex-wrap gap-4 items-center mb-4 bg-blue-50 p-3 rounded border border-blue-100">
               <div class="font-mono text-sm font-bold bg-white px-3 py-1 border border-blue-200 rounded text-gray-800">
                 y = ${data.a.toFixed(3)} x ${data.b >= 0 ? '+' : '-'} ${Math.abs(data.b).toFixed(2)}
@@ -1053,6 +1079,7 @@
                 v = ${data.speed.toFixed(1)}
               </div>
             </div>
+            ` : ''}
             ${currentAnalysisMode === 'duration' ? `
             <div class="mb-4 bg-white p-4 rounded border border-slate-200 shadow-sm">
               <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-5">
