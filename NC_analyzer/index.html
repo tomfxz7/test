@@ -1142,12 +1142,20 @@
                 const nextValue = parsedValue === null
                     ? null
                     : (shouldRound ? Math.round(parsedValue * 10) / 10 : parsedValue);
+                const overrideMode = targetItem.appliedOctMode || '1/1';
                 const applyUpdate = (orig) => {
-                    const nextValues = [...(orig.values || new Array(allFreqs.length).fill(null))];
+                    const nextValues = [...(targetItem.values || orig.values || new Array(allFreqs.length).fill(null))];
                     nextValues[idx] = nextValue;
                     return {
                         ...orig,
                         values: nextValues,
+                        valueOverrides: {
+                            ...(orig.valueOverrides || {}),
+                            [overrideMode]: {
+                                ...((orig.valueOverrides || {})[overrideMode] || {}),
+                                [idx]: nextValue
+                            }
+                        },
                         ncResult: calculateNC(nextValues)
                     };
                 };
@@ -2937,6 +2945,17 @@ ${err?.message || err}`);
                         isCorrected = true;
                         bgOperation = bgOperation ? `${bgOperation}+add` : 'add';
                     }
+                    const overridesForMode = item.valueOverrides?.[octMode];
+                    if (overridesForMode) {
+                        corrValues = [...corrValues];
+                        Object.entries(overridesForMode).forEach(([idx, value]) => {
+                            const numericIdx = Number(idx);
+                            if (Number.isInteger(numericIdx) && numericIdx >= 0 && numericIdx < corrValues.length) {
+                                corrValues[numericIdx] = value;
+                            }
+                        });
+                    }
+
                     const ncVal = calculateNC(corrValues);
                     
                     acc[group].push({
