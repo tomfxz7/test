@@ -1109,6 +1109,7 @@
             const [editingCell, setEditingCell] = React.useState(null);
             const [contextMenu, setContextMenu] = React.useState(null);
             const [detailItem, setDetailItem] = React.useState(null);
+            const [detailDraftValues, setDetailDraftValues] = React.useState({});
             const tableContainerRef = React.useRef(null);
 
             const getDetailRows = (item) => {
@@ -1125,10 +1126,61 @@
                         ? requiredNc === '>70'
                         : Number.isFinite(Number(resultText)) && requiredNc === Number(resultText);
                     return { freq, value, referenceValue, requiredNc, isCause };
-                }).filter(row => row.value !== null && row.value !== undefined && !isNaN(row.value));
+                });
             };
 
             const formatDetailValue = (value) => (value === null || value === undefined || isNaN(value) ? '-' : Math.round(value * 10) / 10);
+
+            const updateDetailOctaveValue = (targetItem, freq, inputValue, shouldRound = false) => {
+                const trimmed = inputValue.trim();
+                const parsedValue = trimmed === '' ? null : Number(trimmed);
+                if (trimmed !== '' && !Number.isFinite(parsedValue)) return false;
+
+                const idx = allFreqs.indexOf(freq);
+                if (idx === -1) return false;
+
+                const nextValue = parsedValue === null
+                    ? null
+                    : (shouldRound ? Math.round(parsedValue * 10) / 10 : parsedValue);
+                const overrideMode = targetItem.appliedOctMode || '1/1';
+                const applyUpdate = (orig) => {
+                    const nextValues = [...(targetItem.values || orig.values || new Array(allFreqs.length).fill(null))];
+                    nextValues[idx] = nextValue;
+                    return {
+                        ...orig,
+                        values: nextValues,
+                        valueOverrides: {
+                            ...(orig.valueOverrides || {}),
+                            [overrideMode]: {
+                                ...((orig.valueOverrides || {})[overrideMode] || {}),
+                                [idx]: nextValue
+                            }
+                        },
+                        ncResult: calculateNC(nextValues)
+                    };
+                };
+
+                setDataItems(prev => prev.map(orig => orig.id === targetItem.id ? applyUpdate(orig) : orig));
+                setDetailItem(prev => prev && prev.id === targetItem.id ? applyUpdate(prev) : prev);
+                return true;
+            };
+
+            const handleDetailValueInput = (targetItem, freq, inputValue) => {
+                const key = `${targetItem.id}-${freq}`;
+                setDetailDraftValues(prev => ({ ...prev, [key]: inputValue }));
+                updateDetailOctaveValue(targetItem, freq, inputValue);
+            };
+
+            const handleDetailValueCommit = (targetItem, freq, inputValue) => {
+                const key = `${targetItem.id}-${freq}`;
+                if (updateDetailOctaveValue(targetItem, freq, inputValue, true)) {
+                    setDetailDraftValues(prev => {
+                        const next = { ...prev };
+                        delete next[key];
+                        return next;
+                    });
+                }
+            };
 
             const getSelectedRowIndices = () => {
                 const rows = new Set();
@@ -1678,7 +1730,18 @@
                                             {getDetailRows(detailItem).map(row => (
                                                 <tr key={row.freq} className={row.isCause ? 'bg-red-50 text-red-700 font-bold' : ''}>
                                                     <td className="border border-gray-300 px-3 py-2">{getLabelStr(row.freq)} Hz</td>
-                                                    <td className="border border-gray-300 px-3 py-2 text-right">{formatDetailValue(row.value)}</td>
+                                                    <td className="border border-gray-300 px-3 py-2 text-right">
+                                                        <input
+                                                            type="text"
+                                                            inputMode="decimal"
+                                                            value={detailDraftValues[`${detailItem.id}-${row.freq}`] ?? (row.value ?? '')}
+                                                            onChange={(e) => handleDetailValueInput(detailItem, row.freq, e.target.value)}
+                                                            onBlur={(e) => handleDetailValueCommit(detailItem, row.freq, e.target.value)}
+                                                            onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
+                                                            className={`w-24 px-2 py-1 border rounded text-right bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 ${row.isCause ? 'border-red-300 text-red-700 font-bold' : 'border-gray-300 text-gray-700'}`}
+                                                            title={`${getLabelStr(row.freq)} Hz の分析値を編集`}
+                                                        />
+                                                    </td>
                                                     <td className="border border-gray-300 px-3 py-2 text-right">{formatDetailValue(row.referenceValue)}</td>
                                                     <td className="border border-gray-300 px-3 py-2 text-center">{row.requiredNc ? `NC-${row.requiredNc}` : '-'}</td>
                                                 </tr>
@@ -2882,6 +2945,17 @@ ${err?.message || err}`);
                         isCorrected = true;
                         bgOperation = bgOperation ? `${bgOperation}+add` : 'add';
                     }
+                    const overridesForMode = item.valueOverrides?.[octMode];
+                    if (overridesForMode) {
+                        corrValues = [...corrValues];
+                        Object.entries(overridesForMode).forEach(([idx, value]) => {
+                            const numericIdx = Number(idx);
+                            if (Number.isInteger(numericIdx) && numericIdx >= 0 && numericIdx < corrValues.length) {
+                                corrValues[numericIdx] = value;
+                            }
+                        });
+                    }
+
                     const ncVal = calculateNC(corrValues);
                     
                     acc[group].push({
