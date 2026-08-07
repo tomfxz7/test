@@ -10,7 +10,7 @@
 <body class="bg-slate-50 text-slate-800 min-h-screen">
   <div class="max-w-7xl mx-auto p-6">
     <h1 class="text-2xl font-bold mb-2">FFTS Batch Analyzer</h1>
-    <p class="text-sm text-slate-600 mb-6">複数WAVをドロップすると、1ch=環境音 / 2ch=主音としてFFTし、(主音-環境音)の最大周波数成分を一覧化します。</p>
+    <p class="text-sm text-slate-600 mb-6">複数WAVをドロップすると、選択した主音と環境音のチャンネルをFFTし、(主音-環境音)の最大周波数成分を一覧化します。</p>
 
     <div class="grid grid-cols-1 lg:grid-cols-5 gap-6">
       <div class="lg:col-span-3 space-y-6">
@@ -18,6 +18,26 @@
           <p class="text-lg font-semibold">WAVファイルを複数ドロップ</p>
           <p class="text-sm text-slate-500 mt-1">またはクリックして複数選択</p>
           <input id="file-input" class="hidden" type="file" accept=".wav,audio/wav" multiple />
+        </div>
+
+        <div class="bg-white border border-slate-200 rounded-xl p-4">
+          <h2 class="font-semibold mb-1">解析チャンネル</h2>
+          <p class="text-xs text-slate-500 mb-3">読み込み済みのファイルにも変更がすぐに反映されます。</p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label class="text-sm font-medium">主音
+              <select id="main-channel" class="mt-1 w-full border border-slate-300 rounded-lg bg-white p-2">
+                <option value="0">CH1</option>
+                <option value="1" selected>CH2</option>
+              </select>
+            </label>
+            <label class="text-sm font-medium">環境音
+              <select id="ambient-channel" class="mt-1 w-full border border-slate-300 rounded-lg bg-white p-2">
+                <option value="0" selected>CH1</option>
+                <option value="1">CH2</option>
+              </select>
+            </label>
+          </div>
+          <p id="channel-warning" class="hidden mt-3 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">主音と環境音に同じチャンネルが選択されています。差し引き後の振幅は0になります。</p>
         </div>
 
         <div class="flex items-center gap-3">
@@ -79,6 +99,9 @@
   const resultBody = document.getElementById('result-body');
   const downloadBtn = document.getElementById('download-btn');
   const statusText = document.getElementById('status');
+  const mainChannelSelect = document.getElementById('main-channel');
+  const ambientChannelSelect = document.getElementById('ambient-channel');
+  const channelWarning = document.getElementById('channel-warning');
   const rangeStartInput = document.getElementById('range-start');
   const rangeEndInput = document.getElementById('range-end');
   const rangeStartSlider = document.getElementById('range-start-slider');
@@ -109,6 +132,27 @@
   let sortDir = 'asc';
   let waveChart = null;
   let fftChart = null;
+
+  function getChannelSelection() {
+    return {
+      main: Number.parseInt(mainChannelSelect.value, 10),
+      ambient: Number.parseInt(ambientChannelSelect.value, 10)
+    };
+  }
+
+  function applyChannelSelection() {
+    const selection = getChannelSelection();
+    channelWarning.classList.toggle('hidden', selection.main !== selection.ambient);
+    for (const detail of analyzedData) {
+      if (detail.error || !detail.channels) continue;
+      detail.main = detail.channels[selection.main];
+      detail.ambient = detail.channels[selection.ambient];
+    }
+    if (analyzedData.length > 0) recalculateAllResults();
+  }
+
+  mainChannelSelect.addEventListener('change', applyChannelSelection);
+  ambientChannelSelect.addEventListener('change', applyChannelSelection);
 
   dropZone.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', async (e) => {
@@ -143,8 +187,9 @@
       for (const p of (r.rangePeaks || [])) cols.push(escapeCsv(p.label), p.maxFreq, p.maxAmp);
       return cols.join(',');
     });
-    const header = headerCols.join(',') + '\n';
-    const blob = new Blob([header + rows.join('\n')], { type: 'text/csv' });
+    const header = headerCols.join(',') + '\r\n';
+    // ExcelなどがUTF-8を正しく判定できるよう、先頭にBOMを付ける。
+    const blob = new Blob(['\uFEFF', header + rows.join('\r\n')], { type: 'text/csv;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = 'ffts_batch_results.csv';
@@ -207,8 +252,10 @@
     }
 
     const fs = audioBuffer.sampleRate;
-    const ambient = audioBuffer.getChannelData(0);
-    const main = audioBuffer.getChannelData(1);
+    const channels = [audioBuffer.getChannelData(0), audioBuffer.getChannelData(1)];
+    const selection = getChannelSelection();
+    const ambient = channels[selection.ambient];
+    const main = channels[selection.main];
     const len = Math.min(ambient.length, main.length);
 
     let N = 1;
@@ -231,7 +278,7 @@
 
     return {
       summary: { name: file.name, maxFreq: mainSpec.freqs[peakIdx].toFixed(2), maxAmp: peakAmp.toFixed(6) },
-      detail: { name: file.name, fs, main, ambient, len, duration: len / fs }
+      detail: { name: file.name, fs, channels, main, ambient, len, duration: len / fs }
     };
   }
 
