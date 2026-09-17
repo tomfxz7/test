@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Upload, Settings2, BarChart3, AlertCircle, CheckCircle2, Info, Activity } from 'lucide-react';
+import { Upload, Download, Settings2, BarChart3, AlertCircle, CheckCircle2, Info, Activity } from 'lucide-react';
 
 // --- ユーティリティ: FFT実装 ---
 function fft(re, im) {
@@ -187,6 +187,20 @@ const formatNC = (val) => {
     return val.toString();
 };
 
+// index.html のCSV読み込み形式（Mode/Lpeq行）に変換する
+const createLpeqCsv = (levels) => {
+    const frequencyLabels = FREQUENCIES.map(f => f >= 1000 ? `${f / 1000}k` : f);
+    return [
+        ['Mode', ...frequencyLabels].join(','),
+        ['Lpeq', ...levels.map(level => level.toFixed(1))].join(',')
+    ].join('\r\n');
+};
+
+const getCsvFileName = (wavFileName) => {
+    const baseName = wavFileName.replace(/\.wav$/i, '');
+    return `${baseName}.csv`;
+};
+
 // --- SVGグラフコンポーネント ---
 const ResultChart = ({ measuredLevels, ncOverall }) => {
     const width = 600, height = 300;
@@ -257,7 +271,10 @@ export default function App() {
     const [results, setResults] = useState(null);
 
     const handleCalibFile = (e) => setCalibFile(e.target.files[0]);
-    const handleMeasFile = (e) => setMeasFile(e.target.files[0]);
+    const handleMeasFile = (e) => {
+        setMeasFile(e.target.files[0] || null);
+        setResults(null);
+    };
 
     const runCalibration = async () => {
         if (!calibFile) return;
@@ -282,12 +299,29 @@ export default function App() {
             const currentOffset = offset !== null ? offset : 100;
             const levels = await analyzeAudio(measFile, currentOffset);
             const ncResult = evaluateNC(levels);
-            setResults({ levels, nc: ncResult });
+            setResults({ levels, nc: ncResult, sourceFileName: measFile.name });
         } catch (err) {
             setErrorMsg("分析に失敗しました。有効なWAVファイルか確認してください。");
             console.error(err);
         }
         setIsProcessing(false);
+    };
+
+    const downloadCsv = () => {
+        if (!results) return;
+
+        // BOMを付けて、表計算ソフトで開いた場合にもUTF-8として認識させる
+        const blob = new Blob([`\uFEFF${createLpeqCsv(results.levels)}`], {
+            type: 'text/csv;charset=utf-8'
+        });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = getCsvFileName(results.sourceFileName);
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
     };
 
     return (
@@ -403,14 +437,24 @@ export default function App() {
                 {/* Results Area */}
                 {results && (
                     <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                        <div className="flex items-center justify-between mb-6">
+                        <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
                             <div className="flex items-center">
                                 <BarChart3 className="w-6 h-6 text-blue-600 dark:text-blue-400 mr-2" />
                                 <h2 className="text-xl font-bold">分析結果</h2>
                             </div>
-                            <div className="bg-blue-50 dark:bg-blue-900/30 px-6 py-2 rounded-full border border-blue-100 dark:border-blue-800">
-                                <span className="text-sm text-blue-800 dark:text-blue-300 mr-2">判定NC値:</span>
-                                <span className="text-2xl font-bold text-blue-600 dark:text-blue-400">NC-{formatNC(results.nc.overall)}</span>
+                            <div className="flex flex-wrap items-center gap-3">
+                                <button
+                                    onClick={downloadCsv}
+                                    className="inline-flex items-center px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded shadow-sm transition-colors"
+                                    title={`${getCsvFileName(results.sourceFileName)} を保存`}
+                                >
+                                    <Download className="w-4 h-4 mr-2" />
+                                    CSVを出力
+                                </button>
+                                <div className="bg-blue-50 dark:bg-blue-900/30 px-6 py-2 rounded-full border border-blue-100 dark:border-blue-800">
+                                    <span className="text-sm text-blue-800 dark:text-blue-300 mr-2">判定NC値:</span>
+                                    <span className="text-2xl font-bold text-blue-600 dark:text-blue-400">NC-{formatNC(results.nc.overall)}</span>
+                                </div>
                             </div>
                         </div>
 
