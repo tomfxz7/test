@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState } from 'react';
 import { Upload, Download, Settings2, BarChart3, AlertCircle, CheckCircle2, Info, Activity } from 'lucide-react';
 
 // --- ユーティリティ: FFT実装 ---
@@ -201,6 +201,21 @@ const getCsvFileName = (wavFileName) => {
     return `${baseName}.csv`;
 };
 
+const downloadResultCsv = (result) => {
+    // BOMを付けて、表計算ソフトで開いた場合にもUTF-8として認識させる
+    const blob = new Blob([`\uFEFF${createLpeqCsv(result.levels)}`], {
+        type: 'text/csv;charset=utf-8'
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = getCsvFileName(result.sourceFileName);
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+};
+
 // --- SVGグラフコンポーネント ---
 const ResultChart = ({ measuredLevels, ncOverall }) => {
     const width = 600, height = 300;
@@ -264,16 +279,17 @@ export default function App() {
     const [calibLevel, setCalibLevel] = useState(94.0);
     const [offset, setOffset] = useState(null);
     
-    const [measFile, setMeasFile] = useState(null);
+    const [measFiles, setMeasFiles] = useState([]);
     const [isProcessing, setIsProcessing] = useState(false);
+    const [processingProgress, setProcessingProgress] = useState(null);
     const [errorMsg, setErrorMsg] = useState("");
     
-    const [results, setResults] = useState(null);
+    const [results, setResults] = useState([]);
 
     const handleCalibFile = (e) => setCalibFile(e.target.files[0]);
     const handleMeasFile = (e) => {
-        setMeasFile(e.target.files[0] || null);
-        setResults(null);
+        setMeasFiles(Array.from(e.target.files || []));
+        setResults([]);
     };
 
     const runCalibration = async () => {
@@ -291,37 +307,37 @@ export default function App() {
     };
 
     const runAnalysis = async () => {
-        if (!measFile) return;
+        if (measFiles.length === 0) return;
         setIsProcessing(true);
         setErrorMsg("");
-        try {
-            // オフセット未設定の場合は仮に100とする（相対評価）
-            const currentOffset = offset !== null ? offset : 100;
-            const levels = await analyzeAudio(measFile, currentOffset);
-            const ncResult = evaluateNC(levels);
-            setResults({ levels, nc: ncResult, sourceFileName: measFile.name });
-        } catch (err) {
-            setErrorMsg("分析に失敗しました。有効なWAVファイルか確認してください。");
-            console.error(err);
+        const nextResults = [];
+        const failedFiles = [];
+        // オフセット未設定の場合は仮に100とする（相対評価）
+        const currentOffset = offset !== null ? offset : 100;
+
+        for (let index = 0; index < measFiles.length; index++) {
+            const file = measFiles[index];
+            setProcessingProgress({ current: index + 1, total: measFiles.length });
+            try {
+                const levels = await analyzeAudio(file, currentOffset);
+                const ncResult = evaluateNC(levels);
+                nextResults.push({ levels, nc: ncResult, sourceFileName: file.name });
+            } catch (err) {
+                failedFiles.push(file.name);
+                console.error(err);
+            }
         }
+
+        setResults(nextResults);
+        if (failedFiles.length > 0) {
+            setErrorMsg(`次のWAVファイルを解析できませんでした: ${failedFiles.join(', ')}`);
+        }
+        setProcessingProgress(null);
         setIsProcessing(false);
     };
 
-    const downloadCsv = () => {
-        if (!results) return;
-
-        // BOMを付けて、表計算ソフトで開いた場合にもUTF-8として認識させる
-        const blob = new Blob([`\uFEFF${createLpeqCsv(results.levels)}`], {
-            type: 'text/csv;charset=utf-8'
-        });
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement('a');
-        anchor.href = url;
-        anchor.download = getCsvFileName(results.sourceFileName);
-        document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-        URL.revokeObjectURL(url);
+    const downloadAllCsv = () => {
+        results.forEach(downloadResultCsv);
     };
 
     return (
@@ -406,18 +422,25 @@ export default function App() {
 
                         <div className="space-y-4">
                             <div>
-                                <label className="block text-sm font-medium mb-1">対象WAVファイル</label>
+                                <label className="block text-sm font-medium mb-1">対象WAVファイル（複数選択可）</label>
                                 <input 
                                     type="file" 
                                     accept=".wav,audio/wav" 
+                                    multiple
+                                    disabled={isProcessing}
                                     onChange={handleMeasFile}
                                     className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 dark:file:bg-gray-700 dark:file:text-gray-300"
                                 />
+                                {measFiles.length > 0 && (
+                                    <p className="mt-2 text-xs text-gray-500 dark:text-gray-400 break-all">
+                                        選択中（{measFiles.length}件）: {measFiles.map(file => file.name).join(', ')}
+                                    </p>
+                                )}
                             </div>
                             
                             <button 
                                 onClick={runAnalysis}
-                                disabled={!measFile || isProcessing}
+                                disabled={measFiles.length === 0 || isProcessing}
                                 className="w-full py-2 mt-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded shadow-sm transition-colors disabled:opacity-50 flex justify-center items-center"
                             >
                                 {isProcessing ? (
@@ -426,42 +449,58 @@ export default function App() {
                                             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                                             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                                         </svg>
-                                        処理中...
+                                        処理中... {processingProgress && `(${processingProgress.current}/${processingProgress.total})`}
                                     </>
-                                ) : "分析を実行"}
+                                ) : (measFiles.length > 1 ? `${measFiles.length}ファイルを一括分析` : "分析を実行")}
                             </button>
                         </div>
                     </div>
                 </div>
 
                 {/* Results Area */}
-                {results && (
+                {results.length > 0 && (
                     <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
                         <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
                             <div className="flex items-center">
                                 <BarChart3 className="w-6 h-6 text-blue-600 dark:text-blue-400 mr-2" />
-                                <h2 className="text-xl font-bold">分析結果</h2>
+                                <h2 className="text-xl font-bold">分析結果（{results.length}件）</h2>
                             </div>
                             <div className="flex flex-wrap items-center gap-3">
                                 <button
-                                    onClick={downloadCsv}
+                                    onClick={downloadAllCsv}
                                     className="inline-flex items-center px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded shadow-sm transition-colors"
-                                    title={`${getCsvFileName(results.sourceFileName)} を保存`}
+                                    title="すべての解析結果をCSVで保存"
                                 >
                                     <Download className="w-4 h-4 mr-2" />
-                                    CSVを出力
+                                    CSVを一括出力
                                 </button>
-                                <div className="bg-blue-50 dark:bg-blue-900/30 px-6 py-2 rounded-full border border-blue-100 dark:border-blue-800">
-                                    <span className="text-sm text-blue-800 dark:text-blue-300 mr-2">判定NC値:</span>
-                                    <span className="text-2xl font-bold text-blue-600 dark:text-blue-400">NC-{formatNC(results.nc.overall)}</span>
-                                </div>
                             </div>
                         </div>
 
+                        <div className="space-y-8">
+                            {results.map((result, resultIndex) => (
+                            <section key={`${result.sourceFileName}-${resultIndex}`} className="border-t border-gray-200 dark:border-gray-700 pt-6 first:border-t-0 first:pt-0">
+                                <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+                                    <h3 className="font-semibold break-all">{result.sourceFileName}</h3>
+                                    <div className="flex flex-wrap items-center gap-3">
+                                        <button
+                                            onClick={() => downloadResultCsv(result)}
+                                            className="inline-flex items-center px-3 py-1.5 border border-green-600 text-green-700 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20 text-sm font-medium rounded transition-colors"
+                                            title={`${getCsvFileName(result.sourceFileName)} を保存`}
+                                        >
+                                            <Download className="w-4 h-4 mr-2" />
+                                            CSVを出力
+                                        </button>
+                                        <div className="bg-blue-50 dark:bg-blue-900/30 px-6 py-2 rounded-full border border-blue-100 dark:border-blue-800">
+                                            <span className="text-sm text-blue-800 dark:text-blue-300 mr-2">判定NC値:</span>
+                                            <span className="text-2xl font-bold text-blue-600 dark:text-blue-400">NC-{formatNC(result.nc.overall)}</span>
+                                        </div>
+                                    </div>
+                                </div>
                         <div className="grid lg:grid-cols-3 gap-8">
                             <div className="lg:col-span-2">
                                 <h3 className="text-sm font-semibold text-gray-500 mb-3">周波数特性とNC曲線</h3>
-                                <ResultChart measuredLevels={results.levels} ncOverall={results.nc.overall} />
+                                <ResultChart measuredLevels={result.levels} ncOverall={result.nc.overall} />
                             </div>
 
                             <div>
@@ -477,17 +516,17 @@ export default function App() {
                                         </thead>
                                         <tbody className="divide-y divide-gray-200 dark:divide-gray-700 bg-white dark:bg-gray-800">
                                             {FREQUENCIES.map((f, i) => {
-                                                const isMax = results.nc.details[i] === results.nc.overall;
+                                                const isMax = result.nc.details[i] === result.nc.overall;
                                                 return (
                                                     <tr key={f} className={isMax ? "bg-blue-50/50 dark:bg-blue-900/10" : ""}>
                                                         <td className="px-4 py-2 text-gray-900 dark:text-gray-300">
                                                             {f >= 1000 ? `${f/1000}k` : f} Hz
                                                         </td>
                                                         <td className="px-4 py-2 text-right font-mono">
-                                                            {results.levels[i].toFixed(1)}
+                                                            {result.levels[i].toFixed(1)}
                                                         </td>
                                                         <td className={`px-4 py-2 text-right font-medium ${isMax ? 'text-blue-600 dark:text-blue-400' : 'text-gray-500'}`}>
-                                                            {formatNC(results.nc.details[i])}
+                                                            {formatNC(result.nc.details[i])}
                                                         </td>
                                                     </tr>
                                                 );
@@ -499,6 +538,9 @@ export default function App() {
                                     ※ NC値は、各帯域の測定値が下回る最小のNC曲線から判定され、全帯域の中で最も高い値が総合NC値となります。
                                 </p>
                             </div>
+                        </div>
+                            </section>
+                            ))}
                         </div>
                     </div>
                 )}
