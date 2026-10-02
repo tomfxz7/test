@@ -87,6 +87,20 @@ const decodeFile = async (file) => {
     return await ctx.decodeAudioData(arrayBuffer);
 };
 
+// 選択境界を一度だけサンプル位置へ変換し、解析とWAV出力で同じ音声を共有する。
+const createSelectedBuffer = (source, startTime, endTime) => {
+    const startSample = Math.max(0, Math.min(source.length, Math.floor(startTime * source.sampleRate)));
+    const endSample = Math.max(startSample, Math.min(source.length, Math.ceil(endTime * source.sampleRate)));
+    const frameCount = endSample - startSample;
+    if (frameCount <= 0) throw new Error('解析する選択範囲がありません。');
+
+    const selected = getAudioContext().createBuffer(source.numberOfChannels, frameCount, source.sampleRate);
+    for (let channel = 0; channel < source.numberOfChannels; channel++) {
+        selected.copyToChannel(source.getChannelData(channel).subarray(startSample, endSample), channel);
+    }
+    return selected;
+};
+
 // 校正: 全体のRMSを計算し、基準レベルとのオフセットを算出
 const calculateCalibrationOffset = async (file, refLevel) => {
     const buffer = await decodeFile(file);
@@ -101,14 +115,12 @@ const calculateCalibrationOffset = async (file, refLevel) => {
 };
 
 // 分析: FFTを用いた1/1オクターブバンド分析
-const analyzeAudio = (buffer, offset, startTime = 0, endTime = buffer.duration) => {
-    const startSample = Math.max(0, Math.floor(startTime * buffer.sampleRate));
-    const endSample = Math.min(buffer.length, Math.ceil(endTime * buffer.sampleRate));
-    const data = new Float32Array(Math.max(0, endSample - startSample));
-    // 複数チャンネルは平均し、波形編集で指定された範囲だけを解析する。
+const analyzeAudio = (buffer, offset) => {
+    const data = new Float32Array(buffer.length);
+    // bufferは選択範囲だけを切り出したもの。複数チャンネルは解析用に平均する。
     for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
         const channelData = buffer.getChannelData(channel);
-        for (let i = startSample; i < endSample; i++) data[i - startSample] += channelData[i] / buffer.numberOfChannels;
+        for (let i = 0; i < buffer.length; i++) data[i] += channelData[i] / buffer.numberOfChannels;
     }
     const sampleRate = buffer.sampleRate;
 
@@ -573,9 +585,19 @@ export default function App() {
             const clip = clips[index];
             setProcessingProgress({ current: index + 1, total: clips.length });
             try {
-                const levels = analyzeAudio(clip.buffer, currentOffset, clip.start, clip.end);
+                // 先に選択範囲だけの独立したAudioBufferを作り、その同じbufferを解析・出力する。
+                const selectedBuffer = createSelectedBuffer(clip.buffer, clip.start, clip.end);
+                const levels = analyzeAudio(selectedBuffer, currentOffset);
                 const ncResult = evaluateNC(levels);
-                nextResults.push({ levels, nc: ncResult, sourceFileName: clip.file.name, clipName: clip.name, buffer: clip.buffer, start: clip.start, end: clip.end });
+                nextResults.push({
+                    levels,
+                    nc: ncResult,
+                    sourceFileName: clip.file.name,
+                    clipName: clip.name,
+                    buffer: selectedBuffer,
+                    selectedStart: clip.start,
+                    selectedEnd: clip.end
+                });
             } catch (err) {
                 failedFiles.push(`${clip.file.name} / ${clip.name}`);
                 console.error(err);
@@ -591,7 +613,7 @@ export default function App() {
     };
 
     const downloadResultWav = (result) => downloadBlob(
-        createTrimmedWav(result.buffer, result.start, result.end),
+        createTrimmedWav(result.buffer, 0, result.buffer.duration),
         getTrimmedFileName(result.sourceFileName, result.clipName)
     );
     const downloadResultFiles = (result) => {
@@ -755,7 +777,13 @@ export default function App() {
                             {results.map((result, resultIndex) => (
                             <section key={`${result.sourceFileName}-${resultIndex}`} className="border-t border-gray-200 dark:border-gray-700 pt-6 first:border-t-0 first:pt-0">
                                 <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
-                                    <h3 className="font-semibold break-all">{result.sourceFileName} / {result.clipName}</h3>
+                                    <div>
+                                        <h3 className="font-semibold break-all">{result.sourceFileName} / {result.clipName}</h3>
+                                        <p className="mt-1 text-xs text-gray-500">
+                                            解析範囲: {formatTime(result.selectedStart)} — {formatTime(result.selectedEnd)}
+                                            （{formatTime(result.buffer.duration)}）
+                                        </p>
+                                    </div>
                                     <div className="flex flex-wrap items-center gap-3">
                                         <button
                                             onClick={() => downloadResultFiles(result)}
