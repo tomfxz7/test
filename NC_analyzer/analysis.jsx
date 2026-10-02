@@ -116,12 +116,8 @@ const calculateCalibrationOffset = async (file, refLevel) => {
 
 // 分析: FFTを用いた1/1オクターブバンド分析
 const analyzeAudio = (buffer, offset) => {
-    const data = new Float32Array(buffer.length);
-    // bufferは選択範囲だけを切り出したもの。複数チャンネルは解析用に平均する。
-    for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
-        const channelData = buffer.getChannelData(channel);
-        for (let i = 0; i < buffer.length; i++) data[i] += channelData[i] / buffer.numberOfChannels;
-    }
+    // 従来版と同じく第1チャンネルだけを解析する。buffer自体は選択範囲のみ。
+    const data = buffer.getChannelData(0);
     const sampleRate = buffer.sampleRate;
 
     const N = 8192;
@@ -142,8 +138,10 @@ const analyzeAudio = (buffer, offset) => {
     let frameCount = 0;
     const totalPower = new Float32Array(N / 2 + 1);
 
-    // 8192サンプル未満の切り抜きもゼロ詰めした1フレームとして解析する。
-    for (let p = 0; p < data.length; p += overlap) {
+    // 従来版と同じく完全な8192サンプルのフレームだけを解析する。
+    // ただし選択範囲そのものが8192未満の場合に限り、解析可能にするため1フレームへゼロ詰めする。
+    const lastFrameStart = data.length < N ? 0 : data.length - N;
+    for (let p = 0; p <= lastFrameStart; p += overlap) {
         const re = new Float32Array(N);
         const im = new Float32Array(N);
         for (let i = 0; i < N; i++) {
