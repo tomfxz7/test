@@ -157,11 +157,12 @@ const analyzeAudio = (buffer, offset) => {
         }
         totalPower[N / 2] += (re[N / 2] * re[N / 2] + im[N / 2] * im[N / 2]) / (N * N);
         frameCount++;
+        if (p + N >= data.length) break;
     }
 
     // 平均化と窓関数の補正
     for (let i = 0; i <= N / 2; i++) {
-        totalPower[i] = (totalPower[i] / frameCount) / windowPower;
+        totalPower[i] = (totalPower[i] / Math.max(1, frameCount)) / windowPower;
     }
 
     const df = sampleRate / N;
