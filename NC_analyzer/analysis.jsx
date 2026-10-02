@@ -475,10 +475,15 @@ const ResultChart = ({ measuredLevels, ncOverall }) => {
 const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => {
     const canvasRef = useRef(null);
     const sourceRef = useRef(null);
+    const gainRef = useRef(null);
     const animationRef = useRef(null);
     const [isPlaying, setIsPlaying] = useState(false);
     const [dragTarget, setDragTarget] = useState(null);
     const [playhead, setPlayhead] = useState(clip.start);
+    // These gains are monitoring aids only. They do not alter the source,
+    // analysis result, or exported WAV data.
+    const [playbackGainPercent, setPlaybackGainPercent] = useState(100);
+    const [waveformGain, setWaveformGain] = useState(1);
 
     const stopPlayback = () => {
         if (animationRef.current !== null) {
@@ -491,6 +496,10 @@ const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => 
             sourceRef.current.disconnect();
             sourceRef.current = null;
         }
+        if (gainRef.current) {
+            gainRef.current.disconnect();
+            gainRef.current = null;
+        }
         setIsPlaying(false);
     };
 
@@ -501,6 +510,7 @@ const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => 
             try { sourceRef.current.stop(); } catch (_) { /* already stopped */ }
             sourceRef.current.disconnect();
         }
+        if (gainRef.current) gainRef.current.disconnect();
     }, []);
 
     useEffect(() => {
@@ -529,8 +539,10 @@ const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => 
                 const from = Math.floor(x * samples.length / width);
                 const to = Math.min(samples.length, from + step);
                 for (let i = from; i < to; i++) { min = Math.min(min, samples[i]); max = Math.max(max, samples[i]); }
-                ctx.moveTo(x + 0.5, height / 2 - max * height * 0.42);
-                ctx.lineTo(x + 0.5, height / 2 - min * height * 0.42);
+                const displayedMax = Math.max(-1, Math.min(1, max * waveformGain));
+                const displayedMin = Math.max(-1, Math.min(1, min * waveformGain));
+                ctx.moveTo(x + 0.5, height / 2 - displayedMax * height * 0.42);
+                ctx.lineTo(x + 0.5, height / 2 - displayedMin * height * 0.42);
             }
             ctx.stroke();
             const inX = clip.start / clip.buffer.duration * width;
@@ -544,7 +556,7 @@ const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => 
         const observer = new ResizeObserver(draw);
         observer.observe(canvas);
         return () => observer.disconnect();
-    }, [clip.buffer, clip.start, clip.end]);
+    }, [clip.buffer, clip.start, clip.end, waveformGain]);
 
     const pointerTime = (event) => {
         const rect = canvasRef.current.getBoundingClientRect();
@@ -578,8 +590,11 @@ const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => 
         const ctx = getAudioContext();
         await ctx.resume();
         const source = ctx.createBufferSource();
+        const gain = ctx.createGain();
         source.buffer = clip.buffer;
-        source.connect(ctx.destination);
+        gain.gain.value = playbackGainPercent / 100;
+        source.connect(gain);
+        gain.connect(ctx.destination);
         const startedAt = ctx.currentTime;
         setPlayhead(clip.start);
         const updatePlayhead = () => {
@@ -593,10 +608,13 @@ const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => 
             if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
             animationRef.current = null;
             sourceRef.current = null;
+            gain.disconnect();
+            gainRef.current = null;
             setPlayhead(clip.end);
             setIsPlaying(false);
         };
         sourceRef.current = source;
+        gainRef.current = gain;
         setIsPlaying(true);
         source.start(0, clip.start, clip.end - clip.start);
         animationRef.current = requestAnimationFrame(updatePlayhead);
@@ -616,6 +634,29 @@ const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => 
                     className="w-full h-28 rounded border cursor-ew-resize touch-none" aria-label={`${clip.name} の波形範囲選択`} />
                 <div className="absolute inset-y-0 w-0.5 bg-red-600 pointer-events-none shadow-sm"
                     style={{ left: `${(playhead / clip.buffer.duration) * 100}%` }} aria-hidden="true" />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2 text-xs">
+                <label className="rounded border border-gray-200 dark:border-gray-600 p-2">
+                    <span className="flex items-center justify-between gap-2 font-medium">
+                        再生音量
+                        <output className="font-mono text-blue-600 dark:text-blue-400">{playbackGainPercent}%</output>
+                    </span>
+                    <input type="range" min="100" max="1000" step="10" value={playbackGainPercent} disabled={disabled || isPlaying}
+                        onChange={e => setPlaybackGainPercent(Number(e.target.value))}
+                        aria-label="再生音量" className="mt-2 w-full accent-blue-600" />
+                </label>
+                <label className="rounded border border-gray-200 dark:border-gray-600 p-2">
+                    <span className="flex items-center justify-between gap-2 font-medium">
+                        波形倍率
+                        <output className="font-mono text-blue-600 dark:text-blue-400">{waveformGain}倍</output>
+                    </span>
+                    <input type="range" min="1" max="100" step="1" value={waveformGain} disabled={disabled}
+                        onChange={e => setWaveformGain(Number(e.target.value))}
+                        aria-label="波形倍率" className="mt-2 w-full accent-blue-600" />
+                </label>
+                <p className="sm:col-span-2 text-gray-500 dark:text-gray-400">
+                    再生音量と波形倍率は確認表示だけに適用され、NC解析と出力WAVには影響しません。音量を上げる際は耳やスピーカーを保護するため徐々に調整してください。
+                </p>
             </div>
             <div className="grid grid-cols-2 gap-3 text-xs">
                 <label>IN (秒)<input type="number" min="0" max={clip.end} step="0.001" value={clip.start.toFixed(3)} disabled={disabled}
