@@ -239,6 +239,117 @@ const createUniquePath = (desiredPath, usedPaths) => {
     return candidate;
 };
 
+// 外部ライブラリに依存せず、無圧縮の標準ZIPを生成・読み込みする。
+// .ncaと一括出力はWAVが中心なので、再圧縮しない方が処理も軽い。
+const crcTable = (() => {
+    const table = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+        let value = n;
+        for (let bit = 0; bit < 8; bit++) value = (value & 1) ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1);
+        table[n] = value >>> 0;
+    }
+    return table;
+})();
+
+const calculateCrc32 = (bytes) => {
+    let crc = 0xffffffff;
+    for (const byte of bytes) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+    return (crc ^ 0xffffffff) >>> 0;
+};
+
+const toBytes = async (data) => {
+    if (typeof data === 'string') return new TextEncoder().encode(data);
+    if (data instanceof Uint8Array) return data;
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    if (data instanceof Blob) return new Uint8Array(await data.arrayBuffer());
+    throw new Error('ZIPに保存できないデータ形式です。');
+};
+
+const createZipBlob = async (entries) => {
+    const localParts = [];
+    const centralParts = [];
+    let localOffset = 0;
+    const encoder = new TextEncoder();
+    for (const entry of entries) {
+        const name = encoder.encode(entry.name);
+        const data = await toBytes(entry.data);
+        const crc = calculateCrc32(data);
+        const local = new Uint8Array(30 + name.length);
+        const localView = new DataView(local.buffer);
+        localView.setUint32(0, 0x04034b50, true);
+        localView.setUint16(4, 20, true);
+        localView.setUint16(6, 0x0800, true);
+        localView.setUint32(14, crc, true);
+        localView.setUint32(18, data.length, true);
+        localView.setUint32(22, data.length, true);
+        localView.setUint16(26, name.length, true);
+        local.set(name, 30);
+        localParts.push(local, data);
+
+        const central = new Uint8Array(46 + name.length);
+        const centralView = new DataView(central.buffer);
+        centralView.setUint32(0, 0x02014b50, true);
+        centralView.setUint16(4, 20, true);
+        centralView.setUint16(6, 20, true);
+        centralView.setUint16(8, 0x0800, true);
+        centralView.setUint32(16, crc, true);
+        centralView.setUint32(20, data.length, true);
+        centralView.setUint32(24, data.length, true);
+        centralView.setUint16(28, name.length, true);
+        centralView.setUint32(42, localOffset, true);
+        central.set(name, 46);
+        centralParts.push(central);
+        localOffset += local.length + data.length;
+    }
+    const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
+    const end = new Uint8Array(22);
+    const endView = new DataView(end.buffer);
+    endView.setUint32(0, 0x06054b50, true);
+    endView.setUint16(8, entries.length, true);
+    endView.setUint16(10, entries.length, true);
+    endView.setUint32(12, centralSize, true);
+    endView.setUint32(16, localOffset, true);
+    return new Blob([...localParts, ...centralParts, end], { type: 'application/zip' });
+};
+
+const readZipEntries = async (file) => {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const view = new DataView(bytes.buffer);
+    let endOffset = -1;
+    for (let offset = bytes.length - 22; offset >= Math.max(0, bytes.length - 65557); offset--) {
+        if (view.getUint32(offset, true) === 0x06054b50) { endOffset = offset; break; }
+    }
+    if (endOffset < 0) throw new Error('有効なZIP形式のNCAファイルではありません。');
+    const count = view.getUint16(endOffset + 10, true);
+    let offset = view.getUint32(endOffset + 16, true);
+    const decoder = new TextDecoder();
+    const entries = new Map();
+    for (let index = 0; index < count; index++) {
+        if (view.getUint32(offset, true) !== 0x02014b50) throw new Error('ZIPのファイル一覧が破損しています。');
+        const method = view.getUint16(offset + 10, true);
+        const compressedSize = view.getUint32(offset + 20, true);
+        const nameLength = view.getUint16(offset + 28, true);
+        const extraLength = view.getUint16(offset + 30, true);
+        const commentLength = view.getUint16(offset + 32, true);
+        const localHeaderOffset = view.getUint32(offset + 42, true);
+        const name = decoder.decode(bytes.subarray(offset + 46, offset + 46 + nameLength));
+        if (method !== 0 && method !== 8) throw new Error(`未対応のZIP圧縮方式です: ${name}`);
+        if (view.getUint32(localHeaderOffset, true) !== 0x04034b50) throw new Error('ZIPのファイル情報が破損しています。');
+        const localNameLength = view.getUint16(localHeaderOffset + 26, true);
+        const localExtraLength = view.getUint16(localHeaderOffset + 28, true);
+        const dataOffset = localHeaderOffset + 30 + localNameLength + localExtraLength;
+        let data = bytes.slice(dataOffset, dataOffset + compressedSize);
+        if (method === 8) {
+            if (typeof DecompressionStream === 'undefined') throw new Error(`このブラウザーでは圧縮されたNCAを展開できません: ${name}`);
+            const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+            data = new Uint8Array(await new Response(stream).arrayBuffer());
+        }
+        entries.set(name, data);
+        offset += 46 + nameLength + extraLength + commentLength;
+    }
+    return entries;
+};
+
 const downloadBlob = (blob, fileName) => {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
@@ -545,11 +656,11 @@ export default function App() {
         setIsProcessing(true);
         setErrorMsg('');
         try {
-            const zip = await JSZip.loadAsync(projectFile);
-            const settingsEntry = zip.file('project.json');
+            const zipEntries = await readZipEntries(projectFile);
+            const settingsEntry = zipEntries.get('project.json');
             if (!settingsEntry) throw new Error('project.json が含まれていないため、プロジェクトを読み込めません。');
 
-            const settings = JSON.parse(await settingsEntry.async('string'));
+            const settings = JSON.parse(new TextDecoder().decode(settingsEntry));
             if (settings.format !== 'nc-analyzer-project' || settings.version !== 1 || !Array.isArray(settings.clips)) {
                 throw new Error('対応していないNCAプロジェクト形式です。');
             }
@@ -560,9 +671,9 @@ export default function App() {
                 if (!path || typeof path !== 'string') throw new Error('WAVファイルの参照が設定されていません。');
                 if (!audioAssets.has(path)) {
                     audioAssets.set(path, (async () => {
-                        const entry = zip.file(path);
-                        if (!entry || entry.dir) throw new Error(`プロジェクト内にWAVファイルがありません: ${path}`);
-                        const blob = await entry.async('blob');
+                        const entry = zipEntries.get(path);
+                        if (!entry) throw new Error(`プロジェクト内にWAVファイルがありません: ${path}`);
+                        const blob = new Blob([entry], { type: 'audio/wav' });
                         const fileName = path.split('/').pop() || 'audio.wav';
                         const file = new File([blob], fileName, { type: 'audio/wav' });
                         return { file, buffer: await decodeFile(file) };
@@ -716,16 +827,16 @@ export default function App() {
         setIsProcessing(true);
         setErrorMsg('');
         try {
-            const zip = new JSZip();
+            const zipEntries = [];
             const usedPaths = new Set();
             results.forEach(result => {
                 const baseName = getOutputBaseName(result.sourceFileName, result.clipName, result.useClipNameOnly);
                 const csvPath = createUniquePath(`${baseName}.csv`, usedPaths);
                 const wavPath = createUniquePath(`${baseName}.wav`, usedPaths);
-                zip.file(csvPath, `\uFEFF${createLpeqCsv(result.levels)}`);
-                zip.file(wavPath, createTrimmedWav(result.buffer, 0, result.buffer.duration));
+                zipEntries.push({ name: csvPath, data: `\uFEFF${createLpeqCsv(result.levels)}` });
+                zipEntries.push({ name: wavPath, data: createTrimmedWav(result.buffer, 0, result.buffer.duration) });
             });
-            downloadBlob(await zip.generateAsync({ type: 'blob' }), 'NC解析結果.zip');
+            downloadBlob(await createZipBlob(zipEntries), 'NC解析結果.zip');
         } catch (err) {
             console.error(err);
             setErrorMsg(err.message || '一括出力に失敗しました。');
@@ -739,14 +850,14 @@ export default function App() {
         setIsProcessing(true);
         setErrorMsg('');
         try {
-            const zip = new JSZip();
+            const zipEntries = [];
             const usedPaths = new Set();
             const filePaths = new Map();
             const addAudioFile = (file, folder) => {
                 if (!file) return null;
                 if (filePaths.has(file)) return filePaths.get(file);
                 const path = createUniquePath(`${folder}/${sanitizeFileName(file.name, 'audio.wav')}`, usedPaths);
-                zip.file(path, file);
+                zipEntries.push({ name: path, data: file });
                 filePaths.set(file, path);
                 return path;
             };
@@ -757,7 +868,7 @@ export default function App() {
                 audioFile: addAudioFile(clip.file, 'audio')
             }));
             const calibrationFile = addAudioFile(calibFile, 'calibration');
-            zip.file('project.json', JSON.stringify({
+            zipEntries.push({ name: 'project.json', data: JSON.stringify({
                 format: 'nc-analyzer-project',
                 version: 1,
                 createdAt: new Date().toISOString(),
@@ -775,9 +886,9 @@ export default function App() {
                     sourceFileName: calibFile?.name || null
                 },
                 clips: clipSettings
-            }, null, 2));
+            }, null, 2) });
             const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-            downloadBlob(await zip.generateAsync({ type: 'blob' }), `NC解析プロジェクト_${date}.nca`);
+            downloadBlob(await createZipBlob(zipEntries), `NC解析プロジェクト_${date}.nca`);
         } catch (err) {
             console.error(err);
             setErrorMsg(err.message || 'プロジェクトの出力に失敗しました。');
