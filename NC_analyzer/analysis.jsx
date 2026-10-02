@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Upload, Download, Settings2, BarChart3, AlertCircle, CheckCircle2, Info, Activity } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Upload, Download, Settings2, BarChart3, AlertCircle, CheckCircle2, Info, Activity, Copy, Play, Square, Trash2 } from 'lucide-react';
 
 // --- ユーティリティ: FFT実装 ---
 function fft(re, im) {
@@ -101,9 +101,15 @@ const calculateCalibrationOffset = async (file, refLevel) => {
 };
 
 // 分析: FFTを用いた1/1オクターブバンド分析
-const analyzeAudio = async (file, offset) => {
-    const buffer = await decodeFile(file);
-    const data = buffer.getChannelData(0);
+const analyzeAudio = (buffer, offset, startTime = 0, endTime = buffer.duration) => {
+    const startSample = Math.max(0, Math.floor(startTime * buffer.sampleRate));
+    const endSample = Math.min(buffer.length, Math.ceil(endTime * buffer.sampleRate));
+    const data = new Float32Array(Math.max(0, endSample - startSample));
+    // 複数チャンネルは平均し、波形編集で指定された範囲だけを解析する。
+    for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+        const channelData = buffer.getChannelData(channel);
+        for (let i = startSample; i < endSample; i++) data[i - startSample] += channelData[i] / buffer.numberOfChannels;
+    }
     const sampleRate = buffer.sampleRate;
 
     const N = 8192;
@@ -124,11 +130,12 @@ const analyzeAudio = async (file, offset) => {
     let frameCount = 0;
     const totalPower = new Float32Array(N / 2 + 1);
 
-    for (let p = 0; p + N <= data.length; p += overlap) {
+    // 8192サンプル未満の切り抜きもゼロ詰めした1フレームとして解析する。
+    for (let p = 0; p < data.length; p += overlap) {
         const re = new Float32Array(N);
         const im = new Float32Array(N);
         for (let i = 0; i < N; i++) {
-            re[i] = data[p + i] * windowFunc[i];
+            re[i] = (data[p + i] || 0) * windowFunc[i];
         }
 
         fft(re, im);
@@ -140,11 +147,12 @@ const analyzeAudio = async (file, offset) => {
         }
         totalPower[N / 2] += (re[N / 2] * re[N / 2] + im[N / 2] * im[N / 2]) / (N * N);
         frameCount++;
+        if (p + N >= data.length) break;
     }
 
     // 平均化と窓関数の補正
     for (let i = 0; i <= N / 2; i++) {
-        totalPower[i] = (totalPower[i] / frameCount) / windowPower;
+        totalPower[i] = (totalPower[i] / Math.max(1, frameCount)) / windowPower;
     }
 
     const df = sampleRate / N;
@@ -157,6 +165,57 @@ const analyzeAudio = async (file, offset) => {
         const db = 10 * Math.log10(pSum || 1e-10) + offset;
         return Number(db.toFixed(1));
     });
+};
+
+const formatTime = (seconds) => {
+    const value = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
+    const minutes = Math.floor(value / 60);
+    const secs = Math.floor(value % 60);
+    const millis = Math.floor((value - Math.floor(value)) * 1000);
+    return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
+};
+
+const createTrimmedWav = (buffer, startTime, endTime) => {
+    const start = Math.max(0, Math.floor(startTime * buffer.sampleRate));
+    const end = Math.min(buffer.length, Math.ceil(endTime * buffer.sampleRate));
+    const frames = end - start;
+    if (frames <= 0) throw new Error('切り抜き範囲が空です。');
+    const channels = buffer.numberOfChannels;
+    const dataBytes = frames * channels * 2;
+    const output = new ArrayBuffer(44 + dataBytes);
+    const view = new DataView(output);
+    const ascii = (offset, text) => [...text].forEach((char, index) => view.setUint8(offset + index, char.charCodeAt(0)));
+    ascii(0, 'RIFF'); view.setUint32(4, 36 + dataBytes, true); ascii(8, 'WAVE');
+    ascii(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+    view.setUint16(22, channels, true); view.setUint32(24, buffer.sampleRate, true);
+    view.setUint32(28, buffer.sampleRate * channels * 2, true); view.setUint16(32, channels * 2, true);
+    view.setUint16(34, 16, true); ascii(36, 'data'); view.setUint32(40, dataBytes, true);
+    let offset = 44;
+    for (let i = start; i < end; i++) {
+        for (let channel = 0; channel < channels; channel++) {
+            const sample = Math.max(-1, Math.min(1, buffer.getChannelData(channel)[i]));
+            view.setInt16(offset, sample < 0 ? sample * 32768 : sample * 32767, true);
+            offset += 2;
+        }
+    }
+    return new Blob([output], { type: 'audio/wav' });
+};
+
+const getTrimmedFileName = (name, clipName) => {
+    const base = name.replace(/\.wav$/i, '');
+    const safeClipName = clipName.trim().replace(/[\\/:*?"<>|]/g, '_') || 'trimmed';
+    return `${base}_${safeClipName}.wav`;
+};
+
+const downloadBlob = (blob, fileName) => {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 
 const evaluateNC = (measuredLevels) => {
@@ -196,9 +255,10 @@ const createLpeqCsv = (levels) => {
     ].join('\r\n');
 };
 
-const getCsvFileName = (wavFileName) => {
+const getCsvFileName = (wavFileName, clipName = '') => {
     const baseName = wavFileName.replace(/\.wav$/i, '');
-    return `${baseName}.csv`;
+    const suffix = clipName ? `_${clipName.trim().replace(/[\\/:*?"<>|]/g, '_')}` : '';
+    return `${baseName}${suffix}.csv`;
 };
 
 const downloadResultCsv = (result) => {
@@ -209,7 +269,7 @@ const downloadResultCsv = (result) => {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = getCsvFileName(result.sourceFileName);
+    anchor.download = getCsvFileName(result.sourceFileName, result.clipName);
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
@@ -272,6 +332,167 @@ const ResultChart = ({ measuredLevels, ncOverall }) => {
     );
 };
 
+const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => {
+    const canvasRef = useRef(null);
+    const sourceRef = useRef(null);
+    const animationRef = useRef(null);
+    const [isPlaying, setIsPlaying] = useState(false);
+    const [dragTarget, setDragTarget] = useState(null);
+    const [playhead, setPlayhead] = useState(clip.start);
+
+    const stopPlayback = () => {
+        if (animationRef.current !== null) {
+            cancelAnimationFrame(animationRef.current);
+            animationRef.current = null;
+        }
+        if (sourceRef.current) {
+            sourceRef.current.onended = null;
+            try { sourceRef.current.stop(); } catch (_) { /* already stopped */ }
+            sourceRef.current.disconnect();
+            sourceRef.current = null;
+        }
+        setIsPlaying(false);
+    };
+
+    useEffect(() => () => {
+        if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
+        if (sourceRef.current) {
+            sourceRef.current.onended = null;
+            try { sourceRef.current.stop(); } catch (_) { /* already stopped */ }
+            sourceRef.current.disconnect();
+        }
+    }, []);
+
+    useEffect(() => {
+        if (!isPlaying) setPlayhead(current => Math.max(clip.start, Math.min(current, clip.end)));
+    }, [clip.start, clip.end, isPlaying]);
+
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return undefined;
+        const draw = () => {
+            const rect = canvas.getBoundingClientRect();
+            const ratio = window.devicePixelRatio || 1;
+            canvas.width = Math.max(1, Math.round(rect.width * ratio));
+            canvas.height = Math.max(1, Math.round(rect.height * ratio));
+            const ctx = canvas.getContext('2d');
+            ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+            const width = rect.width;
+            const height = rect.height;
+            ctx.fillStyle = '#f8fafc'; ctx.fillRect(0, 0, width, height);
+            ctx.strokeStyle = '#cbd5e1'; ctx.beginPath(); ctx.moveTo(0, height / 2); ctx.lineTo(width, height / 2); ctx.stroke();
+            const samples = clip.buffer.getChannelData(0);
+            const step = Math.max(1, Math.ceil(samples.length / width));
+            ctx.strokeStyle = '#2563eb'; ctx.beginPath();
+            for (let x = 0; x < width; x++) {
+                let min = 1; let max = -1;
+                const from = Math.floor(x * samples.length / width);
+                const to = Math.min(samples.length, from + step);
+                for (let i = from; i < to; i++) { min = Math.min(min, samples[i]); max = Math.max(max, samples[i]); }
+                ctx.moveTo(x + 0.5, height / 2 - max * height * 0.42);
+                ctx.lineTo(x + 0.5, height / 2 - min * height * 0.42);
+            }
+            ctx.stroke();
+            const inX = clip.start / clip.buffer.duration * width;
+            const outX = clip.end / clip.buffer.duration * width;
+            ctx.fillStyle = 'rgba(15, 23, 42, .32)'; ctx.fillRect(0, 0, inX, height); ctx.fillRect(outX, 0, width - outX, height);
+            ctx.fillStyle = 'rgba(59, 130, 246, .10)'; ctx.fillRect(inX, 0, outX - inX, height);
+            ctx.strokeStyle = '#eab308'; ctx.lineWidth = 3; ctx.strokeRect(inX, 1.5, outX - inX, height - 3);
+            ctx.fillStyle = '#eab308'; ctx.fillRect(inX - 5, 0, 10, height); ctx.fillRect(outX - 5, 0, 10, height);
+        };
+        draw();
+        const observer = new ResizeObserver(draw);
+        observer.observe(canvas);
+        return () => observer.disconnect();
+    }, [clip.buffer, clip.start, clip.end]);
+
+    const pointerTime = (event) => {
+        const rect = canvasRef.current.getBoundingClientRect();
+        return Math.max(0, Math.min(clip.buffer.duration, (event.clientX - rect.left) / rect.width * clip.buffer.duration));
+    };
+    const handlePointerDown = (event) => {
+        if (disabled) return;
+        stopPlayback();
+        const time = pointerTime(event);
+        const threshold = Math.max(0.05, clip.buffer.duration * 0.025);
+        const target = Math.abs(time - clip.start) <= Math.abs(time - clip.end) && Math.abs(time - clip.start) < threshold ? 'start' :
+            Math.abs(time - clip.end) < threshold ? 'end' : (time < (clip.start + clip.end) / 2 ? 'start' : 'end');
+        setDragTarget(target);
+        canvasRef.current.setPointerCapture(event.pointerId);
+        onChange(target === 'start' ? { start: Math.min(time, clip.end - 0.001) } : { end: Math.max(time, clip.start + 0.001) });
+    };
+    const handlePointerMove = (event) => {
+        if (!dragTarget) return;
+        const time = pointerTime(event);
+        onChange(dragTarget === 'start' ? { start: Math.min(time, clip.end - 0.001) } : { end: Math.max(time, clip.start + 0.001) });
+    };
+    const updateNumericBoundary = (key, rawValue) => {
+        const value = Number(rawValue);
+        if (!Number.isFinite(value)) return;
+        onChange(key === 'start'
+            ? { start: Math.max(0, Math.min(value, clip.end - 0.001)) }
+            : { end: Math.min(clip.buffer.duration, Math.max(value, clip.start + 0.001)) });
+    };
+    const playSelection = async () => {
+        if (isPlaying) { stopPlayback(); return; }
+        const ctx = getAudioContext();
+        await ctx.resume();
+        const source = ctx.createBufferSource();
+        source.buffer = clip.buffer;
+        source.connect(ctx.destination);
+        const startedAt = ctx.currentTime;
+        setPlayhead(clip.start);
+        const updatePlayhead = () => {
+            const current = Math.min(clip.end, clip.start + (ctx.currentTime - startedAt));
+            setPlayhead(current);
+            if (current < clip.end && sourceRef.current === source) {
+                animationRef.current = requestAnimationFrame(updatePlayhead);
+            }
+        };
+        source.onended = () => {
+            if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
+            animationRef.current = null;
+            sourceRef.current = null;
+            setPlayhead(clip.end);
+            setIsPlaying(false);
+        };
+        sourceRef.current = source;
+        setIsPlaying(true);
+        source.start(0, clip.start, clip.end - clip.start);
+        animationRef.current = requestAnimationFrame(updatePlayhead);
+    };
+
+    return (
+        <div className="rounded-lg border border-gray-200 dark:border-gray-600 p-3 space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+                <input value={clip.name} disabled={disabled} onChange={e => onChange({ name: e.target.value })}
+                    aria-label="切り抜き名" className="min-w-0 flex-1 p-2 text-sm font-medium border rounded bg-transparent" />
+                <button type="button" onClick={onDuplicate} disabled={disabled} title="同じWAVから切り抜きを追加" className="p-2 border rounded hover:bg-gray-50 dark:hover:bg-gray-700"><Copy className="w-4 h-4" /></button>
+                <button type="button" onClick={onRemove} disabled={disabled} title="削除" className="p-2 border border-red-200 text-red-600 rounded hover:bg-red-50"><Trash2 className="w-4 h-4" /></button>
+            </div>
+            <div className="relative h-28">
+                <canvas ref={canvasRef} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove}
+                    onPointerUp={() => setDragTarget(null)} onPointerCancel={() => setDragTarget(null)}
+                    className="w-full h-28 rounded border cursor-ew-resize touch-none" aria-label={`${clip.name} の波形範囲選択`} />
+                <div className="absolute inset-y-0 w-0.5 bg-red-600 pointer-events-none shadow-sm"
+                    style={{ left: `${(playhead / clip.buffer.duration) * 100}%` }} aria-hidden="true" />
+            </div>
+            <div className="grid grid-cols-2 gap-3 text-xs">
+                <label>IN (秒)<input type="number" min="0" max={clip.end} step="0.001" value={clip.start.toFixed(3)} disabled={disabled}
+                    onChange={e => updateNumericBoundary('start', e.target.value)} className="mt-1 w-full p-1.5 border rounded bg-transparent" /></label>
+                <label>OUT (秒)<input type="number" min={clip.start} max={clip.buffer.duration} step="0.001" value={clip.end.toFixed(3)} disabled={disabled}
+                    onChange={e => updateNumericBoundary('end', e.target.value)} className="mt-1 w-full p-1.5 border rounded bg-transparent" /></label>
+            </div>
+            <div className="flex items-center justify-between text-xs text-gray-500">
+                <span><span className="font-mono text-red-600">{formatTime(playhead)}</span> / {formatTime(clip.end)}（選択 {formatTime(clip.end - clip.start)}）</span>
+                <button type="button" onClick={playSelection} className="inline-flex items-center gap-1 px-3 py-1.5 border rounded hover:bg-gray-50 dark:hover:bg-gray-700">
+                    {isPlaying ? <Square className="w-3 h-3" /> : <Play className="w-3 h-3" />}{isPlaying ? '停止' : '範囲を再生'}
+                </button>
+            </div>
+        </div>
+    );
+};
+
 
 // --- メインアプリケーション ---
 export default function App() {
@@ -279,7 +500,7 @@ export default function App() {
     const [calibLevel, setCalibLevel] = useState(94.0);
     const [offset, setOffset] = useState(null);
     
-    const [measFiles, setMeasFiles] = useState([]);
+    const [clips, setClips] = useState([]);
     const [isProcessing, setIsProcessing] = useState(false);
     const [processingProgress, setProcessingProgress] = useState(null);
     const [errorMsg, setErrorMsg] = useState("");
@@ -287,10 +508,43 @@ export default function App() {
     const [results, setResults] = useState([]);
 
     const handleCalibFile = (e) => setCalibFile(e.target.files[0]);
-    const handleMeasFile = (e) => {
-        setMeasFiles(Array.from(e.target.files || []));
+    const handleMeasFile = async (e) => {
+        const files = Array.from(e.target.files || []);
+        if (!files.length) return;
+        setIsProcessing(true);
+        setErrorMsg('');
+        try {
+            const decoded = await Promise.all(files.map(async (file, index) => {
+                const buffer = await decodeFile(file);
+                return { id: `${Date.now()}-${index}-${Math.random()}`, file, buffer, name: '切り抜き1', start: 0, end: buffer.duration };
+            }));
+            setClips(decoded);
+            setResults([]);
+        } catch (err) {
+            console.error(err);
+            setErrorMsg('WAVファイルを読み込めませんでした。ファイル形式を確認してください。');
+        } finally {
+            setIsProcessing(false);
+            e.target.value = '';
+        }
+    };
+
+    const updateClip = (id, changes) => {
+        setClips(current => current.map(clip => clip.id === id ? { ...clip, ...changes } : clip));
         setResults([]);
     };
+    const duplicateClip = (id) => {
+        setClips(current => {
+            const sourceIndex = current.findIndex(clip => clip.id === id);
+            if (sourceIndex < 0) return current;
+            const source = current[sourceIndex];
+            const sameFileCount = current.filter(clip => clip.file === source.file).length;
+            const copy = { ...source, id: `${Date.now()}-${Math.random()}`, name: `切り抜き${sameFileCount + 1}` };
+            return [...current.slice(0, sourceIndex + 1), copy, ...current.slice(sourceIndex + 1)];
+        });
+        setResults([]);
+    };
+    const removeClip = (id) => { setClips(current => current.filter(clip => clip.id !== id)); setResults([]); };
 
     const runCalibration = async () => {
         if (!calibFile) return;
@@ -307,7 +561,7 @@ export default function App() {
     };
 
     const runAnalysis = async () => {
-        if (measFiles.length === 0) return;
+        if (clips.length === 0) return;
         setIsProcessing(true);
         setErrorMsg("");
         const nextResults = [];
@@ -315,15 +569,15 @@ export default function App() {
         // オフセット未設定の場合は仮に100とする（相対評価）
         const currentOffset = offset !== null ? offset : 100;
 
-        for (let index = 0; index < measFiles.length; index++) {
-            const file = measFiles[index];
-            setProcessingProgress({ current: index + 1, total: measFiles.length });
+        for (let index = 0; index < clips.length; index++) {
+            const clip = clips[index];
+            setProcessingProgress({ current: index + 1, total: clips.length });
             try {
-                const levels = await analyzeAudio(file, currentOffset);
+                const levels = analyzeAudio(clip.buffer, currentOffset, clip.start, clip.end);
                 const ncResult = evaluateNC(levels);
-                nextResults.push({ levels, nc: ncResult, sourceFileName: file.name });
+                nextResults.push({ levels, nc: ncResult, sourceFileName: clip.file.name, clipName: clip.name, buffer: clip.buffer, start: clip.start, end: clip.end });
             } catch (err) {
-                failedFiles.push(file.name);
+                failedFiles.push(`${clip.file.name} / ${clip.name}`);
                 console.error(err);
             }
         }
@@ -336,9 +590,17 @@ export default function App() {
         setIsProcessing(false);
     };
 
-    const downloadAllCsv = () => {
-        results.forEach(downloadResultCsv);
+    const downloadResultWav = (result) => downloadBlob(
+        createTrimmedWav(result.buffer, result.start, result.end),
+        getTrimmedFileName(result.sourceFileName, result.clipName)
+    );
+    const downloadResultFiles = (result) => {
+        downloadResultCsv(result);
+        window.setTimeout(() => downloadResultWav(result), 150);
     };
+    const downloadAllFiles = () => results.forEach((result, index) => {
+        window.setTimeout(() => downloadResultFiles(result), index * 300);
+    });
 
     return (
         <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-100 p-4 md:p-8 font-sans">
@@ -431,16 +693,28 @@ export default function App() {
                                     onChange={handleMeasFile}
                                     className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 dark:file:bg-gray-700 dark:file:text-gray-300"
                                 />
-                                {measFiles.length > 0 && (
-                                    <p className="mt-2 text-xs text-gray-500 dark:text-gray-400 break-all">
-                                        選択中（{measFiles.length}件）: {measFiles.map(file => file.name).join(', ')}
-                                    </p>
-                                )}
+                                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                                    読み込み後、波形の黄色いハンドルをドラッグして解析範囲を指定できます。
+                                </p>
                             </div>
-                            
+
+                            {clips.length > 0 && (
+                                <div className="space-y-4">
+                                    {clips.map(clip => (
+                                        <div key={clip.id}>
+                                            <p className="mb-1 text-xs font-semibold text-gray-500 break-all">{clip.file.name}</p>
+                                            <WaveformEditor clip={clip} disabled={isProcessing}
+                                                onChange={changes => updateClip(clip.id, changes)}
+                                                onDuplicate={() => duplicateClip(clip.id)}
+                                                onRemove={() => removeClip(clip.id)} />
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
                             <button 
                                 onClick={runAnalysis}
-                                disabled={measFiles.length === 0 || isProcessing}
+                                disabled={clips.length === 0 || isProcessing}
                                 className="w-full py-2 mt-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded shadow-sm transition-colors disabled:opacity-50 flex justify-center items-center"
                             >
                                 {isProcessing ? (
@@ -451,7 +725,7 @@ export default function App() {
                                         </svg>
                                         処理中... {processingProgress && `(${processingProgress.current}/${processingProgress.total})`}
                                     </>
-                                ) : (measFiles.length > 1 ? `${measFiles.length}ファイルを一括分析` : "分析を実行")}
+                                ) : (clips.length > 1 ? `${clips.length}範囲を一括分析` : "選択範囲を分析")}
                             </button>
                         </div>
                     </div>
@@ -467,12 +741,12 @@ export default function App() {
                             </div>
                             <div className="flex flex-wrap items-center gap-3">
                                 <button
-                                    onClick={downloadAllCsv}
+                                    onClick={downloadAllFiles}
                                     className="inline-flex items-center px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded shadow-sm transition-colors"
-                                    title="すべての解析結果をCSVで保存"
+                                    title="すべての解析結果と切り抜きWAVを保存"
                                 >
                                     <Download className="w-4 h-4 mr-2" />
-                                    CSVを一括出力
+                                    CSV＋切り抜きWAVを一括出力
                                 </button>
                             </div>
                         </div>
@@ -481,15 +755,15 @@ export default function App() {
                             {results.map((result, resultIndex) => (
                             <section key={`${result.sourceFileName}-${resultIndex}`} className="border-t border-gray-200 dark:border-gray-700 pt-6 first:border-t-0 first:pt-0">
                                 <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
-                                    <h3 className="font-semibold break-all">{result.sourceFileName}</h3>
+                                    <h3 className="font-semibold break-all">{result.sourceFileName} / {result.clipName}</h3>
                                     <div className="flex flex-wrap items-center gap-3">
                                         <button
-                                            onClick={() => downloadResultCsv(result)}
+                                            onClick={() => downloadResultFiles(result)}
                                             className="inline-flex items-center px-3 py-1.5 border border-green-600 text-green-700 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20 text-sm font-medium rounded transition-colors"
-                                            title={`${getCsvFileName(result.sourceFileName)} を保存`}
+                                            title="解析CSVと選択範囲のWAVを保存"
                                         >
                                             <Download className="w-4 h-4 mr-2" />
-                                            CSVを出力
+                                            CSV＋WAVを出力
                                         </button>
                                         <div className="bg-blue-50 dark:bg-blue-900/30 px-6 py-2 rounded-full border border-blue-100 dark:border-blue-800">
                                             <span className="text-sm text-blue-800 dark:text-blue-300 mr-2">判定NC値:</span>
