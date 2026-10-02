@@ -335,11 +335,18 @@ const ResultChart = ({ measuredLevels, ncOverall }) => {
 const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => {
     const canvasRef = useRef(null);
     const sourceRef = useRef(null);
+    const animationRef = useRef(null);
     const [isPlaying, setIsPlaying] = useState(false);
     const [dragTarget, setDragTarget] = useState(null);
+    const [playhead, setPlayhead] = useState(clip.start);
 
     const stopPlayback = () => {
+        if (animationRef.current !== null) {
+            cancelAnimationFrame(animationRef.current);
+            animationRef.current = null;
+        }
         if (sourceRef.current) {
+            sourceRef.current.onended = null;
             try { sourceRef.current.stop(); } catch (_) { /* already stopped */ }
             sourceRef.current.disconnect();
             sourceRef.current = null;
@@ -348,11 +355,17 @@ const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => 
     };
 
     useEffect(() => () => {
+        if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
         if (sourceRef.current) {
+            sourceRef.current.onended = null;
             try { sourceRef.current.stop(); } catch (_) { /* already stopped */ }
             sourceRef.current.disconnect();
         }
     }, []);
+
+    useEffect(() => {
+        if (!isPlaying) setPlayhead(current => Math.max(clip.start, Math.min(current, clip.end)));
+    }, [clip.start, clip.end, isPlaying]);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -399,6 +412,7 @@ const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => 
     };
     const handlePointerDown = (event) => {
         if (disabled) return;
+        stopPlayback();
         const time = pointerTime(event);
         const threshold = Math.max(0.05, clip.buffer.duration * 0.025);
         const target = Math.abs(time - clip.start) <= Math.abs(time - clip.end) && Math.abs(time - clip.start) < threshold ? 'start' :
@@ -426,10 +440,26 @@ const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => 
         const source = ctx.createBufferSource();
         source.buffer = clip.buffer;
         source.connect(ctx.destination);
-        source.onended = () => { sourceRef.current = null; setIsPlaying(false); };
+        const startedAt = ctx.currentTime;
+        setPlayhead(clip.start);
+        const updatePlayhead = () => {
+            const current = Math.min(clip.end, clip.start + (ctx.currentTime - startedAt));
+            setPlayhead(current);
+            if (current < clip.end && sourceRef.current === source) {
+                animationRef.current = requestAnimationFrame(updatePlayhead);
+            }
+        };
+        source.onended = () => {
+            if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
+            animationRef.current = null;
+            sourceRef.current = null;
+            setPlayhead(clip.end);
+            setIsPlaying(false);
+        };
         sourceRef.current = source;
         setIsPlaying(true);
         source.start(0, clip.start, clip.end - clip.start);
+        animationRef.current = requestAnimationFrame(updatePlayhead);
     };
 
     return (
@@ -440,9 +470,13 @@ const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => 
                 <button type="button" onClick={onDuplicate} disabled={disabled} title="同じWAVから切り抜きを追加" className="p-2 border rounded hover:bg-gray-50 dark:hover:bg-gray-700"><Copy className="w-4 h-4" /></button>
                 <button type="button" onClick={onRemove} disabled={disabled} title="削除" className="p-2 border border-red-200 text-red-600 rounded hover:bg-red-50"><Trash2 className="w-4 h-4" /></button>
             </div>
-            <canvas ref={canvasRef} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove}
-                onPointerUp={() => setDragTarget(null)} onPointerCancel={() => setDragTarget(null)}
-                className="w-full h-28 rounded border cursor-ew-resize touch-none" aria-label={`${clip.name} の波形範囲選択`} />
+            <div className="relative h-28">
+                <canvas ref={canvasRef} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove}
+                    onPointerUp={() => setDragTarget(null)} onPointerCancel={() => setDragTarget(null)}
+                    className="w-full h-28 rounded border cursor-ew-resize touch-none" aria-label={`${clip.name} の波形範囲選択`} />
+                <div className="absolute inset-y-0 w-0.5 bg-red-600 pointer-events-none shadow-sm"
+                    style={{ left: `${(playhead / clip.buffer.duration) * 100}%` }} aria-hidden="true" />
+            </div>
             <div className="grid grid-cols-2 gap-3 text-xs">
                 <label>IN (秒)<input type="number" min="0" max={clip.end} step="0.001" value={clip.start.toFixed(3)} disabled={disabled}
                     onChange={e => updateNumericBoundary('start', e.target.value)} className="mt-1 w-full p-1.5 border rounded bg-transparent" /></label>
@@ -450,7 +484,7 @@ const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => 
                     onChange={e => updateNumericBoundary('end', e.target.value)} className="mt-1 w-full p-1.5 border rounded bg-transparent" /></label>
             </div>
             <div className="flex items-center justify-between text-xs text-gray-500">
-                <span>{formatTime(clip.start)} — {formatTime(clip.end)}（{formatTime(clip.end - clip.start)}）</span>
+                <span><span className="font-mono text-red-600">{formatTime(playhead)}</span> / {formatTime(clip.end)}（選択 {formatTime(clip.end - clip.start)}）</span>
                 <button type="button" onClick={playSelection} className="inline-flex items-center gap-1 px-3 py-1.5 border rounded hover:bg-gray-50 dark:hover:bg-gray-700">
                     {isPlaying ? <Square className="w-3 h-3" /> : <Play className="w-3 h-3" />}{isPlaying ? '停止' : '範囲を再生'}
                 </button>
