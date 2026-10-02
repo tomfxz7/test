@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WAV Trimmer Offline</title>
+<style>
+  :root{
+    color-scheme: light;
+    --bg:#f6f8fb; --panel:#ffffff; --panel2:#f8fafc; --text:#172033;
+    --muted:#667085; --line:#d9e0e8; --accent:#f2c94c; --accent2:#2f80ed;
+    --danger:#d92d20; --ok:#16803a;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(180deg,#ffffff,#f4f7fb 65%);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;min-height:100vh}
+  .wrap{max-width:1040px;margin:0 auto;padding:28px 18px 48px}
+  h1{margin:0;font-size:clamp(26px,4vw,40px);letter-spacing:.02em}
+  .lead{margin:8px 0 24px;color:var(--muted)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:18px;box-shadow:0 18px 60px rgba(16,24,40,.10);overflow:hidden}
+  .drop{margin:18px;border:1.5px dashed #b6c0cc;border-radius:14px;padding:30px 18px;text-align:center;cursor:pointer;transition:.15s;background:#fafcff}
+  .drop.drag{border-color:var(--accent2);background:#eef6ff}
+  .drop strong{display:block;font-size:18px;margin-bottom:6px}
+  .drop small{color:var(--muted)}
+  .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  .meta{padding:0 18px 14px;display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}
+  .filename{font-weight:700;max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  button,.btn,input[type="number"]{font:inherit}
+  button,.btn{border:1px solid #cfd7e2;background:#ffffff;color:var(--text);border-radius:10px;padding:9px 13px;cursor:pointer;box-shadow:0 1px 2px rgba(16,24,40,.04)}
+  button:hover{filter:brightness(1.12)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .ghost{background:transparent}
+  .danger{border-color:#f2b8b5;color:#b42318}
+  .primary{background:var(--accent2);border-color:var(--accent2);color:#fff;font-weight:800}
+  .wavebox{position:relative;height:300px;margin:0 18px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#ffffff;user-select:none;touch-action:none}
+  canvas{display:block;width:100%;height:100%}
+  .tip{padding:10px 18px 0;color:var(--muted);font-size:13px}
+  .times{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:14px 18px}
+  .timebox{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+  .timebox label{display:block;color:var(--muted);font-size:12px;margin-bottom:2px}
+  .timebox b{font-variant-numeric:tabular-nums}
+  .controls{padding:0 18px 14px;display:flex;gap:10px;flex-wrap:wrap}
+  .options{border-top:1px solid var(--line);padding:16px 18px;display:grid;gap:14px}
+  .optionline{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  input[type="checkbox"]{width:18px;height:18px;accent-color:var(--accent)}
+  input[type="number"]{width:90px;background:#ffffff;color:var(--text);border:1px solid #cfd7e2;border-radius:8px;padding:7px 9px}
+  .export{padding:0 18px 18px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  .status{color:var(--muted);font-size:13px}
+  .status.ok{color:var(--ok)} .status.err{color:#b42318}
+  .badge{display:inline-block;padding:4px 8px;border:1px solid #d0d7e2;border-radius:999px;color:#475467;background:#f8fafc;font-size:12px}
+  .footer{color:#7a8699;text-align:center;margin-top:14px;font-size:12px}
+  .hidden{display:none!important}
+  @media (max-width:650px){.times{grid-template-columns:1fr}.wavebox{height:240px}.filename{max-width:100%}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>WAV Trimmer <span style="color:var(--accent)">Offline</span></h1>
+  <p class="lead">波形を見ながらWAVを切り出し。ファイルは外部へ送信せず、すべてブラウザ内で処理します。</p>
+
+  <section class="card">
+    <div id="drop" class="drop" tabindex="0" role="button" aria-label="WAVファイルを選択">
+      <strong>ここにWAVファイルをドロップ</strong>
+      <small>またはクリックしてファイルを選択</small>
+      <input id="file" type="file" accept="audio/wav,.wav" hidden>
+    </div>
+
+    <div id="editor" class="hidden">
+      <div class="meta">
+        <div>
+          <div id="filename" class="filename"></div>
+          <div class="row" style="margin-top:6px">
+            <span id="formatBadge" class="badge"></span>
+            <span id="durationBadge" class="badge"></span>
+          </div>
+        </div>
+        <button id="clear" class="ghost danger">解除</button>
+      </div>
+
+      <div id="wavebox" class="wavebox" title="クリック: 再生位置 / ハンドルをドラッグ: 範囲指定 / ホイール: 拡大縮小">
+        <canvas id="wave"></canvas>
+      </div>
+      <div class="tip">黄色い左右ハンドルをドラッグして「残したい範囲」を指定。波形上クリックで再生位置を移動、ホイールで拡大・縮小、Shift＋ホイールで左右移動できます。</div>
+
+      <div class="times">
+        <div class="timebox"><label>再生位置</label><b id="now">00:00.000</b> / <span id="total">00:00.000</span></div>
+        <div class="timebox"><label>IN</label><b id="inTime">00:00.000</b></div>
+        <div class="timebox"><label>OUT</label><b id="outTime">00:00.000</b></div>
+      </div>
+
+      <div class="controls">
+        <button id="toStart">先頭へ</button>
+        <button id="play">▶ 再生</button>
+        <button id="playSelection">選択範囲を再生</button>
+        <button id="zoomFit">全体表示</button>
+      </div>
+
+      <div class="options">
+        <div class="optionline">
+          <label class="row"><input id="fade" type="checkbox"> 前後にフェードを適用</label>
+          <label>フェード時間 <input id="fadeSec" type="number" min="0" step="0.01" value="0.05"> 秒</label>
+        </div>
+        <div class="status">出力形式: 元WAVと同じサンプルレート・チャンネル数・ビット深度。トリミングはサンプル単位です。</div>
+      </div>
+
+      <div class="export">
+        <button id="save" class="primary">保存・ダウンロード</button>
+        <span id="status" class="status"></span>
+      </div>
+    </div>
+  </section>
+  <div class="footer">外部通信・外部ライブラリなし。Chrome / Edge / Firefox のローカルHTMLで利用できます。</div>
+</div>
+<script>
+'use strict';
+(() => {
+  const $ = s => document.querySelector(s);
+  const els = {
+    drop: $('#drop'), file: $('#file'), editor: $('#editor'), filename: $('#filename'), formatBadge: $('#formatBadge'), durationBadge: $('#durationBadge'),
+    clear: $('#clear'), wavebox: $('#wavebox'), canvas: $('#wave'), now: $('#now'), total: $('#total'), inTime: $('#inTime'), outTime: $('#outTime'),
+    toStart: $('#toStart'), play: $('#play'), playSelection: $('#playSelection'), zoomFit: $('#zoomFit'), fade: $('#fade'), fadeSec: $('#fadeSec'), save: $('#save'), status: $('#status')
+  };
+  const ctx = els.canvas.getContext('2d');
+  let state = null;
+  let audioCtx = null, source = null, playTimer = null, playing = false, playStartedAt = 0, playOffset = 0, playStopAt = null;
+  let dragMode = null;
+
+  function fmt(t) {
+    if (!Number.isFinite(t)) t = 0;
+    t = Math.max(0, t);
+    const m = Math.floor(t / 60), s = Math.floor(t % 60), ms = Math.floor((t - Math.floor(t)) * 1000 + 1e-6);
+    return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}.${String(ms).padStart(3,'0')}`;
+  }
+  function setStatus(msg, cls='') { els.status.textContent = msg; els.status.className = `status ${cls}`; }
+  function fourCC(v, o){ return String.fromCharCode(v.getUint8(o),v.getUint8(o+1),v.getUint8(o+2),v.getUint8(o+3)); }
+
+  function parseWav(buffer) {
+    const v = new DataView(buffer);
+    if (v.byteLength < 44 || fourCC(v,0)!=='RIFF' || fourCC(v,8)!=='WAVE') throw new Error('WAV (RIFF/WAVE) 形式ではありません。');
+    let off=12, fmtChunk=null, dataOff=-1, dataSize=0;
+    while (off + 8 <= v.byteLength) {
+      const id=fourCC(v,off), size=v.getUint32(off+4,true), start=off+8;
+      if (start + size > v.byteLength) break;
+      if (id==='fmt ') fmtChunk={off:start,size};
+      if (id==='data' && dataOff<0) { dataOff=start; dataSize=size; }
+      off = start + size + (size & 1);
+    }
+    if (!fmtChunk || dataOff<0) throw new Error('WAV内に fmt または data チャンクが見つかりません。');
+    const f=fmtChunk.off;
+    let format=v.getUint16(f,true), channels=v.getUint16(f+2,true), sampleRate=v.getUint32(f+4,true), byteRate=v.getUint32(f+8,true), blockAlign=v.getUint16(f+12,true), bits=v.getUint16(f+14,true);
+    if (format===0xFFFE && fmtChunk.size>=40) {
+      // WAVE_FORMAT_EXTENSIBLE: SubFormat GUID先頭2byteが実フォーマット(1=PCM,3=float)
+      format=v.getUint16(f+24,true);
+    }
+    if (![1,3].includes(format)) throw new Error(`未対応のWAV圧縮形式です (format=${format})。PCM / IEEE Float WAVに対応しています。`);
+    if (![8,16,24,32,64].includes(bits) || (format===1 && bits===64)) throw new Error(`${bits} bit WAVは未対応です。`);
+    if (format===3 && ![32,64].includes(bits)) throw new Error(`IEEE Float ${bits} bit は未対応です。`);
+    const bytesPerSample = bits/8;
+    if (blockAlign !== channels*bytesPerSample) throw new Error('特殊なWAV配置には対応していません。');
+    dataSize = Math.min(dataSize, v.byteLength-dataOff);
+    const frames = Math.floor(dataSize / blockAlign);
+    if (!frames) throw new Error('音声データが空です。');
+    const chData = Array.from({length:channels},()=>new Float32Array(frames));
+    let p=dataOff;
+    for(let i=0;i<frames;i++){
+      for(let c=0;c<channels;c++){
+        let x;
+        if(format===1){
+          if(bits===8) x=(v.getUint8(p)-128)/128;
+          else if(bits===16) x=v.getInt16(p,true)/32768;
+          else if(bits===24){ let n=v.getUint8(p)|(v.getUint8(p+1)<<8)|(v.getUint8(p+2)<<16); if(n&0x800000)n|=0xff000000; x=n/8388608; }
+          else x=v.getInt32(p,true)/2147483648;
+        } else {
+          x = bits===32 ? v.getFloat32(p,true) : v.getFloat64(p,true);
+          if(!Number.isFinite(x)) x=0;
+        }
+        chData[c][i]=Math.max(-1,Math.min(1,x));
+        p += bytesPerSample;
+      }
+    }
+    return {format,channels,sampleRate,byteRate,blockAlign,bits,frames,duration:frames/sampleRate,data:chData};
+  }
+
+  function createAudioBuffer(wav) {
+    audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
+    const b=audioCtx.createBuffer(wav.channels,wav.frames,wav.sampleRate);
+    wav.data.forEach((d,c)=>b.copyToChannel(d,c));
+    return b;
+  }
+
+  function resizeCanvas(){
+    const dpr=Math.max(1,window.devicePixelRatio||1), r=els.wavebox.getBoundingClientRect();
+    els.canvas.width=Math.max(1,Math.round(r.width*dpr)); els.canvas.height=Math.max(1,Math.round(r.height*dpr));
+    ctx.setTransform(dpr,0,0,dpr,0,0); draw();
+  }
+  function visibleDuration(){ return state ? state.duration/state.zoom : 1; }
+  function clampView(){ if(!state)return; const vd=visibleDuration(); state.viewStart=Math.max(0,Math.min(state.viewStart,Math.max(0,state.duration-vd))); }
+  function xToTime(x){ const w=els.wavebox.clientWidth||1; return state.viewStart + (x/w)*visibleDuration(); }
+  function timeToX(t){ const w=els.wavebox.clientWidth||1; return ((t-state.viewStart)/visibleDuration())*w; }
+  function clamp(t,a,b){ return Math.max(a,Math.min(b,t)); }
+
+  function draw(){
+    const w=els.wavebox.clientWidth,h=els.wavebox.clientHeight;
+    ctx.clearRect(0,0,w,h); ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,w,h);
+    if(!state)return;
+    const vd=visibleDuration(), start=Math.floor(state.viewStart*state.sampleRate), end=Math.min(state.frames,Math.ceil((state.viewStart+vd)*state.sampleRate));
+    const frames=Math.max(1,end-start), mid=h/2;
+    ctx.strokeStyle='#e4e9f0';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(0,mid+.5);ctx.lineTo(w,mid+.5);ctx.stroke();
+    ctx.strokeStyle='#2f80ed'; ctx.lineWidth=1;
+    const samplesPerPx=frames/Math.max(1,w);
+    ctx.beginPath();
+    for(let x=0;x<w;x++){
+      const a=Math.floor(start+x*samplesPerPx), b=Math.min(end,Math.max(a+1,Math.floor(start+(x+1)*samplesPerPx)));
+      let mn=1,mx=-1;
+      for(let i=a;i<b;i++){
+        let s=0; for(let c=0;c<state.channels;c++) s+=state.data[c][i]; s/=state.channels;
+        if(s<mn)mn=s;if(s>mx)mx=s;
+      }
+      const y1=mid-mx*(h*.40), y2=mid-mn*(h*.40); ctx.moveTo(x+.5,y1);ctx.lineTo(x+.5,y2);
+    }
+    ctx.stroke();
+    const xi=timeToX(state.inTime), xo=timeToX(state.outTime);
+    ctx.fillStyle='rgba(94,108,132,.18)'; if(xi>0)ctx.fillRect(0,0,Math.min(w,xi),h); if(xo<w)ctx.fillRect(Math.max(0,xo),0,w-xo,h);
+    ctx.fillStyle='rgba(47,128,237,.06)';ctx.fillRect(clamp(xi,0,w),0,clamp(xo-xi,0,w),h);
+    ctx.strokeStyle='#f2c94c';ctx.lineWidth=2;ctx.strokeRect(xi,1,Math.max(0,xo-xi),h-2);
+    for(const x of [xi,xo]){ ctx.fillStyle='#f2c94c';ctx.fillRect(x-5,0,10,h);ctx.fillStyle='#6b5600';ctx.fillRect(x-1,h/2-16,2,32); }
+    const xp=timeToX(state.playhead); if(xp>=0&&xp<=w){ctx.strokeStyle='#d92d20';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(xp,0);ctx.lineTo(xp,h);ctx.stroke();}
+    // simple time ruler
+    ctx.fillStyle='#667085';ctx.font='11px system-ui'; const steps=6;
+    for(let i=0;i<=steps;i++){ const t=state.viewStart+vd*i/steps,x=w*i/steps;ctx.fillText(fmt(t).slice(0,-2),Math.min(w-52,x+4),14); }
+  }
+  function updateTimes(){ if(!state)return; els.now.textContent=fmt(state.playhead);els.total.textContent=fmt(state.duration);els.inTime.textContent=fmt(state.inTime);els.outTime.textContent=fmt(state.outTime);draw(); }
+
+  async function loadFile(file){
+    stop(); setStatus('読み込み中…');
+    try{
+      const buf=await file.arrayBuffer(), wav=parseWav(buf);
+      state={...wav,fileName:file.name,inTime:0,outTime:wav.duration,playhead:0,zoom:1,viewStart:0,audioBuffer:null};
+      els.filename.textContent=file.name;
+      els.formatBadge.textContent=`${wav.channels}ch / ${wav.sampleRate.toLocaleString()} Hz / ${wav.bits} bit ${wav.format===3?'Float':'PCM'}`;
+      els.durationBadge.textContent=fmt(wav.duration);
+      els.drop.classList.add('hidden');els.editor.classList.remove('hidden');
+      els.total.textContent=fmt(wav.duration);updateTimes();resizeCanvas();setStatus('読み込み完了','ok');
+    }catch(e){ state=null; setStatus(e.message,'err'); alert(e.message); }
+  }
+
+  function stop(){
+    if(source){try{source.stop()}catch{} try{source.disconnect()}catch{} source=null}
+    playing=false;els.play.textContent='▶ 再生'; if(playTimer)cancelAnimationFrame(playTimer);playTimer=null;
+  }
+  async function play(from=state?.playhead ?? 0, until=null){
+    if(!state)return; stop();
+    audioCtx ||= new (window.AudioContext || window.webkitAudioContext)(); await audioCtx.resume();
+    state.audioBuffer ||= createAudioBuffer(state);
+    source=audioCtx.createBufferSource();source.buffer=state.audioBuffer;source.connect(audioCtx.destination);
+    from=clamp(from,0,state.duration); if(from>=state.duration)from=0;
+    playOffset=from;playStartedAt=audioCtx.currentTime;playStopAt=until;playing=true;els.play.textContent='⏸ 停止';
+    source.onended=()=>{ if(!playing)return; playing=false;els.play.textContent='▶ 再生'; if(playStopAt!=null)state.playhead=clamp(playStopAt,0,state.duration);updateTimes(); };
+    if (until != null) source.start(0, from, Math.max(0, until-from)); else source.start(0, from);
+    const tick=()=>{ if(!playing)return; state.playhead=clamp(playOffset+(audioCtx.currentTime-playStartedAt),0, playStopAt??state.duration); updateTimes(); if(state.playhead >= (playStopAt??state.duration)-0.001){stop();return;} playTimer=requestAnimationFrame(tick);};tick();
+  }
+
+  function sampleIndex(t){ return clamp(Math.round(t*state.sampleRate),0,state.frames); }
+  function writeAscii(v,o,s){ for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i)); }
+  function exportWav(){
+    const a=sampleIndex(state.inTime), b=sampleIndex(state.outTime), frames=Math.max(0,b-a); if(!frames)throw new Error('選択範囲がありません。');
+    const bytes=state.bits/8, dataBytes=frames*state.channels*bytes, out=new ArrayBuffer(44+dataBytes), v=new DataView(out);
+    writeAscii(v,0,'RIFF');v.setUint32(4,36+dataBytes,true);writeAscii(v,8,'WAVE');writeAscii(v,12,'fmt ');v.setUint32(16,16,true);v.setUint16(20,state.format,true);v.setUint16(22,state.channels,true);v.setUint32(24,state.sampleRate,true);v.setUint32(28,state.sampleRate*state.channels*bytes,true);v.setUint16(32,state.channels*bytes,true);v.setUint16(34,state.bits,true);writeAscii(v,36,'data');v.setUint32(40,dataBytes,true);
+    const doFade=els.fade.checked, fadeN=doFade?Math.min(Math.floor(Math.max(0,Number(els.fadeSec.value)||0)*state.sampleRate),Math.floor(frames/2)):0;
+    let p=44;
+    for(let i=0;i<frames;i++){
+      let g=1; if(fadeN>0){ if(i<fadeN)g=i/fadeN; if(i>=frames-fadeN)g=Math.min(g,(frames-1-i)/fadeN); g=Math.max(0,g); }
+      for(let c=0;c<state.channels;c++){
+        let x=clamp(state.data[c][a+i]*g,-1,1);
+        if(state.format===1){
+          if(state.bits===8){v.setUint8(p,clamp(Math.round(x*128+128),0,255));p+=1;}
+          else if(state.bits===16){v.setInt16(p,clamp(Math.round(x*32768),-32768,32767),true);p+=2;}
+          else if(state.bits===24){let n=clamp(Math.round(x*8388608),-8388608,8388607); if(n<0)n+=16777216;v.setUint8(p,n&255);v.setUint8(p+1,(n>>8)&255);v.setUint8(p+2,(n>>16)&255);p+=3;}
+          else {v.setInt32(p,clamp(Math.round(x*2147483648),-2147483648,2147483647),true);p+=4;}
+        } else { if(state.bits===32){v.setFloat32(p,x,true);p+=4;}else{v.setFloat64(p,x,true);p+=8;} }
+      }
+    }
+    return new Blob([out],{type:'audio/wav'});
+  }
+
+  els.drop.addEventListener('click',()=>els.file.click()); els.drop.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();els.file.click();}});
+  els.file.addEventListener('change',()=>{if(els.file.files[0])loadFile(els.file.files[0]);els.file.value='';});
+  ['dragenter','dragover'].forEach(t=>els.drop.addEventListener(t,e=>{e.preventDefault();els.drop.classList.add('drag')}));
+  ['dragleave','drop'].forEach(t=>els.drop.addEventListener(t,e=>{e.preventDefault();els.drop.classList.remove('drag')}));
+  els.drop.addEventListener('drop',e=>{const f=[...e.dataTransfer.files].find(x=>x.name.toLowerCase().endsWith('.wav'));if(f)loadFile(f);else alert('WAVファイルを選択してください。')});
+  els.clear.addEventListener('click',()=>{stop();state=null;els.editor.classList.add('hidden');els.drop.classList.remove('hidden');setStatus('');draw();});
+  els.toStart.addEventListener('click',()=>{if(!state)return;stop();state.playhead=state.inTime;updateTimes();});
+  els.play.addEventListener('click',()=>{if(!state)return; if(playing){stop();return;} const from=(state.playhead<state.inTime||state.playhead>=state.outTime)?state.inTime:state.playhead; play(from,state.outTime);});
+  els.playSelection.addEventListener('click',()=>{if(state)play(state.inTime,state.outTime)});
+  els.zoomFit.addEventListener('click',()=>{if(!state)return;state.zoom=1;state.viewStart=0;draw();});
+  els.save.addEventListener('click',()=>{if(!state)return;try{const blob=exportWav(),url=URL.createObjectURL(blob),a=document.createElement('a'),base=state.fileName.replace(/\.wav$/i,'');a.href=url;a.download=`${base}_trimmed.wav`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),2000);setStatus(`保存しました (${fmt(state.outTime-state.inTime)})`,'ok');}catch(e){setStatus(e.message,'err')}});
+
+  els.wavebox.addEventListener('pointerdown',e=>{
+    if(!state)return; const r=els.wavebox.getBoundingClientRect(),x=e.clientX-r.left,xi=timeToX(state.inTime),xo=timeToX(state.outTime);
+    if(Math.abs(x-xi)<14)dragMode='in';else if(Math.abs(x-xo)<14)dragMode='out';else{dragMode='seek';stop();state.playhead=clamp(xToTime(x),0,state.duration);updateTimes();}
+    els.wavebox.setPointerCapture(e.pointerId);
+  });
+  els.wavebox.addEventListener('pointermove',e=>{
+    if(!state||!dragMode)return;const r=els.wavebox.getBoundingClientRect(),x=clamp(e.clientX-r.left,0,r.width),t=clamp(xToTime(x),0,state.duration),minGap=1/state.sampleRate;
+    if(dragMode==='in'){state.inTime=Math.min(t,state.outTime-minGap); if(state.playhead<state.inTime)state.playhead=state.inTime;}
+    else if(dragMode==='out'){state.outTime=Math.max(t,state.inTime+minGap); if(state.playhead>state.outTime)state.playhead=state.outTime;}
+    else if(dragMode==='seek')state.playhead=t;updateTimes();
+  });
+  ['pointerup','pointercancel'].forEach(t=>els.wavebox.addEventListener(t,()=>dragMode=null));
+  els.wavebox.addEventListener('wheel',e=>{
+    if(!state)return;e.preventDefault();const r=els.wavebox.getBoundingClientRect(),x=e.clientX-r.left;
+    if(e.shiftKey){ state.viewStart += (e.deltaY>0?1:-1)*visibleDuration()*0.12; clampView(); draw(); return; }
+    const focus=xToTime(x);
+    state.zoom=clamp(state.zoom*(e.deltaY<0?1.35:1/1.35),1,Math.min(500,Math.max(1,state.frames/100)));
+    const vd=visibleDuration(),ratio=x/Math.max(1,r.width);state.viewStart=focus-ratio*vd;clampView();draw();
+  },{passive:false});
+  window.addEventListener('resize',resizeCanvas);
+})();
+</script>
+</body>
+</html>
