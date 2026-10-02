@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Upload, Download, Settings2, BarChart3, AlertCircle, CheckCircle2, Info, Activity, Copy, Play, Square, Trash2 } from 'lucide-react';
+import JSZip from 'jszip';
 
 // --- ユーティリティ: FFT実装 ---
 function fft(re, im) {
