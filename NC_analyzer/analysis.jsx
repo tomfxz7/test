@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Upload, Download, Settings2, BarChart3, AlertCircle, CheckCircle2, Info, Activity, Copy, Play, Square, Trash2 } from 'lucide-react';
+import JSZip from 'jszip';
 
 // --- ユーティリティ: FFT実装 ---
 function fft(re, im) {
@@ -211,10 +212,31 @@ const createTrimmedWav = (buffer, startTime, endTime) => {
     return new Blob([output], { type: 'audio/wav' });
 };
 
-const getTrimmedFileName = (name, clipName) => {
-    const base = name.replace(/\.wav$/i, '');
-    const safeClipName = clipName.trim().replace(/[\\/:*?"<>|]/g, '_') || 'trimmed';
-    return `${base}_${safeClipName}.wav`;
+const sanitizeFileName = (name, fallback = 'untitled') => {
+    const sanitized = String(name || '').trim().replace(/[\\/:*?"<>|]/g, '_').replace(/[. ]+$/g, '');
+    return sanitized || fallback;
+};
+
+const getOutputBaseName = (sourceFileName, clipName, useClipNameOnly = false) => {
+    const sourceBase = sanitizeFileName(sourceFileName.replace(/\.wav$/i, ''), 'audio');
+    const safeClipName = sanitizeFileName(clipName, 'trimmed');
+    return useClipNameOnly ? safeClipName : `${sourceBase}_${safeClipName}`;
+};
+
+// 同名ファイルをZIP内で上書きしないよう、連番付きの一意なパスを返す。
+const createUniquePath = (desiredPath, usedPaths) => {
+    if (!usedPaths.has(desiredPath)) {
+        usedPaths.add(desiredPath);
+        return desiredPath;
+    }
+    const dotIndex = desiredPath.lastIndexOf('.');
+    const base = dotIndex > desiredPath.lastIndexOf('/') ? desiredPath.slice(0, dotIndex) : desiredPath;
+    const extension = dotIndex > desiredPath.lastIndexOf('/') ? desiredPath.slice(dotIndex) : '';
+    let index = 2;
+    let candidate;
+    do candidate = `${base}_${index++}${extension}`; while (usedPaths.has(candidate));
+    usedPaths.add(candidate);
+    return candidate;
 };
 
 const downloadBlob = (blob, fileName) => {
@@ -265,11 +287,8 @@ const createLpeqCsv = (levels) => {
     ].join('\r\n');
 };
 
-const getCsvFileName = (wavFileName, clipName = '') => {
-    const baseName = wavFileName.replace(/\.wav$/i, '');
-    const suffix = clipName ? `_${clipName.trim().replace(/[\\/:*?"<>|]/g, '_')}` : '';
-    return `${baseName}${suffix}.csv`;
-};
+const getCsvFileName = (wavFileName, clipName = '', useClipNameOnly = false) =>
+    `${getOutputBaseName(wavFileName, clipName, useClipNameOnly)}.csv`;
 
 const downloadResultCsv = (result) => {
     // BOMを付けて、表計算ソフトで開いた場合にもUTF-8として認識させる
@@ -279,7 +298,7 @@ const downloadResultCsv = (result) => {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = getCsvFileName(result.sourceFileName, result.clipName);
+    anchor.download = getCsvFileName(result.sourceFileName, result.clipName, result.useClipNameOnly);
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
@@ -506,6 +525,7 @@ const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => 
 
 // --- メインアプリケーション ---
 export default function App() {
+    const projectInputRef = useRef(null);
     const [calibFile, setCalibFile] = useState(null);
     const [calibLevel, setCalibLevel] = useState(94.0);
     const [offset, setOffset] = useState(null);
@@ -516,8 +536,81 @@ export default function App() {
     const [errorMsg, setErrorMsg] = useState("");
     
     const [results, setResults] = useState([]);
+    const [useClipNameOnly, setUseClipNameOnly] = useState(false);
 
     const handleCalibFile = (e) => setCalibFile(e.target.files[0]);
+    const handleProjectFile = async (event) => {
+        const projectFile = event.target.files?.[0];
+        if (!projectFile) return;
+        setIsProcessing(true);
+        setErrorMsg('');
+        try {
+            const zip = await JSZip.loadAsync(projectFile);
+            const settingsEntry = zip.file('project.json');
+            if (!settingsEntry) throw new Error('project.json が含まれていないため、プロジェクトを読み込めません。');
+
+            const settings = JSON.parse(await settingsEntry.async('string'));
+            if (settings.format !== 'nc-analyzer-project' || settings.version !== 1 || !Array.isArray(settings.clips)) {
+                throw new Error('対応していないNCAプロジェクト形式です。');
+            }
+
+            // 同じWAVを複数範囲で使う場合も、復号は一度だけ行う。
+            const audioAssets = new Map();
+            const loadAudioAsset = (path) => {
+                if (!path || typeof path !== 'string') throw new Error('WAVファイルの参照が設定されていません。');
+                if (!audioAssets.has(path)) {
+                    audioAssets.set(path, (async () => {
+                        const entry = zip.file(path);
+                        if (!entry || entry.dir) throw new Error(`プロジェクト内にWAVファイルがありません: ${path}`);
+                        const blob = await entry.async('blob');
+                        const fileName = path.split('/').pop() || 'audio.wav';
+                        const file = new File([blob], fileName, { type: 'audio/wav' });
+                        return { file, buffer: await decodeFile(file) };
+                    })());
+                }
+                return audioAssets.get(path);
+            };
+
+            const restoredClips = await Promise.all(settings.clips.map(async (savedClip, index) => {
+                const asset = await loadAudioAsset(savedClip.audioFile);
+                const start = Math.max(0, Math.min(asset.buffer.duration, Number(savedClip.start)));
+                const end = Math.max(0, Math.min(asset.buffer.duration, Number(savedClip.end)));
+                if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+                    throw new Error(`切り抜き${index + 1}の解析範囲が不正です。`);
+                }
+                return {
+                    id: `${Date.now()}-${index}-${Math.random()}`,
+                    file: asset.file,
+                    buffer: asset.buffer,
+                    name: typeof savedClip.name === 'string' ? savedClip.name : `切り抜き${index + 1}`,
+                    start,
+                    end
+                };
+            }));
+            if (restoredClips.length === 0) throw new Error('プロジェクトに解析対象のWAVがありません。');
+
+            const savedCalibration = settings.calibration || {};
+            const calibrationAsset = savedCalibration.audioFile
+                ? await loadAudioAsset(savedCalibration.audioFile)
+                : null;
+            const referenceLevel = Number(savedCalibration.referenceLevel);
+            const savedOffset = Number(savedCalibration.offset);
+            setClips(restoredClips);
+            setCalibFile(calibrationAsset?.file || null);
+            setCalibLevel(Number.isFinite(referenceLevel) ? referenceLevel : 94);
+            setOffset(savedCalibration.offset !== null && Number.isFinite(savedOffset) ? savedOffset : null);
+            setUseClipNameOnly(Boolean(settings.output?.useClipNameOnly));
+            setResults([]);
+        } catch (err) {
+            console.error(err);
+            setErrorMsg(err instanceof SyntaxError
+                ? 'project.jsonが正しいJSON形式ではありません。'
+                : (err.message || 'NCAプロジェクトの読み込みに失敗しました。'));
+        } finally {
+            setIsProcessing(false);
+            event.target.value = '';
+        }
+    };
     const handleMeasFile = async (e) => {
         const files = Array.from(e.target.files || []);
         if (!files.length) return;
@@ -592,6 +685,7 @@ export default function App() {
                     nc: ncResult,
                     sourceFileName: clip.file.name,
                     clipName: clip.name,
+                    useClipNameOnly,
                     buffer: selectedBuffer,
                     selectedStart: clip.start,
                     selectedEnd: clip.end
@@ -612,15 +706,85 @@ export default function App() {
 
     const downloadResultWav = (result) => downloadBlob(
         createTrimmedWav(result.buffer, 0, result.buffer.duration),
-        getTrimmedFileName(result.sourceFileName, result.clipName)
+        `${getOutputBaseName(result.sourceFileName, result.clipName, result.useClipNameOnly)}.wav`
     );
     const downloadResultFiles = (result) => {
         downloadResultCsv(result);
         window.setTimeout(() => downloadResultWav(result), 150);
     };
-    const downloadAllFiles = () => results.forEach((result, index) => {
-        window.setTimeout(() => downloadResultFiles(result), index * 300);
-    });
+    const downloadAllFiles = async () => {
+        setIsProcessing(true);
+        setErrorMsg('');
+        try {
+            const zip = new JSZip();
+            const usedPaths = new Set();
+            results.forEach(result => {
+                const baseName = getOutputBaseName(result.sourceFileName, result.clipName, result.useClipNameOnly);
+                const csvPath = createUniquePath(`${baseName}.csv`, usedPaths);
+                const wavPath = createUniquePath(`${baseName}.wav`, usedPaths);
+                zip.file(csvPath, `\uFEFF${createLpeqCsv(result.levels)}`);
+                zip.file(wavPath, createTrimmedWav(result.buffer, 0, result.buffer.duration));
+            });
+            downloadBlob(await zip.generateAsync({ type: 'blob' }), 'NC解析結果.zip');
+        } catch (err) {
+            console.error(err);
+            setErrorMsg(err.message || '一括出力に失敗しました。');
+        } finally {
+            setIsProcessing(false);
+        }
+    };
+
+    const exportProject = async () => {
+        if (clips.length === 0) return;
+        setIsProcessing(true);
+        setErrorMsg('');
+        try {
+            const zip = new JSZip();
+            const usedPaths = new Set();
+            const filePaths = new Map();
+            const addAudioFile = (file, folder) => {
+                if (!file) return null;
+                if (filePaths.has(file)) return filePaths.get(file);
+                const path = createUniquePath(`${folder}/${sanitizeFileName(file.name, 'audio.wav')}`, usedPaths);
+                zip.file(path, file);
+                filePaths.set(file, path);
+                return path;
+            };
+            const clipSettings = clips.map(clip => ({
+                name: clip.name,
+                start: clip.start,
+                end: clip.end,
+                audioFile: addAudioFile(clip.file, 'audio')
+            }));
+            const calibrationFile = addAudioFile(calibFile, 'calibration');
+            zip.file('project.json', JSON.stringify({
+                format: 'nc-analyzer-project',
+                version: 1,
+                createdAt: new Date().toISOString(),
+                output: { useClipNameOnly },
+                analysis: {
+                    octaveBand: '1/1',
+                    frequencies: FREQUENCIES,
+                    fftSize: 8192,
+                    overlap: 4096
+                },
+                calibration: {
+                    referenceLevel: Number(calibLevel),
+                    offset,
+                    audioFile: calibrationFile,
+                    sourceFileName: calibFile?.name || null
+                },
+                clips: clipSettings
+            }, null, 2));
+            const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+            downloadBlob(await zip.generateAsync({ type: 'blob' }), `NC解析プロジェクト_${date}.nca`);
+        } catch (err) {
+            console.error(err);
+            setErrorMsg(err.message || 'プロジェクトの出力に失敗しました。');
+        } finally {
+            setIsProcessing(false);
+        }
+    };
 
     return (
         <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-100 p-4 md:p-8 font-sans">
@@ -671,6 +835,7 @@ export default function App() {
                                     onChange={handleCalibFile}
                                     className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 dark:file:bg-gray-700 dark:file:text-gray-300"
                                 />
+                                {calibFile && <p className="mt-2 text-xs text-gray-500 break-all">プロジェクトに保存する校正音: {calibFile.name}</p>}
                             </div>
                             <button 
                                 onClick={runCalibration}
@@ -703,6 +868,16 @@ export default function App() {
                         )}
 
                         <div className="space-y-4">
+                            <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-900/10 p-3">
+                                <input ref={projectInputRef} type="file" accept=".nca,application/zip"
+                                    onChange={handleProjectFile} disabled={isProcessing} className="hidden" />
+                                <button type="button" onClick={() => projectInputRef.current?.click()} disabled={isProcessing}
+                                    className="w-full inline-flex justify-center items-center px-3 py-2 border border-blue-600 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/30 text-sm font-medium rounded disabled:opacity-50">
+                                    <Upload className="w-4 h-4 mr-2" />
+                                    プロジェクト（.nca）を読み込む
+                                </button>
+                                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">設定JSONとWAVを含むNCAプロジェクトを復元します。現在の読み込み内容は置き換えられます。</p>
+                            </div>
                             <div>
                                 <label className="block text-sm font-medium mb-1">対象WAVファイル（複数選択可）</label>
                                 <input 
@@ -720,6 +895,20 @@ export default function App() {
 
                             {clips.length > 0 && (
                                 <div className="space-y-4">
+                                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-200 dark:border-gray-600 p-3">
+                                        <label className="inline-flex items-center gap-2 text-sm cursor-pointer">
+                                            <input type="checkbox" checked={useClipNameOnly} disabled={isProcessing}
+                                                onChange={e => { setUseClipNameOnly(e.target.checked); setResults([]); }}
+                                                className="w-4 h-4 rounded border-gray-300 text-blue-600" />
+                                            出力ファイル名を変更名だけにする
+                                        </label>
+                                        <button type="button" onClick={exportProject} disabled={isProcessing}
+                                            className="inline-flex items-center px-3 py-1.5 border border-blue-600 text-blue-700 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 text-sm font-medium rounded disabled:opacity-50">
+                                            <Download className="w-4 h-4 mr-2" />
+                                            プロジェクト（.nca）を出力
+                                        </button>
+                                        <p className="w-full text-xs text-gray-500">オンの場合、「元ファイル名_変更名」ではなく「変更名」をCSV・WAVのファイル名にします。.ncaには解析・校正設定、対象WAV、選択済みの校正音WAVが保存されます。</p>
+                                    </div>
                                     {clips.map(clip => (
                                         <div key={clip.id}>
                                             <p className="mb-1 text-xs font-semibold text-gray-500 break-all">{clip.file.name}</p>
@@ -762,11 +951,12 @@ export default function App() {
                             <div className="flex flex-wrap items-center gap-3">
                                 <button
                                     onClick={downloadAllFiles}
+                                    disabled={isProcessing}
                                     className="inline-flex items-center px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded shadow-sm transition-colors"
-                                    title="すべての解析結果と切り抜きWAVを保存"
+                                    title="すべての解析結果と切り抜きWAVをZIPで保存"
                                 >
                                     <Download className="w-4 h-4 mr-2" />
-                                    CSV＋切り抜きWAVを一括出力
+                                    CSV＋切り抜きWAVをZIP出力
                                 </button>
                             </div>
                         </div>
