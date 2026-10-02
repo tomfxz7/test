@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Upload, Download, Settings2, BarChart3, AlertCircle, CheckCircle2, Info, Activity, Copy, Play, Square, Trash2 } from 'lucide-react';
+import JSZip from 'jszip';
 
 // --- ユーティリティ: FFT実装 ---
 function fft(re, im) {
@@ -220,11 +221,6 @@ const getOutputBaseName = (sourceFileName, clipName, useClipNameOnly = false) =>
     const sourceBase = sanitizeFileName(sourceFileName.replace(/\.wav$/i, ''), 'audio');
     const safeClipName = sanitizeFileName(clipName, 'trimmed');
     return useClipNameOnly ? safeClipName : `${sourceBase}_${safeClipName}`;
-};
-
-const requireJSZip = () => {
-    if (!window.JSZip) throw new Error('ZIPライブラリを読み込めませんでした。ページを再読み込みしてください。');
-    return window.JSZip;
 };
 
 // 同名ファイルをZIP内で上書きしないよう、連番付きの一意なパスを返す。
@@ -549,7 +545,6 @@ export default function App() {
         setIsProcessing(true);
         setErrorMsg('');
         try {
-            const JSZip = requireJSZip();
             const zip = await JSZip.loadAsync(projectFile);
             const settingsEntry = zip.file('project.json');
             if (!settingsEntry) throw new Error('project.json が含まれていないため、プロジェクトを読み込めません。');
@@ -721,7 +716,6 @@ export default function App() {
         setIsProcessing(true);
         setErrorMsg('');
         try {
-            const JSZip = requireJSZip();
             const zip = new JSZip();
             const usedPaths = new Set();
             results.forEach(result => {
@@ -745,7 +739,6 @@ export default function App() {
         setIsProcessing(true);
         setErrorMsg('');
         try {
-            const JSZip = requireJSZip();
             const zip = new JSZip();
             const usedPaths = new Set();
             const filePaths = new Map();
@@ -769,7 +762,18 @@ export default function App() {
                 version: 1,
                 createdAt: new Date().toISOString(),
                 output: { useClipNameOnly },
-                calibration: { referenceLevel: Number(calibLevel), offset, audioFile: calibrationFile },
+                analysis: {
+                    octaveBand: '1/1',
+                    frequencies: FREQUENCIES,
+                    fftSize: 8192,
+                    overlap: 4096
+                },
+                calibration: {
+                    referenceLevel: Number(calibLevel),
+                    offset,
+                    audioFile: calibrationFile,
+                    sourceFileName: calibFile?.name || null
+                },
                 clips: clipSettings
             }, null, 2));
             const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -831,6 +835,7 @@ export default function App() {
                                     onChange={handleCalibFile}
                                     className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 dark:file:bg-gray-700 dark:file:text-gray-300"
                                 />
+                                {calibFile && <p className="mt-2 text-xs text-gray-500 break-all">プロジェクトに保存する校正音: {calibFile.name}</p>}
                             </div>
                             <button 
                                 onClick={runCalibration}
@@ -902,7 +907,7 @@ export default function App() {
                                             <Download className="w-4 h-4 mr-2" />
                                             プロジェクト（.nca）を出力
                                         </button>
-                                        <p className="w-full text-xs text-gray-500">オンの場合、「元ファイル名_変更名」ではなく「変更名」をCSV・WAVのファイル名にします。.ncaには設定と読み込んだWAVが保存されます。</p>
+                                        <p className="w-full text-xs text-gray-500">オンの場合、「元ファイル名_変更名」ではなく「変更名」をCSV・WAVのファイル名にします。.ncaには解析・校正設定、対象WAV、選択済みの校正音WAVが保存されます。</p>
                                     </div>
                                     {clips.map(clip => (
                                         <div key={clip.id}>
