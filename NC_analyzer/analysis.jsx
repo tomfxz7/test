@@ -472,13 +472,18 @@ const ResultChart = ({ measuredLevels, ncOverall }) => {
     );
 };
 
-const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => {
+const SpectrogramEditor = ({ clip, disabled, onChange, onMonitoringChange, onDuplicate, onRemove }) => {
     const canvasRef = useRef(null);
     const sourceRef = useRef(null);
+    const gainRef = useRef(null);
     const animationRef = useRef(null);
     const [isPlaying, setIsPlaying] = useState(false);
     const [dragTarget, setDragTarget] = useState(null);
     const [playhead, setPlayhead] = useState(clip.start);
+    // These gains are monitoring aids only. They do not alter the source,
+    // analysis result, or exported WAV data.
+    const playbackGainPercent = clip.playbackGainPercent ?? 100;
+    const spectrogramGain = clip.spectrogramGain ?? 1;
 
     const stopPlayback = () => {
         if (animationRef.current !== null) {
@@ -491,6 +496,10 @@ const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => 
             sourceRef.current.disconnect();
             sourceRef.current = null;
         }
+        if (gainRef.current) {
+            gainRef.current.disconnect();
+            gainRef.current = null;
+        }
         setIsPlaying(false);
     };
 
@@ -501,6 +510,7 @@ const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => 
             try { sourceRef.current.stop(); } catch (_) { /* already stopped */ }
             sourceRef.current.disconnect();
         }
+        if (gainRef.current) gainRef.current.disconnect();
     }, []);
 
     useEffect(() => {
@@ -519,20 +529,54 @@ const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => 
             ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
             const width = rect.width;
             const height = rect.height;
-            ctx.fillStyle = '#f8fafc'; ctx.fillRect(0, 0, width, height);
-            ctx.strokeStyle = '#cbd5e1'; ctx.beginPath(); ctx.moveTo(0, height / 2); ctx.lineTo(width, height / 2); ctx.stroke();
-            const samples = clip.buffer.getChannelData(0);
-            const step = Math.max(1, Math.ceil(samples.length / width));
-            ctx.strokeStyle = '#2563eb'; ctx.beginPath();
-            for (let x = 0; x < width; x++) {
-                let min = 1; let max = -1;
-                const from = Math.floor(x * samples.length / width);
-                const to = Math.min(samples.length, from + step);
-                for (let i = from; i < to; i++) { min = Math.min(min, samples[i]); max = Math.max(max, samples[i]); }
-                ctx.moveTo(x + 0.5, height / 2 - max * height * 0.42);
-                ctx.lineTo(x + 0.5, height / 2 - min * height * 0.42);
+            ctx.fillStyle = '#020617'; ctx.fillRect(0, 0, width, height);
+
+            // 100〜1000 Hzを対数軸で描く。各チャンネルのスペクトルパワーを
+            // 平均するため、ステレオ再生時も片チャンネルだけに偏らない表示になる。
+            const fftSize = 2048;
+            const minFrequency = 100;
+            const maxFrequency = Math.min(1000, clip.buffer.sampleRate / 2);
+            const columns = Math.max(1, Math.min(600, Math.round(width)));
+            const rows = Math.max(1, Math.round(height));
+            const image = ctx.createImageData(columns, rows);
+            const windowFunc = new Float32Array(fftSize);
+            for (let i = 0; i < fftSize; i++) windowFunc[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / fftSize);
+            const sensitivityDb = 20 * Math.log10(spectrogramGain);
+            const channelData = Array.from({ length: clip.buffer.numberOfChannels }, (_, channel) => clip.buffer.getChannelData(channel));
+            const powers = new Float64Array(fftSize / 2 + 1);
+
+            for (let x = 0; x < columns; x++) {
+                powers.fill(0);
+                const center = Math.round((x / Math.max(1, columns - 1)) * Math.max(0, clip.buffer.length - 1));
+                const frameStart = center - fftSize / 2;
+                for (const samples of channelData) {
+                    const re = new Float32Array(fftSize);
+                    const im = new Float32Array(fftSize);
+                    for (let i = 0; i < fftSize; i++) re[i] = (samples[frameStart + i] || 0) * windowFunc[i];
+                    fft(re, im);
+                    for (let bin = 0; bin <= fftSize / 2; bin++) powers[bin] += re[bin] * re[bin] + im[bin] * im[bin];
+                }
+                for (let y = 0; y < rows; y++) {
+                    const ratioFromBottom = 1 - y / Math.max(1, rows - 1);
+                    const frequency = minFrequency * Math.pow(maxFrequency / minFrequency, ratioFromBottom);
+                    const bin = Math.min(fftSize / 2, Math.round(frequency * fftSize / clip.buffer.sampleRate));
+                    const power = powers[bin] / Math.max(1, channelData.length * fftSize * fftSize);
+                    const db = 10 * Math.log10(power || 1e-12) + sensitivityDb;
+                    const level = Math.max(0, Math.min(1, (db + 100) / 80));
+                    const pixel = (y * columns + x) * 4;
+                    image.data[pixel] = Math.round(255 * Math.max(0, Math.min(1, level * 2.2 - 0.7)));
+                    image.data[pixel + 1] = Math.round(255 * Math.max(0, Math.min(1, level * 1.8)));
+                    image.data[pixel + 2] = Math.round(255 * Math.max(0, Math.min(1, 0.65 + level * 0.7 - Math.abs(level - 0.5))));
+                    image.data[pixel + 3] = 255;
+                }
             }
-            ctx.stroke();
+            const offscreen = document.createElement('canvas');
+            offscreen.width = columns; offscreen.height = rows;
+            offscreen.getContext('2d').putImageData(image, 0, 0);
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(offscreen, 0, 0, width, height);
+            ctx.font = '10px sans-serif'; ctx.fillStyle = 'rgba(255,255,255,.85)';
+            ctx.fillText('1000 Hz', 5, 12); ctx.fillText('100 Hz', 5, height - 5);
             const inX = clip.start / clip.buffer.duration * width;
             const outX = clip.end / clip.buffer.duration * width;
             ctx.fillStyle = 'rgba(15, 23, 42, .32)'; ctx.fillRect(0, 0, inX, height); ctx.fillRect(outX, 0, width - outX, height);
@@ -544,7 +588,7 @@ const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => 
         const observer = new ResizeObserver(draw);
         observer.observe(canvas);
         return () => observer.disconnect();
-    }, [clip.buffer, clip.start, clip.end]);
+    }, [clip.buffer, clip.start, clip.end, spectrogramGain]);
 
     const pointerTime = (event) => {
         const rect = canvasRef.current.getBoundingClientRect();
@@ -578,8 +622,11 @@ const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => 
         const ctx = getAudioContext();
         await ctx.resume();
         const source = ctx.createBufferSource();
+        const gain = ctx.createGain();
         source.buffer = clip.buffer;
-        source.connect(ctx.destination);
+        gain.gain.value = playbackGainPercent / 100;
+        source.connect(gain);
+        gain.connect(ctx.destination);
         const startedAt = ctx.currentTime;
         setPlayhead(clip.start);
         const updatePlayhead = () => {
@@ -593,10 +640,13 @@ const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => 
             if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
             animationRef.current = null;
             sourceRef.current = null;
+            gain.disconnect();
+            gainRef.current = null;
             setPlayhead(clip.end);
             setIsPlaying(false);
         };
         sourceRef.current = source;
+        gainRef.current = gain;
         setIsPlaying(true);
         source.start(0, clip.start, clip.end - clip.start);
         animationRef.current = requestAnimationFrame(updatePlayhead);
@@ -613,9 +663,32 @@ const WaveformEditor = ({ clip, disabled, onChange, onDuplicate, onRemove }) => 
             <div className="relative h-28">
                 <canvas ref={canvasRef} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove}
                     onPointerUp={() => setDragTarget(null)} onPointerCancel={() => setDragTarget(null)}
-                    className="w-full h-28 rounded border cursor-ew-resize touch-none" aria-label={`${clip.name} の波形範囲選択`} />
+                    className="w-full h-28 rounded border cursor-ew-resize touch-none" aria-label={`${clip.name} の100〜1000 Hzスペクトログラム範囲選択`} />
                 <div className="absolute inset-y-0 w-0.5 bg-red-600 pointer-events-none shadow-sm"
                     style={{ left: `${(playhead / clip.buffer.duration) * 100}%` }} aria-hidden="true" />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2 text-xs">
+                <label className="rounded border border-gray-200 dark:border-gray-600 p-2">
+                    <span className="flex items-center justify-between gap-2 font-medium">
+                        再生音量
+                        <output className="font-mono text-blue-600 dark:text-blue-400">{playbackGainPercent}%</output>
+                    </span>
+                    <input type="range" min="100" max="1000" step="10" value={playbackGainPercent} disabled={disabled || isPlaying}
+                        onChange={e => onMonitoringChange({ playbackGainPercent: Number(e.target.value) })}
+                        aria-label="再生音量" className="mt-2 w-full accent-blue-600" />
+                </label>
+                <label className="rounded border border-gray-200 dark:border-gray-600 p-2">
+                    <span className="flex items-center justify-between gap-2 font-medium">
+                        スペクトログラム感度
+                        <output className="font-mono text-blue-600 dark:text-blue-400">{spectrogramGain}倍</output>
+                    </span>
+                    <input type="range" min="1" max="100" step="1" value={spectrogramGain} disabled={disabled}
+                        onChange={e => onMonitoringChange({ spectrogramGain: Number(e.target.value) })}
+                        aria-label="スペクトログラム感度" className="mt-2 w-full accent-blue-600" />
+                </label>
+                <p className="sm:col-span-2 text-gray-500 dark:text-gray-400">
+                    スペクトログラムは横軸が時間、縦軸が100〜1000 Hz（対数軸）で、明るい部分ほど成分が強いことを示します。再生音量と表示感度はNC解析と出力WAVには影響しません。音量は徐々に調整してください。
+                </p>
             </div>
             <div className="grid grid-cols-2 gap-3 text-xs">
                 <label>IN (秒)<input type="number" min="0" max={clip.end} step="0.001" value={clip.start.toFixed(3)} disabled={disabled}
@@ -648,6 +721,9 @@ export default function App() {
     
     const [results, setResults] = useState([]);
     const [useClipNameOnly, setUseClipNameOnly] = useState(false);
+    const [allPlaybackGainPercent, setAllPlaybackGainPercent] = useState(100);
+    const [allSpectrogramGain, setAllSpectrogramGain] = useState(1);
+    const [projectImportMode, setProjectImportMode] = useState('replace');
 
     const handleCalibFile = (e) => setCalibFile(e.target.files[0]);
     const handleProjectFile = async (event) => {
@@ -695,22 +771,29 @@ export default function App() {
                     buffer: asset.buffer,
                     name: typeof savedClip.name === 'string' ? savedClip.name : `切り抜き${index + 1}`,
                     start,
-                    end
+                    end,
+                    playbackGainPercent: allPlaybackGainPercent,
+                    spectrogramGain: allSpectrogramGain
                 };
             }));
             if (restoredClips.length === 0) throw new Error('プロジェクトに解析対象のWAVがありません。');
 
             const savedCalibration = settings.calibration || {};
-            const calibrationAsset = savedCalibration.audioFile
+            const calibrationAsset = projectImportMode === 'replace' && savedCalibration.audioFile
                 ? await loadAudioAsset(savedCalibration.audioFile)
                 : null;
             const referenceLevel = Number(savedCalibration.referenceLevel);
             const savedOffset = Number(savedCalibration.offset);
-            setClips(restoredClips);
-            setCalibFile(calibrationAsset?.file || null);
-            setCalibLevel(Number.isFinite(referenceLevel) ? referenceLevel : 94);
-            setOffset(savedCalibration.offset !== null && Number.isFinite(savedOffset) ? savedOffset : null);
-            setUseClipNameOnly(Boolean(settings.output?.useClipNameOnly));
+            if (projectImportMode === 'append') {
+                // 追加時は現在の校正・出力設定を維持し、解析対象だけを取り込む。
+                setClips(current => [...current, ...restoredClips]);
+            } else {
+                setClips(restoredClips);
+                setCalibFile(calibrationAsset?.file || null);
+                setCalibLevel(Number.isFinite(referenceLevel) ? referenceLevel : 94);
+                setOffset(savedCalibration.offset !== null && Number.isFinite(savedOffset) ? savedOffset : null);
+                setUseClipNameOnly(Boolean(settings.output?.useClipNameOnly));
+            }
             setResults([]);
         } catch (err) {
             console.error(err);
@@ -730,9 +813,18 @@ export default function App() {
         try {
             const decoded = await Promise.all(files.map(async (file, index) => {
                 const buffer = await decodeFile(file);
-                return { id: `${Date.now()}-${index}-${Math.random()}`, file, buffer, name: '切り抜き1', start: 0, end: buffer.duration };
+                return {
+                    id: `${Date.now()}-${index}-${Math.random()}`,
+                    file,
+                    buffer,
+                    name: '切り抜き1',
+                    start: 0,
+                    end: buffer.duration,
+                    playbackGainPercent: allPlaybackGainPercent,
+                    spectrogramGain: allSpectrogramGain
+                };
             }));
-            setClips(decoded);
+            setClips(current => [...current, ...decoded]);
             setResults([]);
         } catch (err) {
             console.error(err);
@@ -747,6 +839,17 @@ export default function App() {
         setClips(current => current.map(clip => clip.id === id ? { ...clip, ...changes } : clip));
         setResults([]);
     };
+    const updateClipMonitoring = (id, changes) => {
+        setClips(current => current.map(clip => clip.id === id ? { ...clip, ...changes } : clip));
+    };
+    const updateAllPlaybackGain = (value) => {
+        setAllPlaybackGainPercent(value);
+        setClips(current => current.map(clip => ({ ...clip, playbackGainPercent: value })));
+    };
+    const updateAllSpectrogramGain = (value) => {
+        setAllSpectrogramGain(value);
+        setClips(current => current.map(clip => ({ ...clip, spectrogramGain: value })));
+    };
     const duplicateClip = (id) => {
         setClips(current => {
             const sourceIndex = current.findIndex(clip => clip.id === id);
@@ -759,6 +862,12 @@ export default function App() {
         setResults([]);
     };
     const removeClip = (id) => { setClips(current => current.filter(clip => clip.id !== id)); setResults([]); };
+    const clearClips = () => {
+        if (clips.length === 0 || !window.confirm('解析対象のファイルをすべてクリアしますか？\n校正音と校正設定は残ります。')) return;
+        setClips([]);
+        setResults([]);
+        setErrorMsg('');
+    };
 
     const runCalibration = async () => {
         if (!calibFile) return;
@@ -982,12 +1091,27 @@ export default function App() {
                             <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-900/10 p-3">
                                 <input ref={projectInputRef} type="file" accept=".nca,application/zip"
                                     onChange={handleProjectFile} disabled={isProcessing} className="hidden" />
+                                <fieldset className="mb-3">
+                                    <legend className="mb-1 text-sm font-medium">プロジェクトの読み込み方法</legend>
+                                    <div className="grid gap-2 sm:grid-cols-2 text-sm">
+                                        <label className={`flex cursor-pointer items-start gap-2 rounded border p-2 ${projectImportMode === 'replace' ? 'border-blue-500 bg-white dark:bg-gray-800' : 'border-gray-200 dark:border-gray-700'}`}>
+                                            <input type="radio" name="projectImportMode" value="replace" checked={projectImportMode === 'replace'}
+                                                onChange={e => setProjectImportMode(e.target.value)} disabled={isProcessing} className="mt-0.5" />
+                                            <span><span className="block font-medium">現在の内容を置き換え</span><span className="block text-xs text-gray-500">解析対象・校正・出力設定を復元します。</span></span>
+                                        </label>
+                                        <label className={`flex cursor-pointer items-start gap-2 rounded border p-2 ${projectImportMode === 'append' ? 'border-blue-500 bg-white dark:bg-gray-800' : 'border-gray-200 dark:border-gray-700'}`}>
+                                            <input type="radio" name="projectImportMode" value="append" checked={projectImportMode === 'append'}
+                                                onChange={e => setProjectImportMode(e.target.value)} disabled={isProcessing} className="mt-0.5" />
+                                            <span><span className="block font-medium">現在の内容に追加</span><span className="block text-xs text-gray-500">解析対象だけを追加し、現在の校正・出力設定を維持します。</span></span>
+                                        </label>
+                                    </div>
+                                </fieldset>
                                 <button type="button" onClick={() => projectInputRef.current?.click()} disabled={isProcessing}
                                     className="w-full inline-flex justify-center items-center px-3 py-2 border border-blue-600 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/30 text-sm font-medium rounded disabled:opacity-50">
                                     <Upload className="w-4 h-4 mr-2" />
                                     プロジェクト（.nca）を読み込む
                                 </button>
-                                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">設定JSONとWAVを含むNCAプロジェクトを復元します。現在の読み込み内容は置き換えられます。</p>
+                                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">選択した方法で、設定JSONとWAVを含むNCAプロジェクトを読み込みます。</p>
                             </div>
                             <div>
                                 <label className="block text-sm font-medium mb-1">対象WAVファイル（複数選択可）</label>
@@ -1000,7 +1124,7 @@ export default function App() {
                                     className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 dark:file:bg-gray-700 dark:file:text-gray-300"
                                 />
                                 <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                                    読み込み後、波形の黄色いハンドルをドラッグして解析範囲を指定できます。
+                                    選択したWAVは現在の解析対象に追加されます。読み込み後、スペクトログラムの黄色いハンドルをドラッグして解析範囲を指定できます。
                                 </p>
                             </div>
 
@@ -1013,18 +1137,53 @@ export default function App() {
                                                 className="w-4 h-4 rounded border-gray-300 text-blue-600" />
                                             出力ファイル名を変更名だけにする
                                         </label>
-                                        <button type="button" onClick={exportProject} disabled={isProcessing}
-                                            className="inline-flex items-center px-3 py-1.5 border border-blue-600 text-blue-700 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 text-sm font-medium rounded disabled:opacity-50">
-                                            <Download className="w-4 h-4 mr-2" />
-                                            プロジェクト（.nca）を出力
-                                        </button>
+                                        <div className="flex flex-wrap gap-2">
+                                            <button type="button" onClick={clearClips} disabled={isProcessing}
+                                                className="inline-flex items-center px-3 py-1.5 border border-red-300 text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 text-sm font-medium rounded disabled:opacity-50"
+                                                title="校正音を残して解析対象をすべて削除">
+                                                <Trash2 className="w-4 h-4 mr-2" />
+                                                解析対象をすべてクリア
+                                            </button>
+                                            <button type="button" onClick={exportProject} disabled={isProcessing}
+                                                className="inline-flex items-center px-3 py-1.5 border border-blue-600 text-blue-700 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 text-sm font-medium rounded disabled:opacity-50">
+                                                <Download className="w-4 h-4 mr-2" />
+                                                プロジェクト（.nca）を出力
+                                            </button>
+                                        </div>
                                         <p className="w-full text-xs text-gray-500">オンの場合、「元ファイル名_変更名」ではなく「変更名」をCSV・WAVのファイル名にします。.ncaには解析・校正設定、対象WAV、選択済みの校正音WAVが保存されます。</p>
+                                    </div>
+                                    <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-900/10 p-3 space-y-3">
+                                        <div>
+                                            <h3 className="text-sm font-semibold">全ファイルの確認表示を一括調整</h3>
+                                            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">ここで変更すると、読み込んだすべての切り抜きに同じ設定を適用します。各切り抜き側で個別に再調整することもできます。</p>
+                                        </div>
+                                        <div className="grid gap-3 sm:grid-cols-2 text-xs">
+                                            <label className="rounded border border-blue-200 dark:border-blue-700 bg-white/70 dark:bg-gray-800/70 p-2">
+                                                <span className="flex items-center justify-between gap-2 font-medium">
+                                                    全ファイルの再生音量
+                                                    <output className="font-mono text-blue-600 dark:text-blue-400">{allPlaybackGainPercent}%</output>
+                                                </span>
+                                                <input type="range" min="100" max="1000" step="10" value={allPlaybackGainPercent} disabled={isProcessing}
+                                                    onChange={e => updateAllPlaybackGain(Number(e.target.value))}
+                                                    aria-label="全ファイルの再生音量" className="mt-2 w-full accent-blue-600" />
+                                            </label>
+                                            <label className="rounded border border-blue-200 dark:border-blue-700 bg-white/70 dark:bg-gray-800/70 p-2">
+                                                <span className="flex items-center justify-between gap-2 font-medium">
+                                                    全ファイルのスペクトログラム感度
+                                                    <output className="font-mono text-blue-600 dark:text-blue-400">{allSpectrogramGain}倍</output>
+                                                </span>
+                                                <input type="range" min="1" max="100" step="1" value={allSpectrogramGain} disabled={isProcessing}
+                                                    onChange={e => updateAllSpectrogramGain(Number(e.target.value))}
+                                                    aria-label="全ファイルのスペクトログラム感度" className="mt-2 w-full accent-blue-600" />
+                                            </label>
+                                        </div>
                                     </div>
                                     {clips.map(clip => (
                                         <div key={clip.id}>
                                             <p className="mb-1 text-xs font-semibold text-gray-500 break-all">{clip.file.name}</p>
-                                            <WaveformEditor clip={clip} disabled={isProcessing}
+                                            <SpectrogramEditor clip={clip} disabled={isProcessing}
                                                 onChange={changes => updateClip(clip.id, changes)}
+                                                onMonitoringChange={changes => updateClipMonitoring(clip.id, changes)}
                                                 onDuplicate={() => duplicateClip(clip.id)}
                                                 onRemove={() => removeClip(clip.id)} />
                                         </div>
