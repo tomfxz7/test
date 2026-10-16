@@ -691,6 +691,7 @@ export default function App() {
     const [useClipNameOnly, setUseClipNameOnly] = useState(false);
     const [allPlaybackGainPercent, setAllPlaybackGainPercent] = useState(100);
     const [allWaveformGain, setAllWaveformGain] = useState(1);
+    const [projectImportMode, setProjectImportMode] = useState('replace');
 
     const handleCalibFile = (e) => setCalibFile(e.target.files[0]);
     const handleProjectFile = async (event) => {
@@ -746,16 +747,21 @@ export default function App() {
             if (restoredClips.length === 0) throw new Error('プロジェクトに解析対象のWAVがありません。');
 
             const savedCalibration = settings.calibration || {};
-            const calibrationAsset = savedCalibration.audioFile
+            const calibrationAsset = projectImportMode === 'replace' && savedCalibration.audioFile
                 ? await loadAudioAsset(savedCalibration.audioFile)
                 : null;
             const referenceLevel = Number(savedCalibration.referenceLevel);
             const savedOffset = Number(savedCalibration.offset);
-            setClips(restoredClips);
-            setCalibFile(calibrationAsset?.file || null);
-            setCalibLevel(Number.isFinite(referenceLevel) ? referenceLevel : 94);
-            setOffset(savedCalibration.offset !== null && Number.isFinite(savedOffset) ? savedOffset : null);
-            setUseClipNameOnly(Boolean(settings.output?.useClipNameOnly));
+            if (projectImportMode === 'append') {
+                // 追加時は現在の校正・出力設定を維持し、解析対象だけを取り込む。
+                setClips(current => [...current, ...restoredClips]);
+            } else {
+                setClips(restoredClips);
+                setCalibFile(calibrationAsset?.file || null);
+                setCalibLevel(Number.isFinite(referenceLevel) ? referenceLevel : 94);
+                setOffset(savedCalibration.offset !== null && Number.isFinite(savedOffset) ? savedOffset : null);
+                setUseClipNameOnly(Boolean(settings.output?.useClipNameOnly));
+            }
             setResults([]);
         } catch (err) {
             console.error(err);
@@ -786,7 +792,7 @@ export default function App() {
                     waveformGain: allWaveformGain
                 };
             }));
-            setClips(decoded);
+            setClips(current => [...current, ...decoded]);
             setResults([]);
         } catch (err) {
             console.error(err);
@@ -824,6 +830,12 @@ export default function App() {
         setResults([]);
     };
     const removeClip = (id) => { setClips(current => current.filter(clip => clip.id !== id)); setResults([]); };
+    const clearClips = () => {
+        if (clips.length === 0 || !window.confirm('解析対象のファイルをすべてクリアしますか？\n校正音と校正設定は残ります。')) return;
+        setClips([]);
+        setResults([]);
+        setErrorMsg('');
+    };
 
     const runCalibration = async () => {
         if (!calibFile) return;
@@ -1047,12 +1059,27 @@ export default function App() {
                             <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-900/10 p-3">
                                 <input ref={projectInputRef} type="file" accept=".nca,application/zip"
                                     onChange={handleProjectFile} disabled={isProcessing} className="hidden" />
+                                <fieldset className="mb-3">
+                                    <legend className="mb-1 text-sm font-medium">プロジェクトの読み込み方法</legend>
+                                    <div className="grid gap-2 sm:grid-cols-2 text-sm">
+                                        <label className={`flex cursor-pointer items-start gap-2 rounded border p-2 ${projectImportMode === 'replace' ? 'border-blue-500 bg-white dark:bg-gray-800' : 'border-gray-200 dark:border-gray-700'}`}>
+                                            <input type="radio" name="projectImportMode" value="replace" checked={projectImportMode === 'replace'}
+                                                onChange={e => setProjectImportMode(e.target.value)} disabled={isProcessing} className="mt-0.5" />
+                                            <span><span className="block font-medium">現在の内容を置き換え</span><span className="block text-xs text-gray-500">解析対象・校正・出力設定を復元します。</span></span>
+                                        </label>
+                                        <label className={`flex cursor-pointer items-start gap-2 rounded border p-2 ${projectImportMode === 'append' ? 'border-blue-500 bg-white dark:bg-gray-800' : 'border-gray-200 dark:border-gray-700'}`}>
+                                            <input type="radio" name="projectImportMode" value="append" checked={projectImportMode === 'append'}
+                                                onChange={e => setProjectImportMode(e.target.value)} disabled={isProcessing} className="mt-0.5" />
+                                            <span><span className="block font-medium">現在の内容に追加</span><span className="block text-xs text-gray-500">解析対象だけを追加し、現在の校正・出力設定を維持します。</span></span>
+                                        </label>
+                                    </div>
+                                </fieldset>
                                 <button type="button" onClick={() => projectInputRef.current?.click()} disabled={isProcessing}
                                     className="w-full inline-flex justify-center items-center px-3 py-2 border border-blue-600 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/30 text-sm font-medium rounded disabled:opacity-50">
                                     <Upload className="w-4 h-4 mr-2" />
                                     プロジェクト（.nca）を読み込む
                                 </button>
-                                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">設定JSONとWAVを含むNCAプロジェクトを復元します。現在の読み込み内容は置き換えられます。</p>
+                                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">選択した方法で、設定JSONとWAVを含むNCAプロジェクトを読み込みます。</p>
                             </div>
                             <div>
                                 <label className="block text-sm font-medium mb-1">対象WAVファイル（複数選択可）</label>
@@ -1065,7 +1092,7 @@ export default function App() {
                                     className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 dark:file:bg-gray-700 dark:file:text-gray-300"
                                 />
                                 <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                                    読み込み後、波形の黄色いハンドルをドラッグして解析範囲を指定できます。
+                                    選択したWAVは現在の解析対象に追加されます。読み込み後、波形の黄色いハンドルをドラッグして解析範囲を指定できます。
                                 </p>
                             </div>
 
@@ -1078,11 +1105,19 @@ export default function App() {
                                                 className="w-4 h-4 rounded border-gray-300 text-blue-600" />
                                             出力ファイル名を変更名だけにする
                                         </label>
-                                        <button type="button" onClick={exportProject} disabled={isProcessing}
-                                            className="inline-flex items-center px-3 py-1.5 border border-blue-600 text-blue-700 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 text-sm font-medium rounded disabled:opacity-50">
-                                            <Download className="w-4 h-4 mr-2" />
-                                            プロジェクト（.nca）を出力
-                                        </button>
+                                        <div className="flex flex-wrap gap-2">
+                                            <button type="button" onClick={clearClips} disabled={isProcessing}
+                                                className="inline-flex items-center px-3 py-1.5 border border-red-300 text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 text-sm font-medium rounded disabled:opacity-50"
+                                                title="校正音を残して解析対象をすべて削除">
+                                                <Trash2 className="w-4 h-4 mr-2" />
+                                                解析対象をすべてクリア
+                                            </button>
+                                            <button type="button" onClick={exportProject} disabled={isProcessing}
+                                                className="inline-flex items-center px-3 py-1.5 border border-blue-600 text-blue-700 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 text-sm font-medium rounded disabled:opacity-50">
+                                                <Download className="w-4 h-4 mr-2" />
+                                                プロジェクト（.nca）を出力
+                                            </button>
+                                        </div>
                                         <p className="w-full text-xs text-gray-500">オンの場合、「元ファイル名_変更名」ではなく「変更名」をCSV・WAVのファイル名にします。.ncaには解析・校正設定、対象WAV、選択済みの校正音WAVが保存されます。</p>
                                     </div>
                                     <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-900/10 p-3 space-y-3">
