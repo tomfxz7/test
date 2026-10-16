@@ -472,7 +472,7 @@ const ResultChart = ({ measuredLevels, ncOverall }) => {
     );
 };
 
-const WaveformEditor = ({ clip, disabled, onChange, onMonitoringChange, onDuplicate, onRemove }) => {
+const SpectrogramEditor = ({ clip, disabled, onChange, onMonitoringChange, onDuplicate, onRemove }) => {
     const canvasRef = useRef(null);
     const sourceRef = useRef(null);
     const gainRef = useRef(null);
@@ -483,7 +483,7 @@ const WaveformEditor = ({ clip, disabled, onChange, onMonitoringChange, onDuplic
     // These gains are monitoring aids only. They do not alter the source,
     // analysis result, or exported WAV data.
     const playbackGainPercent = clip.playbackGainPercent ?? 100;
-    const waveformGain = clip.waveformGain ?? 1;
+    const spectrogramGain = clip.spectrogramGain ?? 1;
 
     const stopPlayback = () => {
         if (animationRef.current !== null) {
@@ -529,22 +529,54 @@ const WaveformEditor = ({ clip, disabled, onChange, onMonitoringChange, onDuplic
             ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
             const width = rect.width;
             const height = rect.height;
-            ctx.fillStyle = '#f8fafc'; ctx.fillRect(0, 0, width, height);
-            ctx.strokeStyle = '#cbd5e1'; ctx.beginPath(); ctx.moveTo(0, height / 2); ctx.lineTo(width, height / 2); ctx.stroke();
-            const samples = clip.buffer.getChannelData(0);
-            const step = Math.max(1, Math.ceil(samples.length / width));
-            ctx.strokeStyle = '#2563eb'; ctx.beginPath();
-            for (let x = 0; x < width; x++) {
-                let min = 1; let max = -1;
-                const from = Math.floor(x * samples.length / width);
-                const to = Math.min(samples.length, from + step);
-                for (let i = from; i < to; i++) { min = Math.min(min, samples[i]); max = Math.max(max, samples[i]); }
-                const displayedMax = Math.max(-1, Math.min(1, max * waveformGain));
-                const displayedMin = Math.max(-1, Math.min(1, min * waveformGain));
-                ctx.moveTo(x + 0.5, height / 2 - displayedMax * height * 0.42);
-                ctx.lineTo(x + 0.5, height / 2 - displayedMin * height * 0.42);
+            ctx.fillStyle = '#020617'; ctx.fillRect(0, 0, width, height);
+
+            // 100〜1000 Hzを対数軸で描く。各チャンネルのスペクトルパワーを
+            // 平均するため、ステレオ再生時も片チャンネルだけに偏らない表示になる。
+            const fftSize = 2048;
+            const minFrequency = 100;
+            const maxFrequency = Math.min(1000, clip.buffer.sampleRate / 2);
+            const columns = Math.max(1, Math.min(600, Math.round(width)));
+            const rows = Math.max(1, Math.round(height));
+            const image = ctx.createImageData(columns, rows);
+            const windowFunc = new Float32Array(fftSize);
+            for (let i = 0; i < fftSize; i++) windowFunc[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / fftSize);
+            const sensitivityDb = 20 * Math.log10(spectrogramGain);
+            const channelData = Array.from({ length: clip.buffer.numberOfChannels }, (_, channel) => clip.buffer.getChannelData(channel));
+            const powers = new Float64Array(fftSize / 2 + 1);
+
+            for (let x = 0; x < columns; x++) {
+                powers.fill(0);
+                const center = Math.round((x / Math.max(1, columns - 1)) * Math.max(0, clip.buffer.length - 1));
+                const frameStart = center - fftSize / 2;
+                for (const samples of channelData) {
+                    const re = new Float32Array(fftSize);
+                    const im = new Float32Array(fftSize);
+                    for (let i = 0; i < fftSize; i++) re[i] = (samples[frameStart + i] || 0) * windowFunc[i];
+                    fft(re, im);
+                    for (let bin = 0; bin <= fftSize / 2; bin++) powers[bin] += re[bin] * re[bin] + im[bin] * im[bin];
+                }
+                for (let y = 0; y < rows; y++) {
+                    const ratioFromBottom = 1 - y / Math.max(1, rows - 1);
+                    const frequency = minFrequency * Math.pow(maxFrequency / minFrequency, ratioFromBottom);
+                    const bin = Math.min(fftSize / 2, Math.round(frequency * fftSize / clip.buffer.sampleRate));
+                    const power = powers[bin] / Math.max(1, channelData.length * fftSize * fftSize);
+                    const db = 10 * Math.log10(power || 1e-12) + sensitivityDb;
+                    const level = Math.max(0, Math.min(1, (db + 100) / 80));
+                    const pixel = (y * columns + x) * 4;
+                    image.data[pixel] = Math.round(255 * Math.max(0, Math.min(1, level * 2.2 - 0.7)));
+                    image.data[pixel + 1] = Math.round(255 * Math.max(0, Math.min(1, level * 1.8)));
+                    image.data[pixel + 2] = Math.round(255 * Math.max(0, Math.min(1, 0.65 + level * 0.7 - Math.abs(level - 0.5))));
+                    image.data[pixel + 3] = 255;
+                }
             }
-            ctx.stroke();
+            const offscreen = document.createElement('canvas');
+            offscreen.width = columns; offscreen.height = rows;
+            offscreen.getContext('2d').putImageData(image, 0, 0);
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(offscreen, 0, 0, width, height);
+            ctx.font = '10px sans-serif'; ctx.fillStyle = 'rgba(255,255,255,.85)';
+            ctx.fillText('1000 Hz', 5, 12); ctx.fillText('100 Hz', 5, height - 5);
             const inX = clip.start / clip.buffer.duration * width;
             const outX = clip.end / clip.buffer.duration * width;
             ctx.fillStyle = 'rgba(15, 23, 42, .32)'; ctx.fillRect(0, 0, inX, height); ctx.fillRect(outX, 0, width - outX, height);
@@ -556,7 +588,7 @@ const WaveformEditor = ({ clip, disabled, onChange, onMonitoringChange, onDuplic
         const observer = new ResizeObserver(draw);
         observer.observe(canvas);
         return () => observer.disconnect();
-    }, [clip.buffer, clip.start, clip.end, waveformGain]);
+    }, [clip.buffer, clip.start, clip.end, spectrogramGain]);
 
     const pointerTime = (event) => {
         const rect = canvasRef.current.getBoundingClientRect();
@@ -631,7 +663,7 @@ const WaveformEditor = ({ clip, disabled, onChange, onMonitoringChange, onDuplic
             <div className="relative h-28">
                 <canvas ref={canvasRef} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove}
                     onPointerUp={() => setDragTarget(null)} onPointerCancel={() => setDragTarget(null)}
-                    className="w-full h-28 rounded border cursor-ew-resize touch-none" aria-label={`${clip.name} の波形範囲選択`} />
+                    className="w-full h-28 rounded border cursor-ew-resize touch-none" aria-label={`${clip.name} の100〜1000 Hzスペクトログラム範囲選択`} />
                 <div className="absolute inset-y-0 w-0.5 bg-red-600 pointer-events-none shadow-sm"
                     style={{ left: `${(playhead / clip.buffer.duration) * 100}%` }} aria-hidden="true" />
             </div>
@@ -647,15 +679,15 @@ const WaveformEditor = ({ clip, disabled, onChange, onMonitoringChange, onDuplic
                 </label>
                 <label className="rounded border border-gray-200 dark:border-gray-600 p-2">
                     <span className="flex items-center justify-between gap-2 font-medium">
-                        波形倍率
-                        <output className="font-mono text-blue-600 dark:text-blue-400">{waveformGain}倍</output>
+                        スペクトログラム感度
+                        <output className="font-mono text-blue-600 dark:text-blue-400">{spectrogramGain}倍</output>
                     </span>
-                    <input type="range" min="1" max="100" step="1" value={waveformGain} disabled={disabled}
-                        onChange={e => onMonitoringChange({ waveformGain: Number(e.target.value) })}
-                        aria-label="波形倍率" className="mt-2 w-full accent-blue-600" />
+                    <input type="range" min="1" max="100" step="1" value={spectrogramGain} disabled={disabled}
+                        onChange={e => onMonitoringChange({ spectrogramGain: Number(e.target.value) })}
+                        aria-label="スペクトログラム感度" className="mt-2 w-full accent-blue-600" />
                 </label>
                 <p className="sm:col-span-2 text-gray-500 dark:text-gray-400">
-                    再生音量と波形倍率は確認表示だけに適用され、NC解析と出力WAVには影響しません。音量を上げる際は耳やスピーカーを保護するため徐々に調整してください。
+                    スペクトログラムは横軸が時間、縦軸が100〜1000 Hz（対数軸）で、明るい部分ほど成分が強いことを示します。再生音量と表示感度はNC解析と出力WAVには影響しません。音量は徐々に調整してください。
                 </p>
             </div>
             <div className="grid grid-cols-2 gap-3 text-xs">
@@ -690,7 +722,7 @@ export default function App() {
     const [results, setResults] = useState([]);
     const [useClipNameOnly, setUseClipNameOnly] = useState(false);
     const [allPlaybackGainPercent, setAllPlaybackGainPercent] = useState(100);
-    const [allWaveformGain, setAllWaveformGain] = useState(1);
+    const [allSpectrogramGain, setAllSpectrogramGain] = useState(1);
     const [projectImportMode, setProjectImportMode] = useState('replace');
 
     const handleCalibFile = (e) => setCalibFile(e.target.files[0]);
@@ -741,7 +773,7 @@ export default function App() {
                     start,
                     end,
                     playbackGainPercent: allPlaybackGainPercent,
-                    waveformGain: allWaveformGain
+                    spectrogramGain: allSpectrogramGain
                 };
             }));
             if (restoredClips.length === 0) throw new Error('プロジェクトに解析対象のWAVがありません。');
@@ -789,7 +821,7 @@ export default function App() {
                     start: 0,
                     end: buffer.duration,
                     playbackGainPercent: allPlaybackGainPercent,
-                    waveformGain: allWaveformGain
+                    spectrogramGain: allSpectrogramGain
                 };
             }));
             setClips(current => [...current, ...decoded]);
@@ -814,9 +846,9 @@ export default function App() {
         setAllPlaybackGainPercent(value);
         setClips(current => current.map(clip => ({ ...clip, playbackGainPercent: value })));
     };
-    const updateAllWaveformGain = (value) => {
-        setAllWaveformGain(value);
-        setClips(current => current.map(clip => ({ ...clip, waveformGain: value })));
+    const updateAllSpectrogramGain = (value) => {
+        setAllSpectrogramGain(value);
+        setClips(current => current.map(clip => ({ ...clip, spectrogramGain: value })));
     };
     const duplicateClip = (id) => {
         setClips(current => {
@@ -1092,7 +1124,7 @@ export default function App() {
                                     className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 dark:file:bg-gray-700 dark:file:text-gray-300"
                                 />
                                 <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                                    選択したWAVは現在の解析対象に追加されます。読み込み後、波形の黄色いハンドルをドラッグして解析範囲を指定できます。
+                                    選択したWAVは現在の解析対象に追加されます。読み込み後、スペクトログラムの黄色いハンドルをドラッグして解析範囲を指定できます。
                                 </p>
                             </div>
 
@@ -1137,19 +1169,19 @@ export default function App() {
                                             </label>
                                             <label className="rounded border border-blue-200 dark:border-blue-700 bg-white/70 dark:bg-gray-800/70 p-2">
                                                 <span className="flex items-center justify-between gap-2 font-medium">
-                                                    全ファイルの波形倍率
-                                                    <output className="font-mono text-blue-600 dark:text-blue-400">{allWaveformGain}倍</output>
+                                                    全ファイルのスペクトログラム感度
+                                                    <output className="font-mono text-blue-600 dark:text-blue-400">{allSpectrogramGain}倍</output>
                                                 </span>
-                                                <input type="range" min="1" max="100" step="1" value={allWaveformGain} disabled={isProcessing}
-                                                    onChange={e => updateAllWaveformGain(Number(e.target.value))}
-                                                    aria-label="全ファイルの波形倍率" className="mt-2 w-full accent-blue-600" />
+                                                <input type="range" min="1" max="100" step="1" value={allSpectrogramGain} disabled={isProcessing}
+                                                    onChange={e => updateAllSpectrogramGain(Number(e.target.value))}
+                                                    aria-label="全ファイルのスペクトログラム感度" className="mt-2 w-full accent-blue-600" />
                                             </label>
                                         </div>
                                     </div>
                                     {clips.map(clip => (
                                         <div key={clip.id}>
                                             <p className="mb-1 text-xs font-semibold text-gray-500 break-all">{clip.file.name}</p>
-                                            <WaveformEditor clip={clip} disabled={isProcessing}
+                                            <SpectrogramEditor clip={clip} disabled={isProcessing}
                                                 onChange={changes => updateClip(clip.id, changes)}
                                                 onMonitoringChange={changes => updateClipMonitoring(clip.id, changes)}
                                                 onDuplicate={() => duplicateClip(clip.id)}
