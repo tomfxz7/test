@@ -142,8 +142,19 @@
         };
 
         const dataColors = ["#8B4513", "#006400", "#00008B", "#4B0082", "#8B0000", "#2F4F4F", "#D2691E", "#556B2F"];
-        const CHART_COPY_ASPECT_RATIO = 1537 / 1287;
+        const DEFAULT_COPY_ASPECT_RATIO = { target: 'graph', width: 1537, height: 1287 };
         const FIXED_COPY_SCALE_BASE_WIDTH = 500;
+
+        const isValidCopyAspectRatio = (settings) =>
+            Number.isFinite(Number(settings.width)) && Number(settings.width) > 0 &&
+            Number.isFinite(Number(settings.height)) && Number(settings.height) > 0 &&
+            Number.isFinite(settings.width / settings.height) && settings.width / settings.height > 0;
+
+        const getCopyAspectRatioSettings = (settings) => ({
+            target: settings?.target === 'combined' ? 'combined' : 'graph',
+            width: isValidCopyAspectRatio(settings || {}) ? Number(settings.width) : DEFAULT_COPY_ASPECT_RATIO.width,
+            height: isValidCopyAspectRatio(settings || {}) ? Number(settings.height) : DEFAULT_COPY_ASPECT_RATIO.height
+        });
 
         const hexToRgba = (hex, alpha) => {
             let r = 0, g = 0, b = 0;
@@ -317,7 +328,7 @@
             return maxNcRequired < 15 ? "<15" : maxNcRequired;
         }
 
-        const GroupChart = ({ groupName, projectName, items, bgGraphItem, addGraphItem, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, copyLegendFontSize, yAxisMaxAuto, yAxisMaxManual, useFixedCopyAspectRatio, isViewerMode, setDataItems, setGroups, onRemoveItem, onToggleVisible, onMoveItems, groups, projects, groupProjects, onDuplicateGroup, onMoveGroupToProject, onDragStart, onDragOver, onDrop, isDraggingThis }) => {
+        const GroupChart = ({ groupName, projectName, items, bgGraphItem, addGraphItem, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, tickFontSize, copyLegendFontSize, yAxisMaxAuto, yAxisMaxManual, useFixedCopyAspectRatio, copyAspectRatio, isViewerMode, setDataItems, setGroups, onRemoveItem, onToggleVisible, onMoveItems, groups, projects, groupProjects, onDuplicateGroup, onMoveGroupToProject, onDragStart, onDragOver, onDrop, isDraggingThis }) => {
             const chartRef = React.useRef(null);
             const chartInstance = React.useRef(null);
             
@@ -884,9 +895,42 @@
                 }
             };
 
+            const getFixedCopyHeight = (width, settings = copyAspectRatio) => {
+                if (!isValidCopyAspectRatio(settings)) {
+                    setCopyStatus('コピー比の横・縦には0より大きい数値を入力してください。');
+                    return null;
+                }
+                const height = Math.round(width * (settings.height / settings.width));
+                if (height < 1 || height > 8192) {
+                    setCopyStatus('指定した比率では画像を作成できません。横・縦の値を調整してください。');
+                    return null;
+                }
+                return height;
+            };
+
+            const fitCopyCanvasToRatio = (sourceCanvas) => {
+                // グラフと凡例を変形・切り落とさず、余白で画像全体の比率を合わせる。
+                const ratio = copyAspectRatio.width / copyAspectRatio.height;
+                const width = Math.max(sourceCanvas.width, Math.ceil(sourceCanvas.height * ratio));
+                const height = getFixedCopyHeight(width);
+                if (height === null || width > 8192 || width * height > 32000000) {
+                    setCopyStatus('指定した比率では画像を作成できません。横・縦の値を調整してください。');
+                    return null;
+                }
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, width, height);
+                ctx.drawImage(sourceCanvas, Math.floor((width - sourceCanvas.width) / 2), Math.floor((height - sourceCanvas.height) / 2));
+                return canvas;
+            };
+
             const handleCopyGraphImage = () => {
                 const chartWidth = useFixedCopyAspectRatio ? 1537 : 1200;
-                const fixedHeight = useFixedCopyAspectRatio ? Math.round(chartWidth / CHART_COPY_ASPECT_RATIO) : null;
+                const fixedHeight = useFixedCopyAspectRatio ? getFixedCopyHeight(chartWidth) : null;
+                if (useFixedCopyAspectRatio && fixedHeight === null) return;
                 const exportResult = createExportChartCanvas(chartWidth, fixedHeight, useFixedCopyAspectRatio ? FIXED_COPY_SCALE_BASE_WIDTH : null);
                 if (!exportResult) return;
                 copyCanvasToClipboard(exportResult.canvas, () => exportResult.chart.destroy());
@@ -902,7 +946,15 @@
                 const legendColumnWidth = 220;
                 const legendScale = 2;
                 const padding = 24;
-                const fixedChartHeight = useFixedCopyAspectRatio ? Math.round(chartWidth / CHART_COPY_ASPECT_RATIO) : null;
+                if (useFixedCopyAspectRatio && !isValidCopyAspectRatio(copyAspectRatio)) {
+                    setCopyStatus('コピー比の横・縦には0より大きい数値を入力してください。');
+                    return;
+                }
+                const fixCombinedRatio = useFixedCopyAspectRatio && copyAspectRatio.target === 'combined';
+                const fixedChartHeight = useFixedCopyAspectRatio
+                    ? getFixedCopyHeight(chartWidth, fixCombinedRatio ? DEFAULT_COPY_ASPECT_RATIO : copyAspectRatio)
+                    : null;
+                if (useFixedCopyAspectRatio && fixedChartHeight === null) return;
                 const chartResult = createExportChartCanvas(chartWidth, fixedChartHeight, useFixedCopyAspectRatio ? FIXED_COPY_SCALE_BASE_WIDTH : null);
                 if (!chartResult) return;
                 const chartCanvas = chartResult.canvas;
@@ -917,7 +969,12 @@
                 ctx.fillRect(0, 0, combinedCanvas.width, combinedCanvas.height);
                 ctx.drawImage(chartCanvas, 0, 0);
                 ctx.drawImage(legendCanvas, chartCanvas.width + padding, 0);
-                copyCanvasToClipboard(combinedCanvas, () => chartResult.chart.destroy());
+                const copyCanvas = fixCombinedRatio ? fitCopyCanvasToRatio(combinedCanvas) : combinedCanvas;
+                if (!copyCanvas) {
+                    chartResult.chart.destroy();
+                    return;
+                }
+                copyCanvasToClipboard(copyCanvas, () => chartResult.chart.destroy());
             };
 
             const handleLegendClick = (label) => {
@@ -1835,6 +1892,7 @@
             const [yAxisMaxManual, setYAxisMaxManual] = React.useState(initState?.yAxisMaxManual || 100);
             const [viewerGridCols, setViewerGridCols] = React.useState(initState?.viewerGridCols || 2);
             const [useFixedCopyAspectRatio, setUseFixedCopyAspectRatio] = React.useState(initState?.useFixedCopyAspectRatio || false);
+            const [copyAspectRatio, setCopyAspectRatio] = React.useState(() => getCopyAspectRatioSettings(initState?.copyAspectRatio));
             
             const [isTableMaximized, setIsTableMaximized] = React.useState(false);
             const [isPreviewMode, setIsPreviewMode] = React.useState(false); // プレビューモードのトグル
@@ -1988,13 +2046,14 @@
                     yAxisMaxAuto, 
                     yAxisMaxManual,
                     viewerGridCols,
-                    useFixedCopyAspectRatio
+                    useFixedCopyAspectRatio,
+                    copyAspectRatio
                 };
             };
 
             const getWorkspaceExportData = () => ({
                 version: "1.4", dataItems, groups, projects, selectedProject, groupProjects, visibleProjects, bgNoiseData, addNoiseData, addNoiseMode, bgCorrectionMethod, bgNoiseMode,
-                groupOctaveModes, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, copyLegendFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols, useFixedCopyAspectRatio
+                groupOctaveModes, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, copyLegendFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols, useFixedCopyAspectRatio, copyAspectRatio
             });
 
             const downloadWorkspaceJSON = (fileName = workspaceFileName) => {
@@ -2113,7 +2172,8 @@ ${err?.message || err}`);
                     yAxisMaxAuto,
                     yAxisMaxManual,
                     viewerGridCols,
-                    useFixedCopyAspectRatio
+                    useFixedCopyAspectRatio,
+                    copyAspectRatio
                 };
                 const safeProject = projectName.replace(/[\/:*?"<>|]/g, "_");
                 const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
@@ -2329,6 +2389,7 @@ ${err?.message || err}`);
                 if(importedData.yAxisMaxManual !== undefined) setYAxisMaxManual(importedData.yAxisMaxManual);
                 if(importedData.viewerGridCols !== undefined) setViewerGridCols(importedData.viewerGridCols);
                 if(importedData.useFixedCopyAspectRatio !== undefined) setUseFixedCopyAspectRatio(importedData.useFixedCopyAspectRatio);
+                setCopyAspectRatio(getCopyAspectRatioSettings(importedData.copyAspectRatio));
             };
 
             const handleImportJSON = async (e) => {
@@ -2377,7 +2438,7 @@ ${err?.message || err}`);
 
             const getHistorySnapshot = React.useCallback(() => JSON.stringify(getWorkspaceExportData()), [
                 dataItems, groups, projects, selectedProject, groupProjects, visibleProjects, bgNoiseData, addNoiseData, addNoiseMode, bgCorrectionMethod, bgNoiseMode,
-                groupOctaveModes, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, copyLegendFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols, useFixedCopyAspectRatio
+                groupOctaveModes, visibleNcCurves, lineWidth, pointSize, axisLineWidth, axisLabelFontSize, copyLegendFontSize, tickFontSize, yAxisMaxAuto, yAxisMaxManual, viewerGridCols, useFixedCopyAspectRatio, copyAspectRatio
             ]);
 
             const applyHistorySnapshot = React.useCallback((snapshot) => {
@@ -3279,7 +3340,7 @@ def create_excel():
                                 <h1 className="text-3xl font-bold text-gray-800 tracking-tight">NC値 レポートビューアー</h1>
                                 <p className="text-gray-500 mt-1">計測データとNC曲線のレポートです。</p>
                             </div>
-                            <div className="flex items-center space-x-6">
+                            <div className="flex items-center flex-wrap gap-6">
                                 <div className="flex flex-col items-start max-w-sm">
                                     <label className="text-xs font-bold text-gray-600 mb-1">表示プロジェクト</label>
                                     <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
@@ -3309,7 +3370,9 @@ def create_excel():
                                         />
                                         <span className="text-xs text-gray-500">小</span>
                                     </div>
-                                    <label className="mt-1 flex items-center gap-1 text-xs text-gray-600 cursor-pointer" title="カードサイズに関係なく、グラフ部分を添付2枚目と同じアスペクト比でコピーします">
+                                </div>
+                                <div className="flex flex-col gap-2 text-xs text-gray-600">
+                                    <label className="flex items-center gap-1 cursor-pointer">
                                         <input
                                             type="checkbox"
                                             checked={useFixedCopyAspectRatio}
@@ -3318,6 +3381,44 @@ def create_excel():
                                         />
                                         <span>コピー比固定</span>
                                     </label>
+                                    <label className="flex items-center gap-2">
+                                        <span>固定する範囲</span>
+                                        <select
+                                            aria-label="コピー比の固定範囲"
+                                            value={copyAspectRatio.target}
+                                            disabled={!useFixedCopyAspectRatio}
+                                            onChange={(e) => setCopyAspectRatio(prev => ({ ...prev, target: e.target.value }))}
+                                            className="border border-gray-300 rounded px-2 py-1 bg-white disabled:bg-gray-100"
+                                        >
+                                            <option value="graph">グラフのみ</option>
+                                            <option value="combined">凡例込み</option>
+                                        </select>
+                                    </label>
+                                    <div className="flex items-center gap-2">
+                                        <label className="flex items-center gap-1">
+                                            横
+                                            <input
+                                                type="number" aria-label="コピー比の横" min="0.001" step="any"
+                                                value={copyAspectRatio.width} disabled={!useFixedCopyAspectRatio}
+                                                onChange={(e) => setCopyAspectRatio(prev => ({ ...prev, width: e.target.value === '' ? '' : Number(e.target.value) }))}
+                                                className="w-20 border border-gray-300 rounded px-2 py-1 disabled:bg-gray-100"
+                                            />
+                                        </label>
+                                        <span>：</span>
+                                        <label className="flex items-center gap-1">
+                                            縦
+                                            <input
+                                                type="number" aria-label="コピー比の縦" min="0.001" step="any"
+                                                value={copyAspectRatio.height} disabled={!useFixedCopyAspectRatio}
+                                                onChange={(e) => setCopyAspectRatio(prev => ({ ...prev, height: e.target.value === '' ? '' : Number(e.target.value) }))}
+                                                className="w-20 border border-gray-300 rounded px-2 py-1 disabled:bg-gray-100"
+                                            />
+                                        </label>
+                                    </div>
+                                    <p>例：横16・縦9。凡例込みでは画像全体の比率を固定します。</p>
+                                    {useFixedCopyAspectRatio && !isValidCopyAspectRatio(copyAspectRatio) && (
+                                        <p role="alert" className="text-red-600">横・縦には0より大きい数値を入力してください。</p>
+                                    )}
                                 </div>
                                 <div className="flex space-x-2">
                                     {!isExportedViewerMode && (
@@ -3368,6 +3469,7 @@ def create_excel():
                                         yAxisMaxAuto={yAxisMaxAuto}
                                         yAxisMaxManual={yAxisMaxManual}
                                         useFixedCopyAspectRatio={useFixedCopyAspectRatio}
+                                        copyAspectRatio={copyAspectRatio}
                                         isViewerMode={true}
                                         setDataItems={setDataItems}
                                         setGroups={setGroups}
@@ -3853,6 +3955,7 @@ def create_excel():
                                                 yAxisMaxAuto={yAxisMaxAuto}
                                                 yAxisMaxManual={yAxisMaxManual}
                                                 useFixedCopyAspectRatio={useFixedCopyAspectRatio}
+                                                copyAspectRatio={copyAspectRatio}
                                                 isViewerMode={false}
                                                 setDataItems={setDataItems}
                                                 setGroups={setGroups}
