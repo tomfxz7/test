@@ -376,6 +376,7 @@
                         const color = hexColor; // NCカーブは常に半透明にしない
 
                         datasets.push({
+                            legendId: `nc-${nc}`,
                             label: label,
                             data: curveData,
                             borderColor: color,
@@ -417,6 +418,7 @@
                     const color = isFaded ? hexToRgba(hexColor, 0.15) : hexColor;
 
                     datasets.push({
+                        legendId: `item-${item.id}`,
                         label: label,
                         data: filteredValues,
                         borderColor: color,
@@ -454,6 +456,7 @@
                     const bgColor = isFaded ? hexToRgba(bgColorBase, 0.15) : bgColorBase;
 
                     datasets.push({
+                        legendId: 'background-noise',
                         label: bgLabel,
                         data: filteredBgValues,
                         borderColor: bgColor,
@@ -491,6 +494,7 @@
                     const addColor = isFaded ? hexToRgba(addColorBase, 0.15) : addColorBase;
 
                     datasets.push({
+                        legendId: 'add-noise',
                         label: addLabel,
                         data: filteredAddValues,
                         borderColor: addColor,
@@ -507,7 +511,9 @@
                 }
 
                 const yMax = yAxisMaxAuto ? Math.max(50, Math.ceil((maxVal + 5) / 10) * 10) : yAxisMaxManual;
+                // 同名・同NC値のファイルも区別し、並べ替えや抑制時に古い凡例を残さない。
                 setLegendItems(datasets.map(dataset => ({
+                    id: dataset.legendId,
                     label: dataset.label,
                     color: dataset.borderColor,
                     dash: dataset.borderDash || [],
@@ -997,7 +1003,7 @@
                             <div className="w-44 lg:w-56 shrink-0 overflow-y-auto border-l border-gray-200 pl-2 pr-1 text-xs bg-white" title="凡例（スクロール可能）">
                                 {legendItems.map(item => (
                                     <div
-                                        key={item.label}
+                                        key={item.id}
                                         className={`flex items-start gap-2 py-1 cursor-pointer rounded px-1 hover:bg-gray-50 ${highlightedLabels.has(item.label) ? 'bg-yellow-50 ring-1 ring-yellow-300' : ''} ${item.hidden ? 'opacity-40' : ''}`}
                                         onClick={() => handleLegendClick(item.label)}
                                         onContextMenu={(e) => handleLegendContextMenu(e, item.label)}
