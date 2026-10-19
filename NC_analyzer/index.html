@@ -327,6 +327,8 @@
             const [legendItems, setLegendItems] = React.useState([]);
             const [legendCopyColumns, setLegendCopyColumns] = React.useState(1);
             const [showLegendCopyModal, setShowLegendCopyModal] = React.useState(false);
+            const [copyStatus, setCopyStatus] = React.useState('');
+            const [copyImageUrl, setCopyImageUrl] = React.useState(null);
             
             const [isMaximized, setIsMaximized] = React.useState(false);
             const [showDataModal, setShowDataModal] = React.useState(false);
@@ -352,6 +354,12 @@
             React.useEffect(() => {
                 setTargetProjectForGroup(projectName || '');
             }, [projectName]);
+
+            React.useEffect(() => {
+                return () => {
+                    if (copyImageUrl) URL.revokeObjectURL(copyImageUrl);
+                };
+            }, [copyImageUrl]);
 
             React.useEffect(() => {
                 if (!chartRef.current || items.length === 0) return;
@@ -840,35 +848,40 @@
                 return maxColumns;
             };
 
-            const copyCanvasToClipboard = (canvas, cleanup = null) => {
+            const copyCanvasToClipboard = async (canvas, cleanup = null) => {
                 if (!canvas) return;
-                canvas.toBlob(async (blob) => {
+                setCopyStatus('コピー中…');
+                const blobPromise = new Promise((resolve, reject) => {
                     try {
-                        const clipboardItem = new window.ClipboardItem({ "image/png": blob });
-                        await navigator.clipboard.write([clipboardItem]);
+                        canvas.toBlob(blob => {
+                            if (blob) resolve(blob);
+                            else reject(new Error('PNG画像の作成に失敗しました。'));
+                        }, 'image/png');
                     } catch (err) {
-                        alert("コピーに失敗しました。グラフを右クリックして「画像をコピー」を選択してください。");
-                    } finally {
-                        if (cleanup) cleanup();
+                        reject(err);
                     }
                 });
-            };
-
-            const addAspectRatioPadding = (sourceCanvas, targetAspectRatio) => {
-                const sourceAspectRatio = sourceCanvas.width / sourceCanvas.height;
-                const outputCanvas = document.createElement('canvas');
-                if (sourceAspectRatio > targetAspectRatio) {
-                    outputCanvas.width = sourceCanvas.width;
-                    outputCanvas.height = Math.ceil(sourceCanvas.width / targetAspectRatio);
-                } else {
-                    outputCanvas.width = Math.ceil(sourceCanvas.height * targetAspectRatio);
-                    outputCanvas.height = sourceCanvas.height;
+                try {
+                    if (!navigator.clipboard?.write || !window.ClipboardItem) {
+                        throw new Error('この環境では画像の自動コピーを利用できません。');
+                    }
+                    // PNG生成を待つ前に呼び出し、クリックによるコピーの許可を維持する。
+                    const clipboardItem = new window.ClipboardItem({ 'image/png': blobPromise });
+                    await navigator.clipboard.write([clipboardItem]);
+                    setCopyStatus('コピーしました');
+                } catch (err) {
+                    console.warn('画像の自動コピーに失敗しました:', err);
+                    try {
+                        const blob = await blobPromise;
+                        setCopyImageUrl(URL.createObjectURL(blob));
+                        setCopyStatus('画像を右クリックしてコピーしてください');
+                    } catch (imageError) {
+                        console.error('コピー用画像の作成に失敗しました:', imageError);
+                        setCopyStatus('画像を作成できませんでした。もう一度お試しください。');
+                    }
+                } finally {
+                    if (cleanup) cleanup();
                 }
-                const ctx = outputCanvas.getContext('2d');
-                ctx.fillStyle = '#ffffff';
-                ctx.fillRect(0, 0, outputCanvas.width, outputCanvas.height);
-                ctx.drawImage(sourceCanvas, 0, 0);
-                return outputCanvas;
             };
 
             const handleCopyGraphImage = () => {
@@ -876,8 +889,7 @@
                 const fixedHeight = useFixedCopyAspectRatio ? Math.round(chartWidth / CHART_COPY_ASPECT_RATIO) : null;
                 const exportResult = createExportChartCanvas(chartWidth, fixedHeight, useFixedCopyAspectRatio ? FIXED_COPY_SCALE_BASE_WIDTH : null);
                 if (!exportResult) return;
-                const copyCanvas = useFixedCopyAspectRatio ? addAspectRatioPadding(exportResult.canvas, ATTACHED_COPY_ASPECT_RATIO) : exportResult.canvas;
-                copyCanvasToClipboard(copyCanvas, () => exportResult.chart.destroy());
+                copyCanvasToClipboard(exportResult.canvas, () => exportResult.chart.destroy());
             };
 
             const handleCopyLegendImage = (columns = legendCopyColumns) => {
@@ -994,6 +1006,7 @@
                                 {isMaximized ? "🗕" : "⛶"}
                             </button>
                         </div>
+                        <p role="status" className="text-xs text-gray-600">{copyStatus}</p>
                     </div>
                     <div className={canvasWrapperClass}>
                         <div className="absolute inset-0 flex min-h-0 gap-3">
@@ -1016,6 +1029,20 @@
                             </div>
                         </div>
                     </div>
+
+                    {copyImageUrl && (
+                        <div className="fixed inset-0 z-[220] bg-black bg-opacity-40 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label="コピー用画像">
+                            <div className="bg-white rounded-xl shadow-2xl max-w-full max-h-full flex flex-col overflow-hidden">
+                                <div className="p-4 border-b flex items-center justify-between gap-4">
+                                    <p className="text-sm text-gray-700">自動コピーを利用できませんでした。画像を右クリックして「画像をコピー」を選択してください。</p>
+                                    <button onClick={() => setCopyImageUrl(null)} className="px-3 py-1 rounded border border-gray-300 shrink-0">閉じる</button>
+                                </div>
+                                <div className="p-4 overflow-auto">
+                                    <img src={copyImageUrl} alt={`${groupName} のコピー用画像`} className="max-w-full h-auto" />
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
                     {showLegendCopyModal && (
                         <div className="fixed inset-0 z-[210] bg-black bg-opacity-40 flex items-center justify-center p-4">
