@@ -265,12 +265,11 @@ const isVisibleProgressEntry = (entry) => {
 
 const progressEntryClasses = (entry) => {
   if (entry.kind !== 'comment') return 'bg-white border-gray-200 text-gray-700';
-  if (entry.addedSmallTask) return entry.status === 'waiting'
-    ? 'bg-lime-50 border-lime-300 text-lime-900'
-    : 'bg-purple-50 border-purple-200 text-purple-900';
+  if (entry.status === 'completed') return 'bg-blue-50 border-blue-200 text-blue-900';
   if (entry.status === 'waiting') return 'bg-green-50 border-green-300 text-green-800';
+  if (entry.smallTaskId && entry.quote && !entry.addedSmallTask) return 'bg-indigo-50 border-indigo-200 text-indigo-900';
   if (entry.quote?.status === 'waiting') return 'bg-blue-50 border-blue-200 text-blue-900';
-  if (entry.smallTaskId) return 'bg-purple-50 border-purple-200 text-purple-900';
+  if (entry.smallTaskId || entry.addedSmallTask) return 'bg-purple-50 border-purple-200 text-purple-900';
   return 'bg-blue-50 border-blue-200 text-blue-900';
 };
 
@@ -302,16 +301,40 @@ const progressQuoteSearchText = quote => quote
   ? [quote.text, ...(quote.subtaskTitles || []), quote.smallTaskTitle, progressQuoteSearchText(quote.quote)].filter(Boolean).join(' ')
   : '';
 
-const ProgressQuote = ({ quote }) => <blockquote aria-label="引用コメント" data-quoted-entry-id={quote.id}
+const ProgressQuote = ({ quote, onNavigate }) => <blockquote aria-label="引用コメント" data-quoted-entry-id={quote.id}
   className={`my-2 rounded-lg border-l-4 px-3 py-2 bg-white/60 text-xs ${quote.status === 'waiting' ? 'border-green-400' : 'border-blue-300'}`}>
   <div className="flex flex-wrap gap-2 text-gray-500 mb-1">
     <span>引用</span>{quote.createdAt && <time dateTime={quote.createdAt}>{new Date(quote.createdAt).toLocaleString('ja-JP')}</time>}
     {quote.status === 'waiting' && <span className="text-green-700">相手待ち</span>}
+    {onNavigate && <button type="button" aria-label={`引用元へ移動: ${quote.text}`} onClick={() => onNavigate(quote)} className="text-blue-700 underline">引用元へ移動</button>}
   </div>
   <p className="whitespace-pre-wrap break-words">{quote.text}</p>
   {quote.smallTaskTitle && <p className="mt-1 text-gray-500 break-words">小さいタスク: {quote.smallTaskTitle}</p>}
-  {quote.quote && <ProgressQuote quote={quote.quote}/>}
+  {quote.quote && <ProgressQuote quote={quote.quote} onNavigate={onNavigate}/>}
 </blockquote>;
+
+const QuoteSourceModal = ({ quote, onClose }) => {
+  const closeRef = useRef(null);
+  useEffect(() => {
+    const previous = document.activeElement;
+    closeRef.current?.focus();
+    const handleKey = e => {
+      if (e.key === 'Escape' && !e.isComposing) { e.preventDefault(); onClose(); }
+      if (e.key === 'Tab') { e.preventDefault(); closeRef.current?.focus(); }
+    };
+    document.addEventListener('keydown', handleKey);
+    return () => { document.removeEventListener('keydown', handleKey); previous?.focus(); };
+  }, [onClose]);
+  return <div className="fixed inset-0 bg-black/60 z-50 p-4 flex items-center justify-center">
+    <section role="dialog" aria-modal="true" aria-label="引用元のコメント" className="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-white rounded-2xl shadow-2xl p-5">
+      <header className="flex justify-between items-center gap-3 mb-3"><h2 className="font-bold">引用元のコメント</h2>
+        <button ref={closeRef} type="button" aria-label="引用元の確認を閉じる" onClick={onClose} className="p-2 rounded-lg hover:bg-gray-100"><X size={20}/></button>
+      </header>
+      <p className="text-sm text-gray-500">引用元は現在の一覧にないため、引用時に保存した内容を表示しています。</p>
+      <ProgressQuote quote={quote}/>
+    </section>
+  </div>;
+};
 
 // --- Mock Initial Data ---
 const initialTasks = [
@@ -1655,7 +1678,7 @@ const ProgressSettingsModal = ({ task, starting, onClose, onSave }) => {
 
 const WaitingSmallTaskRow = ({ entry, onReply, onDelete }) => <li data-progress-waiting-task-id={entry.id}
   onDoubleClick={e => { e.stopPropagation(); onReply(); }}
-  className="rounded-lg border border-green-300 bg-green-50 text-green-800 px-2 py-1.5 flex items-center gap-2">
+  className="rounded-lg border border-green-300 bg-green-50 text-green-800 px-2 py-1.5 flex items-center gap-2 text-xs">
   <button type="button" onClick={onReply} className="flex-1 min-w-0 text-left break-words">
     {entry.text}<span className="block text-[10px] mt-0.5">相手待ち · クリックして引用返信</span>
   </button>
@@ -1701,7 +1724,7 @@ const ProgressTaskCard = ({ task, selected, onSelect, onSettings, onStart, onDra
               {smallTasks.map(small => <li key={small.id} data-progress-small-task-id={small.id} data-status={progressItemStatus(small)}
                 onDoubleClick={e => { e.stopPropagation(); onReplySmallTask(st.id, small.id); }}
                 onDragStart={e => { e.preventDefault(); e.stopPropagation(); }}
-                className={`rounded-lg border px-2 py-1.5 flex gap-2 items-center ${progressStatusClasses(progressItemStatus(small))}`}>
+                className={`rounded-lg border px-2 py-1.5 flex gap-2 items-center text-xs ${small.waiting ? 'bg-green-50 border-green-300 text-green-800' : 'bg-purple-50 border-purple-200 text-purple-900'}`}>
                 <span role="button" tabIndex={0} aria-label={`${small.title}に返信`} draggable={false}
                   onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onReplySmallTask(st.id, small.id); } }}
                   className={`flex-1 min-w-0 cursor-text rounded focus:outline-none focus:ring-2 focus:ring-blue-400 ${small.completed ? 'line-through' : ''}`}>
@@ -1742,6 +1765,9 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
   const [filterId, setFilterId] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [replyTo, setReplyTo] = useState(null);
+  const [quoteDetail, setQuoteDetail] = useState(null);
+  const [jumpRequest, setJumpRequest] = useState(null);
+  const [highlightedId, setHighlightedId] = useState(null);
   const historyRef = useRef(null);
   const composerRef = useRef(null);
   const subtasks = getProgressSubtasks(task);
@@ -1757,6 +1783,22 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
   const visibleHistory = history.filter(entry => (!filterId || entry.subtaskIds?.includes(filterId)) && (!query.trim() || [entry.text, ...(entry.subtaskTitles || []), entry.smallTaskTitle, entry.createdAt, entry.dueDate, progressQuoteSearchText(entry.quote)].filter(Boolean).join(' ').toLowerCase().includes(query.trim().toLowerCase())));
   useEffect(() => { if (historyRef.current) historyRef.current.scrollTop = historyRef.current.scrollHeight; }, [history.length, history[history.length - 1]?.id, task.id]);
   useEffect(() => { if (editingId) composerRef.current?.focus(); }, [editingId]);
+  useEffect(() => {
+    if (!jumpRequest) return;
+    const row = [...(historyRef.current?.querySelectorAll('[data-progress-entry-id]') || [])]
+      .find(element => element.dataset.progressEntryId === String(jumpRequest.id));
+    row?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row?.focus({ preventScroll: true });
+    setHighlightedId(jumpRequest.id);
+    const timer = setTimeout(() => setHighlightedId(null), 1800);
+    return () => clearTimeout(timer);
+  }, [jumpRequest]);
+  const navigateQuote = quote => {
+    if (history.some(entry => entry.id === quote.id)) {
+      setQuery(''); setFilterId('');
+      setJumpRequest({ id: quote.id, requestId: createProgressId() });
+    } else setQuoteDetail(quote);
+  };
   const resetComposer = () => {
     setText(''); setSelectedIds([]); setAddTodo(false); setAddSmall(false); setSmallTarget(null); setDueDate(''); setWaiting(false); setCompleted(false); setEditingId(null); setReplyTo(null);
   };
@@ -1885,11 +1927,11 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
     </div>
     <div ref={historyRef} role="log" aria-label="進捗履歴" className="flex-1 overflow-y-auto min-h-0 p-4 space-y-4 bg-slate-100">
       {!visibleHistory.length && <p className="text-center text-sm text-gray-400 py-8">{history.length ? '一致する履歴はありません。' : '進捗コメントを送って、履歴を残しましょう。'}</p>}
-      {visibleHistory.map(entry => <div key={entry.id} data-progress-entry-id={entry.id} className="flex flex-col items-stretch">
+      {visibleHistory.map(entry => <div key={entry.id} data-progress-entry-id={entry.id} tabIndex={-1} className={`flex flex-col items-stretch ${highlightedId === entry.id ? 'ring-2 ring-blue-400 rounded-xl' : ''}`}>
         <time dateTime={entry.createdAt} className="text-[10px] text-gray-500 px-1 mb-1">{new Date(entry.createdAt).toLocaleString('ja-JP')}</time>
         <div className={`w-full rounded-xl border px-3 py-2 text-sm shadow-sm ${progressEntryClasses(entry)}`}>
           <p className="text-[10px] font-bold text-gray-400 mb-1">{entry.kind === 'comment' ? (entry.addedSmallTask ? '小さいタスクの追加' : '進捗記録') : '期限変更'}</p>
-          {entry.quote && <ProgressQuote quote={entry.quote}/>}
+          {entry.quote && <ProgressQuote quote={entry.quote} onNavigate={navigateQuote}/>}
           <p className="whitespace-pre-wrap break-words">{entry.text}</p>
           {!!entry.subtaskTitles?.length && <div className="flex flex-wrap gap-1 mt-2">{entry.subtaskTitles.map((title, i) => <span key={`${entry.subtaskIds?.[i]}-${i}`} className="text-[10px] rounded px-1.5 py-0.5 bg-black/10 break-all">{title}</span>)}</div>}
           {entry.smallTaskTitle && <p className="mt-1 text-xs text-gray-500 break-words">小さいタスク: {entry.smallTaskTitle}</p>}
@@ -1911,7 +1953,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
     }} className="p-4 border-t bg-white space-y-3 shrink-0 max-h-[55%] overflow-y-auto">
       {editingId && <p className="text-xs font-bold text-blue-700" role="status">コメントを編集中 · 本文とチェック項目を変更できます</p>}
       {(replyTo || editingEntry?.quote) && <section role="region" aria-label="返信先" className="rounded-lg border border-blue-200 px-3 py-2">
-        <ProgressQuote quote={replyTo || editingEntry.quote}/>
+        <ProgressQuote quote={replyTo || editingEntry.quote} onNavigate={navigateQuote}/>
         {replyTo && <>
           {replyTo.status === 'waiting' && <p className="text-xs text-blue-700">送信すると、相手待ちの元コメントをこの返信の引用にまとめます。</p>}
           <button type="button" aria-label="返信をキャンセル" onClick={() => setReplyTo(null)} className="text-xs text-blue-700 underline">返信をキャンセル</button>
@@ -1934,7 +1976,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
         {!addSmall && !smallTarget && <label className="flex items-center gap-1.5 text-gray-600">追加するやるべきことの期限<input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} className="border rounded-md px-2 py-1 min-w-0"/></label>}
       </div>
       {addTodo && <p className="text-xs text-blue-600">コメントを小タスクとして追加します。期限の未入力時: {task.dueDate || '未設定'}</p>}
-      {addSmall && <p className="text-xs text-blue-600">関連するやるべきことを1つ選択すると、その中にコメント本文を小さいタスクとして追加します。期限は不要です。追加コメントは紫色、相手待ちの場合は黄緑色で残ります。</p>}
+      {addSmall && <p className="text-xs text-blue-600">関連するやるべきことを1つ選択すると、その中にコメント本文を小さいタスクとして追加します。期限は不要です。通常は紫、相手待ちは緑、完了のコメントは青色になります。</p>}
       <div className="flex flex-wrap justify-between items-center gap-3">
         <div className="flex gap-4 text-xs">
           <label className="flex items-center gap-1.5"><input type="checkbox" checked={waiting} onChange={e => { setWaiting(e.target.checked); if (e.target.checked) setCompleted(false); }}/>相手待ち</label>
@@ -1947,6 +1989,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
       </div>
       <p className="text-[10px] text-gray-400">{replyTo ? '完了をチェックして返信すると、引用元のコメントと対象の一覧項目を削除し、引用として残します。' : smallTarget ? '相手待ち・完了は、この小さいタスクに反映します。' : 'やるべきこと未選択の「相手待ち」はタスク全体に反映します。'}</p>
     </form>
+    {quoteDetail && <QuoteSourceModal quote={quoteDetail} onClose={() => setQuoteDetail(null)}/>}
   </div>;
 };
 
@@ -2007,6 +2050,196 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
       </div>
     </div>
     {settingsTask && <ProgressSettingsModal key={`${settingsTask.id}-${settings.starting}`} task={settingsTask} starting={settings.starting} onClose={() => setSettings(null)} onSave={(patch, reason) => { onUpdateTask(settingsTask.id, previous => ({ ...previous, ...patch }), { reason }); if (settings.starting) setSelectedId(settingsTask.id); setSettings(null); }}/>}
+  </div>;
+};
+
+const reportDateIsValid = value => /^\d{4}-\d{2}-\d{2}$/.test(value) && formatDate(getLocalDate(value)) === value;
+const reportEntryDate = value => value == null || value === '' ? new Date(NaN)
+  : /^\d{4}-\d{2}-\d{2}$/.test(value) ? getLocalDate(value) : new Date(value);
+const reportTimestamp = value => {
+  const date = reportEntryDate(value);
+  return Number.isFinite(date.getTime())
+    ? `${formatDate(date)} ${[date.getHours(), date.getMinutes(), date.getSeconds()].map(n => String(n).padStart(2, '0')).join(':')}`
+    : '日時未記録';
+};
+const reportPeriodEntries = (task, startDate, endDate) => {
+  const start = getLocalDate(startDate).getTime();
+  const end = addDays(getLocalDate(endDate), 1).getTime();
+  return (task.progressHistory || []).filter(entry => {
+    const time = reportEntryDate(entry.createdAt).getTime();
+    return isVisibleProgressEntry(entry) && time >= start && time < end;
+  }).sort((a, b) => reportEntryDate(a.createdAt) - reportEntryDate(b.createdAt));
+};
+const reportRichText = html => {
+  if (!html) return '';
+  // Template contents stay inert; no saved scripts or image resources are loaded.
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  template.content.querySelectorAll('script,style,noscript').forEach(el => el.remove());
+  template.content.querySelectorAll('br').forEach(el => el.replaceWith('\n'));
+  template.content.querySelectorAll('img').forEach(el => el.replaceWith(el.alt ? `[画像: ${el.alt}]` : '[添付画像]'));
+  template.content.querySelectorAll('a[href]').forEach(el => {
+    const href = el.getAttribute('href');
+    if (/^https?:\/\//i.test(href) && !el.textContent.includes(href)) el.append(` (${href})`);
+  });
+  template.content.querySelectorAll('p,div,li,h1,h2,h3,h4,tr').forEach(el => el.append('\n'));
+  return template.content.textContent.replace(/\u00a0/g, ' ').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+};
+const buildWeeklyReport = ({ tasks, startDate, endDate, now = new Date() }) => {
+  const entriesByTask = tasks.map(task => ({ task, entries: reportPeriodEntries(task, startDate, endDate) }));
+  const entries = entriesByTask.flatMap(item => item.entries);
+  const comments = entries.filter(entry => entry.kind === 'comment');
+  const lines = [
+    '# 週報作成用レポート（Copilot入力用）',
+    `対象期間: ${startDate} ～ ${endDate}（開始日・終了日を含む）`,
+    `出力日時: ${reportTimestamp(now)}`,
+    `時刻の基準: ${Intl.DateTimeFormat().resolvedOptions().timeZone || 'ブラウザーの現地時刻'}`,
+    `選択タスク数: ${tasks.length}`, '',
+    '## Copilotへの依頼',
+    '以下の記録を素材に、対象期間の週報を日本語で作成してください。',
+    '構成: 今週の実施内容・成果 / 未完了・相手待ち / 課題と理由 / 次週の予定候補。',
+    '実施内容・成果は「期間内の記録」を根拠にしてください。記録のない実施・完了・理由は推測せず、未記録としてください。',
+    '「現在の状態」は出力時点の参考情報で、対象期間末の状態や期間内の実績とは限りません。日時のない結果メモも同様です。',
+    '記録は投稿日時で抽出します。編集済みの本文は現在の保存内容であり、期間当時の本文を復元したものではありません。',
+    '引用は背景資料です。引用元の日付が対象期間外でも記載しますが、期間内の新規実績として二重計上しないでください。',
+    '完了記録は関連する項目の完了です。小さいタスクの完了を親タスク全体の完了と解釈しないでください。',
+    '次週の予定は未完了項目と期限から候補を整理し、確定した予定と推測を区別してください。', '',
+    '## 期間内の記録サマリー',
+    `進捗記録: ${comments.length}件`,
+    `完了の記録: ${comments.filter(entry => entry.status === 'completed').length}件`,
+    `相手待ちの記録: ${comments.filter(entry => entry.status === 'waiting').length}件`,
+    `小さいタスク追加の記録: ${comments.filter(entry => entry.addedSmallTask).length}件`,
+    `理由付き期限変更の記録: ${entries.length - comments.length}件`,
+    '※件数は記録数です。同じ項目の複数記録を、別々の完了タスクとして数えないでください。', '',
+    '## タスク別の詳細'
+  ];
+  const text = (label, value, indent = '') => {
+    if (value) lines.push(`${indent}${label}:`, ...String(value).split(/\r?\n/).map(line => `${indent}  ${line}`));
+  };
+  const state = item => item.completed ? '完了' : item.waiting ? '相手待ち'
+    : item.progressStage === 'doing' ? '着手中' : item.progressStage === 'todo' ? '未着手' : '未完了（着手状況の記録なし）';
+  const stateWithDue = item => `${state(item)}${!item.completed && item.dueDate && item.dueDate < formatDate(now) ? ' / 期限超過（出力時点）' : ''}`;
+  const quote = (source, indent = '    ') => {
+    lines.push(`${indent}引用（背景資料・新規実績には数えない）:`, `${indent}  元の日時: ${reportTimestamp(source.createdAt)}`);
+    text('元の状態', source.status === 'waiting' ? '相手待ち' : source.status === 'completed' ? '完了' : '進捗', `${indent}  `);
+    text('関連するやるべきこと', source.subtaskTitles?.join(' / '), `${indent}  `);
+    text('小さいタスク', source.smallTaskTitle, `${indent}  `);
+    text('引用本文', source.text, `${indent}  `);
+    if (source.quote) quote(source.quote, `${indent}  `);
+  };
+  entriesByTask.forEach(({ task, entries: taskEntries }, index) => {
+    lines.push('', `### ${index + 1}. ${task.title}`, `タスクID: ${task.id}`,
+      `予定日: ${task.date || '未設定'}`, `タスク期限: ${task.dueDate || '未設定'}`,
+      `現在の状態（出力時点）: ${stateWithDue(task)}`);
+    if (task.isRecurringOccurrence) lines.push(`種別: 定期予定（${task.recurrenceDate} の回）`);
+    text('タスクのメモ', task.memo);
+    text('関連URL', (task.urls || []).join('\n'));
+    text('結果メモ（日時未記録・現在の保存内容）', [task.completionNote, reportRichText(task.richResult)].filter(Boolean).join('\n'));
+    text('成果物URL（現在の保存内容）', (task.resultUrls || []).join('\n'));
+    if (task.resultImages?.length) lines.push(`添付画像: ${task.resultImages.length}件（画像データはこのテキストに含まれません）`);
+    lines.push('', '#### 現在のやるべきこと・小さいタスク（出力時点の参考）');
+    const subtasks = getProgressSubtasks(task);
+    if (!subtasks.length) lines.push('やるべきことの登録なし。');
+    subtasks.forEach(st => {
+      lines.push(`- ${st.title} [${st.id}] / 期限: ${st.dueDate || '未設定'} / ${stateWithDue(st)}`);
+      getProgressSmallTasks(st).forEach(small => lines.push(`  - ${small.title} [${small.id}] / 期限なし / ${state(small)}`));
+    });
+    lines.push('', `#### 期間内の記録（${taskEntries.length}件）`);
+    if (!taskEntries.length) lines.push('指定期間内の進捗記録はありません。現在の状態から期間内の実績を推測しないでください。');
+    taskEntries.forEach(entry => {
+      const type = entry.kind !== 'comment' ? '期限変更（理由あり）' : entry.addedSmallTask ? '小さいタスクの追加'
+        : entry.status === 'completed' ? '完了' : entry.status === 'waiting' ? '相手待ち' : '進捗';
+      lines.push('', `- ${reportTimestamp(entry.createdAt)} / ${type} / 記録ID: ${entry.id}`);
+      if (entry.kind === 'comment') lines.push(`  記録の状態: ${entry.status === 'completed' ? '完了' : entry.status === 'waiting' ? '相手待ち' : '進捗'}`);
+      const related = (entry.subtaskIds || []).map((id, i) => `${entry.subtaskTitles?.[i] || subtasks.find(st => st.id === id)?.title || '名称未記録'} [${id}]`);
+      text('関連するやるべきこと', related.join(' / '), '  ');
+      text('小さいタスク（削除済み項目も記録時の名称を保持）', entry.smallTaskId ? `${entry.smallTaskTitle || '名称未記録'} [${entry.smallTaskId}]` : '', '  ');
+      text('本文', entry.text, '  ');
+      if (entry.editedAt) lines.push(`  編集日時: ${reportTimestamp(entry.editedAt)}`);
+      if (entry.quote) quote(entry.quote);
+    });
+  });
+  return `${lines.join('\n')}\n`;
+};
+
+const WeeklyReportModal = ({ tasks, onClose, onCreated }) => {
+  const [startDate, setStartDate] = useState(() => formatDate(getMonday(new Date())));
+  const [endDate, setEndDate] = useState(() => formatDate(new Date()));
+  const [query, setQuery] = useState('');
+  const [selectedIds, setSelectedIds] = useState(() => {
+    const regular = tasks.filter(task => !task.isRecurringOccurrence);
+    const tracked = regular.filter(task => task.progressEnabled);
+    return (tracked.length ? tracked : regular).map(task => task.id);
+  });
+  const formRef = useRef(null);
+  const searchRef = useRef(null);
+  const validRange = reportDateIsValid(startDate) && reportDateIsValid(endDate) && startDate <= endDate;
+  const available = tasks.filter(task => !task.isRecurringOccurrence || (validRange && task.date >= startDate && task.date <= endDate));
+  const visible = available.filter(task => task.title.toLowerCase().includes(query.trim().toLowerCase()));
+  const selected = available.filter(task => selectedIds.includes(task.id));
+  const count = validRange ? selected.reduce((total, task) => total + reportPeriodEntries(task, startDate, endDate).length, 0) : 0;
+  useEffect(() => {
+    const previous = document.activeElement;
+    searchRef.current?.focus();
+    const handleKey = e => {
+      if (e.key === 'Escape' && !e.isComposing) { e.preventDefault(); onClose(); }
+      if (e.key === 'Tab') {
+        const elements = [...formRef.current.querySelectorAll('button:not([disabled]),input:not([disabled])')];
+        const first = elements[0], last = elements[elements.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+        if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+      }
+    };
+    document.addEventListener('keydown', handleKey);
+    return () => { document.removeEventListener('keydown', handleKey); previous?.focus(); };
+  }, [onClose]);
+  const download = e => {
+    e.preventDefault();
+    if (!validRange || !selected.length) return;
+    const body = buildWeeklyReport({ tasks: selected, startDate, endDate });
+    const blob = new Blob(['\uFEFF', body], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url; link.download = `週報素材_${startDate}_${endDate}.txt`;
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    onCreated(); onClose();
+  };
+  return <div className="fixed inset-0 bg-black/60 z-50 p-4 flex items-center justify-center backdrop-blur-sm">
+    <form ref={formRef} role="dialog" aria-modal="true" aria-label="週報用レポート作成" onSubmit={download}
+      onKeyDown={e => { if (e.key === 'Enter' && e.target.tagName === 'INPUT' && !e.nativeEvent.isComposing) e.preventDefault(); }}
+      className="w-full max-w-2xl max-h-[90vh] bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+      <header className="p-5 border-b flex items-start justify-between gap-3">
+        <div><h2 className="text-lg font-black">週報用レポート作成</h2><p className="text-xs text-gray-500 mt-1">Copilotに読み込ませる週報の素材を、テキストファイルで出力します。</p></div>
+        <button type="button" aria-label="レポート作成を閉じる" onClick={onClose} className="p-2 rounded-lg hover:bg-gray-100"><X size={20}/></button>
+      </header>
+      <div className="p-5 overflow-y-auto space-y-4">
+        <div className="flex flex-wrap gap-4">
+          <label className="text-sm font-bold">開始日<input aria-label="レポート開始日" type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="block mt-1 border rounded-lg px-3 py-2 font-normal"/></label>
+          <label className="text-sm font-bold">終了日<input aria-label="レポート終了日" type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="block mt-1 border rounded-lg px-3 py-2 font-normal"/></label>
+        </div>
+        {!validRange && <p role="alert" className="text-sm text-red-700">開始日と終了日を正しく指定してください。開始日は終了日以前にしてください。</p>}
+        <p className="text-xs text-gray-500">両日を含む期間内の記録と、選択タスクの現在の状態を分けて記載します。やるべきこと・小さいタスク・引用も含みます。</p>
+        <input ref={searchRef} aria-label="レポート対象タスクを検索" placeholder="タスク名で検索" value={query} onChange={e => setQuery(e.target.value)} className="w-full border rounded-lg p-2 text-sm"/>
+        <div className="flex justify-between items-center gap-2 text-xs">
+          <span className="font-bold">選択中 {selected.length}件 / 期間内の記録 {count}件</span>
+          <div className="flex gap-3"><button type="button" className="text-blue-700 underline" onClick={() => setSelectedIds(previous => [...new Set([...previous, ...visible.map(task => task.id)])])}>表示中をすべて選択</button>
+            <button type="button" className="text-gray-600 underline" onClick={() => setSelectedIds([])}>選択を解除</button></div>
+        </div>
+        <fieldset className="space-y-2"><legend className="text-sm font-bold mb-2">対象タスク</legend>
+          {visible.map(task => <label key={task.id} className="flex gap-3 items-start rounded-lg border p-3 cursor-pointer hover:bg-gray-50">
+            <input type="checkbox" aria-label={`レポート対象: ${task.title}${task.isRecurringOccurrence ? ` (${task.date})` : ''}`} checked={selectedIds.includes(task.id)} onChange={e => setSelectedIds(previous => e.target.checked ? [...previous, task.id] : previous.filter(id => id !== task.id))} className="mt-1"/>
+            <span className="min-w-0"><span className="block text-sm font-bold break-words">{task.title}</span><span className="text-xs text-gray-500">{task.isRecurringOccurrence ? `定期予定 ${task.date} / ` : ''}期限: {task.dueDate || '未設定'}{task.completed ? ' / 完了' : ''}</span></span>
+          </label>)}
+          {!visible.length && <p className="text-sm text-gray-500">対象タスクがありません。検索条件や期間を確認してください。</p>}
+        </fieldset>
+        <p className="text-xs text-gray-500">定期予定は指定期間内の回を選択できます。期間内の記録がないタスクは、その旨と現在の情報を出力します。</p>
+      </div>
+      <footer className="border-t p-4 flex justify-end gap-2 shrink-0">
+        <button type="button" onClick={onClose} className="border rounded-lg px-4 py-2 text-sm">キャンセル</button>
+        <button type="submit" disabled={!validRange || !selected.length} className="bg-blue-600 text-white disabled:opacity-40 rounded-lg px-4 py-2 text-sm font-bold">テキストをダウンロード</button>
+      </footer>
+    </form>
   </div>;
 };
 
@@ -2080,6 +2313,7 @@ export default function App() {
   const [selectedProject, setSelectedProject] = useState(null);
   const [showCompletedTasks, setShowCompletedTasks] = useState(false);
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
+  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState(null);
   const [creatingProgressTask, setCreatingProgressTask] = useState(false);
   const [completingTask, setCompletingTask] = useState(null);
@@ -2830,6 +3064,13 @@ export default function App() {
             >
               <Download size={14} /> <span className="hidden sm:inline">エクスポート</span>
             </button>
+            <button
+              onClick={() => setIsReportModalOpen(true)}
+              className="flex items-center gap-1.5 text-blue-700 hover:bg-blue-100 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200 transition-colors text-xs font-bold shadow-sm"
+              title="週報用レポートをテキストファイルで作成"
+            >
+              <FileText size={14} /> <span>レポート作成</span>
+            </button>
           </div>
 
           <div className="flex flex-wrap bg-gray-100 p-1.5 rounded-xl border border-gray-200">
@@ -3423,6 +3664,11 @@ export default function App() {
         </div>
       )}
 
+      {isReportModalOpen && <WeeklyReportModal
+        tasks={displayItems.filter(task => !task.isSubtask)}
+        onClose={() => setIsReportModalOpen(false)}
+        onCreated={() => showToast('週報用レポートをダウンロードしました')}
+      />}
       <TaskModal
         isOpen={isTaskModalOpen}
         onClose={() => { setIsTaskModalOpen(false); setEditingTask(null); setCreatingProgressTask(false); }}
