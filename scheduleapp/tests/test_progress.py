@@ -139,6 +139,123 @@ class ProgressTests(unittest.TestCase):
         self.assertTrue(raw.startswith(b'\xef\xbb\xbf'))
         return download.value.suggested_filename,raw.decode('utf-8-sig')
 
+    def test_report_default_range_is_seven_days_ago_through_today(self):
+        self.seed([task(progressEnabled=True)])
+        self.page.get_by_role('button',name='レポート作成',exact=True).click()
+        dialog=self.page.get_by_role('dialog',name='週報用レポート作成',exact=True)
+        expect(dialog.get_by_label('レポート開始日',exact=True)).to_have_value((TODAY-timedelta(days=7)).isoformat())
+        expect(dialog.get_by_label('レポート終了日',exact=True)).to_have_value(TODAY.isoformat())
+        expect(dialog.get_by_role('checkbox')).to_have_count(1)
+
+    def test_report_targets_use_completion_date_and_update_with_period(self):
+        def completed(id,title,at=None,due='1999-01-01'):
+            item=task(id,progressEnabled=True)
+            item.update(title=title,completed=True,dueDate=due)
+            if at is not None: item['completedAt']=at
+            return item
+        pending_old=task('pending-old',progressEnabled=True);pending_old.update(title='期限が昔でも未完了',dueDate='1999-01-01')
+        pending_future=task('pending-future',progressEnabled=True);pending_future.update(title='期限が未来でも未完了',dueDate='2099-01-01')
+        items=[pending_old,pending_future,
+               completed('start-done','開始日ちょうどに完了','2026-10-18T15:00:00.000Z'),
+               completed('end-done','終了日の最後に完了','2026-10-25T14:59:59.999Z'),
+               completed('before-done','開始日前に完了','2026-10-18T14:59:59.999Z',due='2026-10-21'),
+               completed('after-done','終了日後に完了','2026-10-25T15:00:00.000Z',due='2026-10-21'),
+               completed('legacy-in','期限日代用の旧タスク',due='2026-10-20'),
+               completed('legacy-out','期間外の期限を持つ旧タスク',due='2026-10-26'),
+               completed('unknown','日付が両方ない完了タスク',due='')]
+        self.seed(items);before=self.stored()
+        dialog=self.open_report()
+        expected=['期限が昔でも未完了','期限が未来でも未完了','開始日ちょうどに完了','終了日の最後に完了','期限日代用の旧タスク']
+        names=dialog.get_by_role('checkbox').evaluate_all('elements => elements.map(el => el.getAttribute("aria-label"))')
+        self.assertEqual(set(names),{'レポート対象: '+title for title in expected})
+        expect(dialog.get_by_text('完了日時・期限日とも未記録の完了タスクは対象外です（1件）。',exact=True)).to_be_visible()
+        dialog.get_by_role('button',name='表示中をすべて選択',exact=True).click()
+        _,body=self.download_report(dialog)
+        self.assertIn('期間内に完了したタスク: 3件',body)
+        self.assertIn('うち期限日を完了日として扱ったタスク: 1件',body)
+        self.assertIn('タスク全体の完了日: 2026-10-20（完了日時未記録のため期限日を使用）',body)
+        for title in expected: self.assertIn(title,body)
+        for title in ['開始日前に完了','終了日後に完了','期間外の期限を持つ旧タスク','日付が両方ない完了タスク']: self.assertNotIn(title,body)
+        dialog=self.open_report()
+        dialog.get_by_role('button',name='表示中をすべて選択',exact=True).click()
+        dialog.get_by_label('レポート開始日',exact=True).fill('2026-10-26')
+        dialog.get_by_label('レポート終了日',exact=True).fill('2026-11-01')
+        for title in ['開始日ちょうどに完了','終了日の最後に完了','期限日代用の旧タスク']:
+            expect(dialog.get_by_label('レポート対象: '+title,exact=True)).to_have_count(0)
+        dialog.get_by_role('button',name='表示中をすべて選択',exact=True).click()
+        _,later_body=self.download_report(dialog)
+        self.assertIn('終了日後に完了',later_body)
+        self.assertIn('期間外の期限を持つ旧タスク',later_body)
+        self.assertNotIn('開始日ちょうどに完了',later_body)
+        self.assertNotIn('終了日の最後に完了',later_body)
+        self.assertEqual(self.stored(),before)
+
+    def test_task_completion_timestamp_persists_and_reopen_refreshes_it(self):
+        self.seed([task(progressEnabled=True)])
+        card=self.page.locator('#task-track')
+        before=self.page.evaluate('Date.now()')
+        card.get_by_role('button',name='結論入力 / 完了',exact=True).click()
+        self.page.get_by_role('button',name='タスク完了',exact=True).click()
+        first=self.stored()[0]['completedAt']
+        self.assertGreaterEqual(self.page.evaluate('value => Date.parse(value)',first),before)
+        self.page.get_by_role('checkbox',name=re.compile('完了したタスク|完了を表示')).check()
+        card.get_by_role('button',name='結論入力 / 完了',exact=True).click()
+        self.page.get_by_role('button',name='保存のみ',exact=True).click()
+        self.assertEqual(self.stored()[0]['completedAt'],first)
+        dialog=self.open_report(start=TODAY.isoformat(),end=TODAY.isoformat())
+        expect(dialog.get_by_label('レポート対象: 進捗テスト案件',exact=True)).to_be_visible()
+        _,body=self.download_report(dialog)
+        self.assertIn('期間内に完了したタスク: 1件',body)
+        self.assertIn('タスク全体の完了日時:',body)
+        with self.page.expect_download() as download:
+            self.page.get_by_role('button',name='エクスポート',exact=True).click()
+        backup=Path(download.value.path()).read_bytes()
+        self.assertEqual(json.loads(backup)['tasks'][0]['completedAt'],first)
+        self.seed([])
+        self.page.locator('input[type=file]').set_input_files(dict(name='completion-backup.json',mimeType='application/json',buffer=backup))
+        self.assertEqual(self.stored()[0]['completedAt'],first)
+        self.page.reload()
+        expect(self.page.get_by_role('heading',name='TaskMatrix Pro')).to_be_visible()
+        self.assertEqual(self.stored()[0]['completedAt'],first)
+        self.page.get_by_role('checkbox',name=re.compile('完了したタスク|完了を表示')).check()
+        card.get_by_role('button',name='結論入力 / 完了',exact=True).click()
+        self.page.get_by_role('button',name='タスク完了を取り消す',exact=True).click()
+        self.assertFalse(self.stored()[0]['completed'])
+        self.assertNotIn('completedAt',self.stored()[0])
+        card.get_by_role('button',name='結論入力 / 完了',exact=True).click()
+        self.page.get_by_role('button',name='タスク完了',exact=True).click()
+        second=self.stored()[0]['completedAt']
+        self.assertGreater(self.page.evaluate('value => Date.parse(value)',second),self.page.evaluate('value => Date.parse(value)',first))
+
+    def test_recurring_completion_uses_actual_day_not_scheduled_day(self):
+        self.seed([])
+        day=TODAY-timedelta(days=TODAY.weekday()+6)
+        occurrence=day.isoformat()
+        schedule=dict(id='completed-series',title='前の週の定期タスク',frequency='weekly',interval=1,dayOfWeek=day.weekday()+1,
+                      startDate=occurrence,endDate=occurrence,memo='',urls=[])
+        self.page.evaluate('''async schedule => {
+          const db=await new Promise(resolve=>{const request=indexedDB.open('TaskMatrixAppDB',1);request.onsuccess=()=>resolve(request.result)});
+          await new Promise(resolve=>{const tx=db.transaction('appData','readwrite');tx.objectStore('appData').put([schedule],'recurringSchedules');tx.oncomplete=resolve});db.close();
+        }''',schedule)
+        self.page.reload()
+        expect(self.page.get_by_role('heading',name='TaskMatrix Pro')).to_be_visible()
+        card=self.page.locator('#task-rec_completed-series_'+occurrence)
+        card.get_by_role('button',name='結論入力 / 完了',exact=True).click()
+        self.page.get_by_role('button',name='タスク完了',exact=True).click()
+        self.page.reload()
+        expect(self.page.get_by_role('heading',name='TaskMatrix Pro')).to_be_visible()
+        dialog=self.open_report(start=TODAY.isoformat(),end=TODAY.isoformat())
+        checkbox=dialog.get_by_label(f'レポート対象: 前の週の定期タスク ({occurrence})',exact=True)
+        expect(checkbox).to_be_visible();checkbox.check()
+        _,body=self.download_report(dialog)
+        self.assertIn('タスク全体の完了日時: '+TODAY.isoformat(),body)
+        self.assertIn('うち期限日を完了日として扱ったタスク: 0件',body)
+        self.page.get_by_role('checkbox',name=re.compile('完了したタスク|完了を表示')).check()
+        card.get_by_role('button',name='結論入力 / 完了',exact=True).click()
+        self.page.get_by_role('button',name='タスク完了を取り消す',exact=True).click()
+        dialog=self.open_report(start=TODAY.isoformat(),end=TODAY.isoformat())
+        expect(checkbox).to_have_count(0)
+
     def test_weekly_report_filters_selected_tasks_and_inclusive_local_dates(self):
         history=[
             dict(id='before',createdAt='2026-10-18T14:59:59.999Z',text='OUTSIDE_BEFORE',status='active'),
@@ -196,11 +313,12 @@ class ProgressTests(unittest.TestCase):
 
     def test_weekly_report_separates_undated_current_results_from_period_activity(self):
         original=task(progressEnabled=True)
-        original.update(completed=True,completionNote='実施時期が不明の結果メモ',
+        original.update(completed=True,completedAt='2000-01-03T01:00:00.000Z',completionNote='実施時期が不明の結果メモ',
                         richResult='<div>解析の結果<br>確認できた内容</div><script>window.reportScriptRan=1</script><img alt="測定結果" src="data:image/png;base64,DO_NOT_EXPORT_BINARY"><a href="https://example.test/result">成果リンク</a>',
                         resultUrls=['https://example.test/artifact'])
         self.seed([original])
         dialog=self.open_report(start='2000-01-01',end='2000-01-07')
+        dialog.get_by_label('レポート対象: 進捗テスト案件',exact=True).check()
         _,body=self.download_report(dialog)
         for value in ['進捗記録: 0件','完了の記録: 0件','現在の状態（出力時点）: 完了','結果メモ（日時未記録・現在の保存内容）',
                       '実施時期が不明の結果メモ','解析の結果','確認できた内容','https://example.test/result','https://example.test/artifact','指定期間内の進捗記録はありません。']:
@@ -221,9 +339,9 @@ class ProgressTests(unittest.TestCase):
           const db=await new Promise(resolve=>{const r=indexedDB.open('TaskMatrixAppDB',1);r.onsuccess=()=>resolve(r.result)});
           await new Promise(resolve=>{const tx=db.transaction('appData','readwrite');
             tx.objectStore('appData').put([data.schedule],'recurringSchedules');
-            tx.objectStore('appData').put({[data.key]:{completed:true,completionNote:'定期回の現在の結果'}},'recurringCompletions');
+            tx.objectStore('appData').put({[data.key]:{completed:true,completedAt:data.completedAt,completionNote:'定期回の現在の結果'}},'recurringCompletions');
             tx.oncomplete=resolve;});db.close();
-        }''',dict(schedule=schedule,key='report-series_'+occurrence))
+        }''',dict(schedule=schedule,key='report-series_'+occurrence,completedAt=occurrence+'T01:00:00.000Z'))
         self.page.reload()
         expect(self.page.get_by_role('heading',name='TaskMatrix Pro')).to_be_visible()
         dialog=self.open_report(start=week_start.isoformat(),end=(week_start+timedelta(days=6)).isoformat())

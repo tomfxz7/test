@@ -234,6 +234,16 @@ const normalizeProgressTask = (task) => ({
   ...task,
   ...(task.subtasks ? { subtasks: getProgressSubtasks(task) } : {})
 });
+const withCompletionTimestamp = (previous, next) => {
+  if (!next.completed) {
+    if (!('completedAt' in next)) return next;
+    const incomplete = { ...next };
+    delete incomplete.completedAt;
+    return incomplete;
+  }
+  if (previous && !previous.completed) return { ...next, completedAt: new Date().toISOString() };
+  return next;
+};
 
 // Keep only deadline changes for which the user supplied a reason.
 const appendProgressHistory = (previous, next, { reason = '' } = {}) => {
@@ -2062,6 +2072,18 @@ const reportTimestamp = value => {
     ? `${formatDate(date)} ${[date.getHours(), date.getMinutes(), date.getSeconds()].map(n => String(n).padStart(2, '0')).join(':')}`
     : '日時未記録';
 };
+const reportCompletionUsesDueDate = task => !Number.isFinite(reportEntryDate(task.completedAt).getTime()) && reportDateIsValid(task.dueDate);
+const reportCompletionDate = task => reportCompletionUsesDueDate(task) ? getLocalDate(task.dueDate) : reportEntryDate(task.completedAt);
+const reportTaskCompletedInPeriod = (task, startDate, endDate) => {
+  const completedAt = reportCompletionDate(task).getTime();
+  return !!task.completed && completedAt >= getLocalDate(startDate).getTime()
+    && completedAt < addDays(getLocalDate(endDate), 1).getTime();
+};
+const reportTaskIsEligible = (task, startDate, endDate) => {
+  if (!reportDateIsValid(startDate) || !reportDateIsValid(endDate) || startDate > endDate) return false;
+  if (task.completed) return reportTaskCompletedInPeriod(task, startDate, endDate);
+  return !task.isRecurringOccurrence || (task.date >= startDate && task.date <= endDate);
+};
 const reportPeriodEntries = (task, startDate, endDate) => {
   const start = getLocalDate(startDate).getTime();
   const end = addDays(getLocalDate(endDate), 1).getTime();
@@ -2086,7 +2108,8 @@ const reportRichText = html => {
   return template.content.textContent.replace(/\u00a0/g, ' ').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 };
 const buildWeeklyReport = ({ tasks, startDate, endDate, now = new Date() }) => {
-  const entriesByTask = tasks.map(task => ({ task, entries: reportPeriodEntries(task, startDate, endDate) }));
+  const reportTasks = tasks.filter(task => reportTaskIsEligible(task, startDate, endDate));
+  const entriesByTask = reportTasks.map(task => ({ task, entries: reportPeriodEntries(task, startDate, endDate) }));
   const entries = entriesByTask.flatMap(item => item.entries);
   const comments = entries.filter(entry => entry.kind === 'comment');
   const lines = [
@@ -2094,17 +2117,20 @@ const buildWeeklyReport = ({ tasks, startDate, endDate, now = new Date() }) => {
     `対象期間: ${startDate} ～ ${endDate}（開始日・終了日を含む）`,
     `出力日時: ${reportTimestamp(now)}`,
     `時刻の基準: ${Intl.DateTimeFormat().resolvedOptions().timeZone || 'ブラウザーの現地時刻'}`,
-    `選択タスク数: ${tasks.length}`, '',
+    `選択タスク数: ${reportTasks.length}`, '',
     '## Copilotへの依頼',
     '以下の記録を素材に、対象期間の週報を日本語で作成してください。',
     '構成: 今週の実施内容・成果 / 未完了・相手待ち / 課題と理由 / 次週の予定候補。',
     '実施内容・成果は「期間内の記録」を根拠にしてください。記録のない実施・完了・理由は推測せず、未記録としてください。',
     '「現在の状態」は出力時点の参考情報で、対象期間末の状態や期間内の実績とは限りません。日時のない結果メモも同様です。',
+    '「タスク全体の完了日／日時」が対象期間内の場合は、その完了記録を参照してください。過去の完了日時未記録タスクは、利用者の指定により期限日を完了日として扱います。代用である旨は残してください。',
     '記録は投稿日時で抽出します。編集済みの本文は現在の保存内容であり、期間当時の本文を復元したものではありません。',
     '引用は背景資料です。引用元の日付が対象期間外でも記載しますが、期間内の新規実績として二重計上しないでください。',
     '完了記録は関連する項目の完了です。小さいタスクの完了を親タスク全体の完了と解釈しないでください。',
     '次週の予定は未完了項目と期限から候補を整理し、確定した予定と推測を区別してください。', '',
     '## 期間内の記録サマリー',
+    `期間内に完了したタスク: ${reportTasks.filter(task => reportTaskCompletedInPeriod(task, startDate, endDate)).length}件`,
+    `うち期限日を完了日として扱ったタスク: ${reportTasks.filter(task => task.completed && reportCompletionUsesDueDate(task)).length}件`,
     `進捗記録: ${comments.length}件`,
     `完了の記録: ${comments.filter(entry => entry.status === 'completed').length}件`,
     `相手待ちの記録: ${comments.filter(entry => entry.status === 'waiting').length}件`,
@@ -2131,6 +2157,9 @@ const buildWeeklyReport = ({ tasks, startDate, endDate, now = new Date() }) => {
     lines.push('', `### ${index + 1}. ${task.title}`, `タスクID: ${task.id}`,
       `予定日: ${task.date || '未設定'}`, `タスク期限: ${task.dueDate || '未設定'}`,
       `現在の状態（出力時点）: ${stateWithDue(task)}`);
+    if (task.completed && Number.isFinite(reportCompletionDate(task).getTime())) lines.push(reportCompletionUsesDueDate(task)
+      ? `タスク全体の完了日: ${formatDate(reportCompletionDate(task))}（完了日時未記録のため期限日を使用）`
+      : `タスク全体の完了日時: ${reportTimestamp(task.completedAt)}`);
     if (task.isRecurringOccurrence) lines.push(`種別: 定期予定（${task.recurrenceDate} の回）`);
     text('タスクのメモ', task.memo);
     text('関連URL', (task.urls || []).join('\n'));
@@ -2145,7 +2174,7 @@ const buildWeeklyReport = ({ tasks, startDate, endDate, now = new Date() }) => {
       getProgressSmallTasks(st).forEach(small => lines.push(`  - ${small.title} [${small.id}] / 期限なし / ${state(small)}`));
     });
     lines.push('', `#### 期間内の記録（${taskEntries.length}件）`);
-    if (!taskEntries.length) lines.push('指定期間内の進捗記録はありません。現在の状態から期間内の実績を推測しないでください。');
+    if (!taskEntries.length) lines.push('指定期間内の進捗記録はありません。タスク全体の完了日／日時が別記されている場合は、その記録を参照してください。それ以外は現在の状態から期間内の実績を推測しないでください。');
     taskEntries.forEach(entry => {
       const type = entry.kind !== 'comment' ? '期限変更（理由あり）' : entry.addedSmallTask ? '小さいタスクの追加'
         : entry.status === 'completed' ? '完了' : entry.status === 'waiting' ? '相手待ち' : '進捗';
@@ -2163,18 +2192,19 @@ const buildWeeklyReport = ({ tasks, startDate, endDate, now = new Date() }) => {
 };
 
 const WeeklyReportModal = ({ tasks, onClose, onCreated }) => {
-  const [startDate, setStartDate] = useState(() => formatDate(getMonday(new Date())));
+  const [startDate, setStartDate] = useState(() => formatDate(addDays(new Date(), -7)));
   const [endDate, setEndDate] = useState(() => formatDate(new Date()));
   const [query, setQuery] = useState('');
   const [selectedIds, setSelectedIds] = useState(() => {
-    const regular = tasks.filter(task => !task.isRecurringOccurrence);
+    const regular = tasks.filter(task => !task.isRecurringOccurrence && reportTaskIsEligible(task, startDate, endDate));
     const tracked = regular.filter(task => task.progressEnabled);
     return (tracked.length ? tracked : regular).map(task => task.id);
   });
   const formRef = useRef(null);
   const searchRef = useRef(null);
   const validRange = reportDateIsValid(startDate) && reportDateIsValid(endDate) && startDate <= endDate;
-  const available = tasks.filter(task => !task.isRecurringOccurrence || (validRange && task.date >= startDate && task.date <= endDate));
+  const available = tasks.filter(task => reportTaskIsEligible(task, startDate, endDate));
+  const undatedCompletedCount = tasks.filter(task => task.completed && !Number.isFinite(reportCompletionDate(task).getTime())).length;
   const visible = available.filter(task => task.title.toLowerCase().includes(query.trim().toLowerCase()));
   const selected = available.filter(task => selectedIds.includes(task.id));
   const count = validRange ? selected.reduce((total, task) => total + reportPeriodEntries(task, startDate, endDate).length, 0) : 0;
@@ -2220,6 +2250,9 @@ const WeeklyReportModal = ({ tasks, onClose, onCreated }) => {
         </div>
         {!validRange && <p role="alert" className="text-sm text-red-700">開始日と終了日を正しく指定してください。開始日は終了日以前にしてください。</p>}
         <p className="text-xs text-gray-500">両日を含む期間内の記録と、選択タスクの現在の状態を分けて記載します。やるべきこと・小さいタスク・引用も含みます。</p>
+        <p className="text-xs text-gray-500">未完了のタスクと、指定期間内に完了したタスクだけを選択できます。保存された完了日時を優先して判定します。</p>
+        <p className="text-xs text-gray-500">過去の完了日時未記録タスクは、期限日を完了日として扱います。</p>
+        {!!undatedCompletedCount && <p className="text-xs text-gray-500">完了日時・期限日とも未記録の完了タスクは対象外です（{undatedCompletedCount}件）。</p>}
         <input ref={searchRef} aria-label="レポート対象タスクを検索" placeholder="タスク名で検索" value={query} onChange={e => setQuery(e.target.value)} className="w-full border rounded-lg p-2 text-sm"/>
         <div className="flex justify-between items-center gap-2 text-xs">
           <span className="font-bold">選択中 {selected.length}件 / 期間内の記録 {count}件</span>
@@ -2229,11 +2262,11 @@ const WeeklyReportModal = ({ tasks, onClose, onCreated }) => {
         <fieldset className="space-y-2"><legend className="text-sm font-bold mb-2">対象タスク</legend>
           {visible.map(task => <label key={task.id} className="flex gap-3 items-start rounded-lg border p-3 cursor-pointer hover:bg-gray-50">
             <input type="checkbox" aria-label={`レポート対象: ${task.title}${task.isRecurringOccurrence ? ` (${task.date})` : ''}`} checked={selectedIds.includes(task.id)} onChange={e => setSelectedIds(previous => e.target.checked ? [...previous, task.id] : previous.filter(id => id !== task.id))} className="mt-1"/>
-            <span className="min-w-0"><span className="block text-sm font-bold break-words">{task.title}</span><span className="text-xs text-gray-500">{task.isRecurringOccurrence ? `定期予定 ${task.date} / ` : ''}期限: {task.dueDate || '未設定'}{task.completed ? ' / 完了' : ''}</span></span>
+            <span className="min-w-0"><span className="block text-sm font-bold break-words">{task.title}</span><span className="text-xs text-gray-500">{task.isRecurringOccurrence ? `定期予定 ${task.date} / ` : ''}期限: {task.dueDate || '未設定'}{task.completed ? ` / 完了日: ${formatDate(reportCompletionDate(task))}${reportCompletionUsesDueDate(task) ? '（期限日を代用）' : ''}` : ''}</span></span>
           </label>)}
           {!visible.length && <p className="text-sm text-gray-500">対象タスクがありません。検索条件や期間を確認してください。</p>}
         </fieldset>
-        <p className="text-xs text-gray-500">定期予定は指定期間内の回を選択できます。期間内の記録がないタスクは、その旨と現在の情報を出力します。</p>
+        <p className="text-xs text-gray-500">定期予定の未完了分は指定期間内の回、完了分は完了日時で判定します。期間内の進捗記録がないタスクも現在の情報を出力します。</p>
       </div>
       <footer className="border-t p-4 flex justify-end gap-2 shrink-0">
         <button type="button" onClick={onClose} className="border rounded-lg px-4 py-2 text-sm">キャンセル</button>
@@ -2255,7 +2288,7 @@ export default function App() {
     return next.map(task => {
       const old = previousById.get(task.id);
       if (old === task) return task;
-      return appendProgressHistory(old, normalizeProgressTask(task), metadata);
+      return appendProgressHistory(old, withCompletionTimestamp(old, normalizeProgressTask(task)), metadata);
     });
   });
   const handleUpdateProgressTask = (id, update, metadata) => {
@@ -2477,6 +2510,7 @@ export default function App() {
           memo: schedule.memo,
           urls: schedule.urls || [],
           completed: completion.completed || false,
+          completedAt: completion.completedAt,
           richResult: completion.richResult,
           completionNote: completion.completionNote || '',
           resultUrls: completion.resultUrls || [],
@@ -2753,12 +2787,12 @@ export default function App() {
       const completionKey = `${completingTask.recurringScheduleId}_${completingTask.recurrenceDate}`;
       setRecurringCompletions(prev => ({
         ...prev,
-        [completionKey]: {
+        [completionKey]: withCompletionTimestamp(prev[completionKey] || { completed: false }, {
           ...(prev[completionKey] || {}),
           richResult: richHtml,
           resultUrls: urls,
           completed: isCompleted
-        }
+        })
       }));
     } else if (completingTask?.isSubtask) {
       // 小タスクの場合の保存処理
