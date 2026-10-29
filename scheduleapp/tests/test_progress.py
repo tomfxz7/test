@@ -171,6 +171,107 @@ class ProgressTests(unittest.TestCase):
         self.assertTrue(self.stored()[0]['waiting'])
         self.assertEqual(self.stored()[0]['subtasks'],original['subtasks'])
 
+    def test_small_task_list_reply_quotes_addition_and_completion_removes_source(self):
+        original=task(progressEnabled=True,progressStage='doing',waiting=True)
+        original['subtasks'][0]['waiting']=True
+        self.seed([original]);self.progress();self.select_chat()
+        self.page.get_by_label('関連: 既存の調査',exact=True).check()
+        self.page.get_by_label('小さいタスクの追加',exact=True).check()
+        self.send('返信で管理する小さい作業')
+        stored=self.stored()[0]
+        source=stored['progressHistory'][0]
+        small=stored['subtasks'][0]['smallTasks'][0]
+        self.page.get_by_role('button',name='既存の調査の小さいタスクを展開',exact=True).click()
+        row=self.page.locator('[data-progress-small-task-id="'+small['id']+'"]')
+        row.get_by_role('button',name='返信で管理する小さい作業の返信を入力',exact=True).click()
+        preview=self.page.get_by_role('region',name='返信先',exact=True)
+        expect(preview).to_contain_text(source['text'])
+        self.send('途中の進捗です')
+        self.assertEqual(len(self.stored()[0]['subtasks'][0]['smallTasks']),1)
+        expect(self.entry(source['id'])).to_be_visible()
+        row.dblclick()
+        self.page.get_by_label('完了',exact=True).check()
+        self.send('小さい作業が完了しました')
+        result=self.stored()[0]
+        self.assertEqual(result['subtasks'][0]['smallTasks'],[])
+        self.assertFalse(result['subtasks'][0]['completed'])
+        self.assertTrue(result['subtasks'][0]['waiting'])
+        self.assertTrue(result['waiting'])
+        self.assertFalse(any(item['id']==source['id'] for item in result['progressHistory']))
+        reply=result['progressHistory'][-1]
+        self.assertEqual(reply['status'],'completed')
+        self.assertEqual(reply['quote']['id'],source['id'])
+        self.assertEqual(reply['quote']['text'],source['text'])
+        self.assertEqual(reply['quote']['createdAt'],source['createdAt'])
+        expect(row).to_have_count(0)
+        expect(self.entry(source['id'])).to_have_count(0)
+        self.page.reload();self.progress();self.select_chat()
+        expect(self.entry(reply['id']).get_by_role('blockquote',name='引用コメント')).to_contain_text(source['text'])
+
+    def test_legacy_small_task_reply_has_quote_and_completion_without_fake_date(self):
+        original=task(progressEnabled=True,progressStage='doing')
+        original['subtasks'][0]['smallTasks']=[dict(id='legacy-small',title='古い小さい項目',completed=False)]
+        self.seed([original]);self.progress();self.select_chat()
+        self.page.get_by_role('button',name='既存の調査の小さいタスクを展開',exact=True).click()
+        row=self.page.locator('[data-progress-small-task-id="legacy-small"]')
+        row.get_by_role('button',name='古い小さい項目に返信',exact=True).press('Enter')
+        preview=self.page.get_by_role('region',name='返信先',exact=True)
+        expect(preview).to_contain_text('古い小さい項目')
+        expect(preview).not_to_contain_text('Invalid Date')
+        expect(preview.locator('time')).to_have_count(0)
+        self.page.get_by_label('完了',exact=True).check()
+        self.send('古い小さい項目も完了')
+        result=self.stored()[0]
+        self.assertEqual(result['subtasks'][0]['smallTasks'],[])
+        self.assertFalse(result['subtasks'][0]['completed'])
+        self.assertEqual(len(result['progressHistory']),1)
+        reply=result['progressHistory'][0]
+        self.assertEqual(reply['quote']['sourceType'],'small-task')
+        self.assertEqual(reply['quote']['text'],'古い小さい項目')
+        self.assertEqual(reply['quote']['smallTaskId'],'legacy-small')
+        self.assertNotIn('createdAt',reply['quote'])
+        self.page.reload();self.progress();self.select_chat()
+        expect(self.entry(reply['id'])).to_contain_text('古い小さい項目')
+
+    def test_task_level_waiting_reply_completion_removes_record_not_parent_task(self):
+        source=dict(id='global-complete',kind='comment',text='タスク全体の返答待ち',status='waiting',
+                    createdAt='2026-01-01T01:00:00.000Z',subtaskIds=[],subtaskTitles=[])
+        original=task(progressEnabled=True,progressStage='doing',waiting=True,progressHistory=[source])
+        self.seed([original]);self.progress();self.select_chat()
+        row=self.page.locator('[data-progress-waiting-task-id="global-complete"]')
+        row.get_by_role('button',name='タスク全体の返答待ちに返信',exact=True).click()
+        complete=self.page.get_by_label('完了',exact=True)
+        expect(complete).to_be_enabled();complete.check()
+        self.send('返答を受領し完了')
+        result=self.stored()[0]
+        self.assertFalse(result['waiting'])
+        self.assertFalse(result['completed'])
+        self.assertEqual(result['subtasks'],original['subtasks'])
+        self.assertEqual(len(result['progressHistory']),1)
+        reply=result['progressHistory'][0]
+        self.assertEqual(reply['status'],'completed')
+        self.assertEqual(reply['quote']['text'],source['text'])
+        expect(row).to_have_count(0)
+        expect(self.entry(source['id'])).to_have_count(0)
+        self.entry(reply['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+        expect(complete).to_be_checked()
+        self.page.get_by_label('コメントの編集',exact=True).fill('完了記録の説明を補足')
+        self.page.get_by_role('button',name='編集を保存',exact=True).click()
+        self.assertEqual(self.stored()[0]['progressHistory'][0]['status'],'completed')
+
+    def test_nonwaiting_comment_is_removed_when_reply_is_completed(self):
+        source=dict(id='active-complete',kind='comment',text='完了待ちの進捗記録',status='active',
+                    createdAt='2026-01-01T01:00:00.000Z',subtaskIds=['s1'],subtaskTitles=['既存の調査'])
+        self.seed([task(progressEnabled=True,progressStage='doing',progressHistory=[source])])
+        self.progress();self.select_chat();self.reply(source['id'])
+        self.page.get_by_label('完了',exact=True).check()
+        self.send('進捗を完了にしました')
+        result=self.stored()[0]
+        self.assertEqual(len(result['progressHistory']),1)
+        self.assertTrue(result['subtasks'][0]['completed'])
+        self.assertEqual(result['progressHistory'][0]['quote']['text'],source['text'])
+        expect(self.entry(source['id'])).to_have_count(0)
+
     def test_ordinary_reply_keeps_source_and_immutable_quote(self):
         source=dict(id='reply-source',kind='comment',createdAt='2026-01-01T01:00:00.000Z',
                     text='引用する最初の進捗',status='active',subtaskIds=['s1'],subtaskTitles=['既存の調査'])
@@ -511,7 +612,8 @@ class ProgressTests(unittest.TestCase):
         expect(row).to_have_count(0)
         expect(self.page.locator('[data-progress-small-task-id="keep"]')).to_be_visible()
         expect(self.entry(comment['id'])).to_be_visible()
-        expect(self.page.get_by_label('進捗コメント',exact=True)).to_have_value('')
+        expect(self.page.get_by_label('進捗コメント',exact=True)).to_have_value('送信していない下書き')
+        expect(self.page.get_by_role('region',name='返信先',exact=True)).to_be_visible()
         self.entry(comment['id']).get_by_role('button',name='コメントを編集',exact=True).click()
         self.page.get_by_label('コメントの編集',exact=True).fill('削除済み項目の記録を訂正')
         self.page.get_by_role('button',name='編集を保存',exact=True).click()
@@ -632,12 +734,13 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(edited['smallTaskId'],'small1')
         self.assertEqual(edited['subtaskIds'],['s1'])
         self.assertEqual(edited['createdAt'],message['createdAt'])
-        row.get_by_role('button',name='資料の目次を作成にコメント',exact=True).press('Enter')
+        row.get_by_role('button',name='資料の目次を作成に返信',exact=True).press('Enter')
         self.page.get_by_label('完了',exact=True).check()
         self.send('目次作成を完了')
         stored=self.stored()[0]
-        self.assertTrue(stored['subtasks'][0]['smallTasks'][0]['completed'])
-        self.assertFalse(stored['subtasks'][0]['smallTasks'][0]['waiting'])
+        self.assertEqual(stored['subtasks'][0]['smallTasks'],[])
+        self.assertEqual(stored['progressHistory'][0]['quote']['id'],message['id'])
+        self.assertEqual(stored['progressHistory'][0]['quote']['text'],edited['text'])
         self.assertFalse(stored['subtasks'][0]['completed'])
         self.assertFalse(stored['completed'])
 
