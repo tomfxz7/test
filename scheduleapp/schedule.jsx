@@ -213,6 +213,58 @@ const getFrequencyLabel = (frequency, interval = 1) => {
 
 const buildRecurringOccurrenceId = (scheduleId, date) => `rec_${scheduleId}_${date}`;
 
+// Progress shares the canonical task/subtask records with the calendar and backups.
+const createProgressId = () => globalThis.crypto?.randomUUID?.() || `progress_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+const getProgressSubtasks = (task) => (task.subtasks || []).map((subtask, index) => ({
+  ...subtask,
+  id: subtask.id || `${task.id}-sub-${index}`,
+  dueDate: subtask.dueDate || task.dueDate
+}));
+const normalizeProgressTask = (task) => ({
+  ...task,
+  ...(task.subtasks ? { subtasks: getProgressSubtasks(task) } : {})
+});
+
+// All task writers go through this audit, including edits and calendar drags.
+const appendProgressHistory = (previous, next, { reason = '' } = {}) => {
+  if (!previous?.progressEnabled && !next.progressEnabled && !previous?.progressHistory?.length) return next;
+  const createdAt = new Date().toISOString();
+  const changes = [];
+  const record = (text, subtasks = []) => changes.push({
+    id: createProgressId(), kind: 'change', createdAt,
+    text: `${text}${reason.trim() ? `\n理由: ${reason.trim()}` : ''}`,
+    subtaskIds: subtasks.map(st => st.id), subtaskTitles: subtasks.map(st => st.title)
+  });
+  const dateLabel = value => value || '未設定';
+  if (!previous?.progressEnabled && next.progressEnabled) record('進捗ページに追加しました');
+  if (previous?.progressEnabled && !next.progressEnabled) record('進捗ページから外しました（タスクは保持）');
+  if (previous && previous.dueDate !== next.dueDate) {
+    record(`タスク「${next.title}」の期限を ${dateLabel(previous.dueDate)} → ${dateLabel(next.dueDate)} に変更しました`);
+  }
+  if (previous && previous.title !== next.title) record(`タスク名を「${previous.title}」→「${next.title}」に変更しました`);
+  if (previous && previous.progressStage !== next.progressStage && next.progressStage === 'doing') record('タスクに着手しました');
+  if (previous?.progressStage === 'doing' && next.progressStage === 'todo') record('未着手に戻しました');
+  if (previous && !!previous.waiting !== !!next.waiting) record(next.waiting ? 'タスク全体を相手待ちにしました' : 'タスク全体の相手待ちを解除しました');
+  if (previous && !!previous.completed !== !!next.completed) record(next.completed ? 'タスク全体を完了しました' : 'タスク全体を未完了に戻しました');
+  const before = getProgressSubtasks(previous || { id: next.id });
+  const after = getProgressSubtasks(next);
+  const beforeById = new Map(before.map(st => [st.id, st]));
+  const afterIds = new Set(after.map(st => st.id));
+  after.forEach(st => {
+    const old = beforeById.get(st.id);
+    if (!old) {
+      record(`やるべきこと「${st.title}」を追加しました（期限: ${dateLabel(st.dueDate)}）`, [st]);
+      return;
+    }
+    if (old.title !== st.title) record(`やるべきこと「${old.title}」→「${st.title}」に変更しました`, [st]);
+    if (old.dueDate !== st.dueDate) record(`「${st.title}」の期限を ${dateLabel(old.dueDate)} → ${dateLabel(st.dueDate)} に変更しました`, [st]);
+    if (!!old.completed !== !!st.completed) record(`「${st.title}」を${st.completed ? '完了' : '未完了'}にしました`, [st]);
+    if (!!old.waiting !== !!st.waiting) record(`「${st.title}」の相手待ちを${st.waiting ? '設定' : '解除'}しました`, [st]);
+  });
+  before.filter(st => !afterIds.has(st.id)).forEach(st => record(`やるべきこと「${st.title}」を削除しました`, [st]));
+  return changes.length ? { ...next, progressHistory: [...(next.progressHistory || []), ...changes] } : next;
+};
+
 // --- Mock Initial Data ---
 const initialTasks = [
   {
@@ -264,7 +316,7 @@ const initialProjects = [
 
 // --- Components ---
 
-const TaskCard = ({ task, onEdit, onCompleteAction, onPointerDown, onCompleteSubtask, onEditParentTask }) => {
+const TaskCard = ({ task, onEdit, onCompleteAction, onPointerDown, onCompleteSubtask, onEditParentTask, onToggleProgress }) => {
   const isOverdue = new Date(task.dueDate) < new Date(TODAY_STR) && !task.completed;
   const isCompleted = task.completed;
   const [isSubtasksOpen, setIsSubtasksOpen] = useState(false);
@@ -273,7 +325,9 @@ const TaskCard = ({ task, onEdit, onCompleteAction, onPointerDown, onCompleteSub
     ? "bg-gray-50 border-gray-200 opacity-60"
     : isOverdue
       ? "bg-red-50 border-red-300 hover:border-red-400"
-      : "bg-white border-gray-200 hover:border-blue-300";
+      : task.waiting
+        ? "bg-green-50 border-green-300 hover:border-green-400"
+        : task.progressEnabled ? "bg-blue-50 border-blue-200 hover:border-blue-300" : "bg-white border-gray-200 hover:border-blue-300";
 
   return (
     <div
@@ -330,6 +384,15 @@ const TaskCard = ({ task, onEdit, onCompleteAction, onPointerDown, onCompleteSub
           </div>
         </div>
 
+        {onToggleProgress && !task.isSubtask && (
+          <label className="flex items-center gap-1.5 text-xs text-blue-700 font-bold my-2 cursor-pointer">
+            <input type="checkbox" checked={!!task.progressEnabled}
+              aria-label={`「${task.title}」を進捗ページに表示`}
+              onChange={e => onToggleProgress(task, e.target.checked)}
+              className="w-4 h-4 rounded accent-blue-600" />
+            進捗ページに表示
+          </label>
+        )}
         <h4 className={`font-bold text-sm mb-1 line-clamp-2 leading-tight
           ${isCompleted ? 'text-gray-500' : isOverdue ? 'text-red-700' : 'text-gray-800'}`}>
           {task.title}
@@ -373,7 +436,7 @@ const TaskCard = ({ task, onEdit, onCompleteAction, onPointerDown, onCompleteSub
                 {task.subtasks.map((st, i) => {
                   const stId = st.id || `${task.id}-sub-${i}`;
                   return (
-                    <div key={i} className="flex justify-between items-center text-[10px] text-gray-600 bg-white border border-gray-100 rounded px-1.5 py-1">
+                    <div key={stId} className={`flex justify-between items-center text-[10px] border rounded px-1.5 py-1 ${progressStatusClasses(progressItemStatus(st))}`}>
                       <span className="truncate flex-1 font-medium mr-2">{st.title}</span>
                       <div className="flex items-center gap-1.5 shrink-0">
                         <span className="opacity-70">{st.dueDate?.slice(5).replace('-', '/')}</span>
@@ -440,7 +503,7 @@ const TaskCard = ({ task, onEdit, onCompleteAction, onPointerDown, onCompleteSub
   );
 };
 
-const BoardColumn = ({ date, dateLabel, tasks, onEdit, onCompleteAction, onPointerDown, isHovered, onAddTask, onCompleteSubtask, onEditParentTask }) => {
+const BoardColumn = ({ date, dateLabel, tasks, onEdit, onCompleteAction, onPointerDown, isHovered, onAddTask, onCompleteSubtask, onEditParentTask, onToggleProgress }) => {
   const isToday = date === TODAY_STR;
   return (
     <div
@@ -472,6 +535,7 @@ const BoardColumn = ({ date, dateLabel, tasks, onEdit, onCompleteAction, onPoint
             onPointerDown={onPointerDown}
             onCompleteSubtask={onCompleteSubtask}
             onEditParentTask={onEditParentTask}
+            onToggleProgress={onToggleProgress}
           />
         ))}
         {tasks.length === 0 && (
@@ -505,7 +569,7 @@ const ListViewTask = ({ task, onEdit, onCompleteAction, onPointerDown }) => {
       data-is-subtask={task.isSubtask || false}
       data-drop-date={task.date}
       className={`p-4 rounded-xl border flex flex-col md:flex-row gap-4 items-start md:items-center transition-colors
-      ${isCompleted ? 'bg-gray-50 border-gray-200 opacity-80' : isOverdue ? 'bg-red-50 border-red-200' : 'bg-white border-gray-200 shadow-sm hover:border-blue-300'}`}
+      ${isCompleted ? 'bg-gray-50 border-gray-200 opacity-80' : isOverdue ? 'bg-red-50 border-red-200' : task.waiting ? 'bg-green-50 border-green-300' : 'bg-white border-gray-200 shadow-sm hover:border-blue-300'}`}
     >
       <div
         className="flex flex-col items-center justify-center cursor-grab touch-none text-gray-300 hover:text-gray-600 active:text-blue-500 px-1 -ml-2 h-full"
@@ -646,7 +710,7 @@ const TaskModal = ({ isOpen, onClose, onSave, onDelete, defaultDate = TODAY_STR,
           memo: editingTask.memo || '',
           urls: editingTask.urls && editingTask.urls.length > 0 ? editingTask.urls : ['']
         });
-        setSubtasks(editingTask.subtasks || []);
+        setSubtasks(getProgressSubtasks(editingTask));
         setSelectedProjectId('');
       } else {
         setNewTaskType('simple');
@@ -832,10 +896,10 @@ const TaskModal = ({ isOpen, onClose, onSave, onDelete, defaultDate = TODAY_STR,
               {subtasks.map((st, i) => (
                 <div key={i} className="flex gap-2 mb-3">
                   <input type="text" required placeholder="サブタスク名" className="flex-1 border-2 border-orange-100 p-2 rounded-lg text-sm focus:border-orange-400 focus:outline-none" value={st.title} onChange={e => {
-                    const newSt = [...subtasks]; newSt[i].title = e.target.value; setSubtasks(newSt);
+                    setSubtasks(subtasks.map((st, idx) => idx === i ? { ...st, title: e.target.value } : st));
                   }}/>
                   <input type="date" required className="border-2 border-orange-100 p-2 rounded-lg text-sm w-36 focus:border-orange-400 focus:outline-none" value={st.dueDate} onChange={e => {
-                    const newSt = [...subtasks]; newSt[i].dueDate = e.target.value; setSubtasks(newSt);
+                    setSubtasks(subtasks.map((st, idx) => idx === i ? { ...st, dueDate: e.target.value } : st));
                   }}/>
                   <button type="button" onClick={() => setSubtasks(subtasks.filter((_, idx) => idx !== i))} className="text-red-500 bg-white border border-red-100 hover:bg-red-50 p-2 rounded-lg"><Trash2 size={18}/></button>
                 </div>
@@ -1440,12 +1504,268 @@ const ProjectModal = ({ isOpen, onClose, onSave }) => {
   );
 };
 
+// Progress uses the same tasks/subtasks as the calendar and board.
+const progressItemStatus = (item) => {
+  if (item.completed) return 'completed';
+  if (item.dueDate && item.dueDate < formatDate(new Date())) return 'overdue';
+  return item.waiting ? 'waiting' : 'active';
+};
+const progressStatusLabel = (status) => ({ completed: '完了', overdue: '期限超過', waiting: '相手待ち', active: '進行可能' }[status]);
+const progressStatusClasses = (status) => ({
+  completed: 'bg-gray-50 border-gray-200 text-gray-500',
+  overdue: 'bg-red-50 border-red-300 text-red-800',
+  waiting: 'bg-green-50 border-green-300 text-green-800',
+  active: 'bg-blue-50 border-blue-200 text-blue-900'
+}[status]);
+
+const ProgressSettingsModal = ({ task, starting, onClose, onSave }) => {
+  const [dueDate, setDueDate] = useState(task.dueDate || '');
+  const [subtasks, setSubtasks] = useState(() => getProgressSubtasks(task).map(st => ({ ...st })));
+  const [newTitle, setNewTitle] = useState('');
+  const [newDueDate, setNewDueDate] = useState('');
+  const [reason, setReason] = useState('');
+  const [error, setError] = useState('');
+  const formRef = useRef(null);
+  const inputRef = useRef(null);
+  useEffect(() => {
+    const previous = document.activeElement;
+    inputRef.current?.focus();
+    const handleKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+      if (e.key === 'Tab' && formRef.current) {
+        const elements = [...formRef.current.querySelectorAll('button:not([disabled]),input:not([disabled]),textarea:not([disabled])')];
+        const first = elements[0]; const last = elements[elements.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+        if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+      }
+    };
+    document.addEventListener('keydown', handleKey);
+    return () => { document.removeEventListener('keydown', handleKey); previous?.focus(); };
+  }, [onClose]);
+  const addSubtask = () => {
+    if (!newTitle.trim()) return;
+    setSubtasks(prev => [...prev, { id: createProgressId(), title: newTitle.trim(), dueDate: newDueDate || dueDate || task.dueDate || '', completed: false, waiting: false, order: Date.now() }]);
+    setNewTitle(''); setNewDueDate(''); setError(''); inputRef.current?.focus();
+  };
+  const confirm = (e) => {
+    e.preventDefault();
+    if (subtasks.some(st => !st.title.trim())) { setError('やるべきことの名前を入力してください。'); return; }
+    const additions = newTitle.trim() ? [{ id: createProgressId(), title: newTitle.trim(), dueDate: newDueDate || dueDate || task.dueDate || '', completed: false, waiting: false, order: Date.now() }] : [];
+    onSave({ dueDate, subtasks: [...subtasks.map(st => ({ ...st, title: st.title.trim(), dueDate: st.dueDate || dueDate })), ...additions], ...(starting ? { progressStage: 'doing' } : {}) }, reason.trim());
+  };
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+      <form ref={formRef} role="dialog" aria-modal="true" aria-label="進捗の設定" onSubmit={confirm} onKeyDown={e => {
+        if (e.key === 'Enter' && e.ctrlKey && !e.nativeEvent.isComposing) { e.preventDefault(); formRef.current?.requestSubmit(); }
+        else if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.target.tagName === 'INPUT') e.preventDefault();
+      }} className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+        <header className="p-5 border-b flex justify-between items-start gap-3">
+          <div><h2 className="text-lg font-black text-gray-900">{starting ? '着手前にやるべきことを設定' : '進捗の設定'}</h2><p className="text-sm text-gray-500 mt-1 break-words">{task.title}</p></div>
+          <button type="button" onClick={onClose} aria-label="進捗の設定を閉じる" className="p-2 rounded-lg hover:bg-gray-100"><X size={20}/></button>
+        </header>
+        <div className="overflow-y-auto p-5 space-y-5">
+          <label className="block text-sm font-bold">タスクの期限<input type="date" required value={dueDate} onChange={e => setDueDate(e.target.value)} className="block mt-2 border rounded-lg px-3 py-2 bg-white"/></label>
+          <div>
+            <h3 className="text-sm font-bold mb-2">やるべきこと（小タスク）</h3>
+            <p className="text-xs text-gray-500 mb-3">変更はカレンダーなど、すべてのページに反映されます。</p>
+            <div className="space-y-2">
+              {subtasks.map((st, i) => <div key={st.id} className="flex flex-wrap gap-2 items-center border rounded-xl p-3 bg-gray-50">
+                <input aria-label={`やるべきこと ${i + 1}`} required value={st.title} onChange={e => setSubtasks(prev => prev.map(item => item.id === st.id ? { ...item, title: e.target.value } : item))} className="min-w-0 flex-1 border rounded-lg px-3 py-2 text-sm"/>
+                <input aria-label={`やるべきこと ${i + 1} の期限`} type="date" value={st.dueDate || ''} onChange={e => setSubtasks(prev => prev.map(item => item.id === st.id ? { ...item, dueDate: e.target.value } : item))} className="border rounded-lg px-2 py-2 text-sm"/>
+                <button type="button" aria-label={`やるべきこと ${i + 1} を削除`} onClick={() => setSubtasks(prev => prev.filter(item => item.id !== st.id))} className="p-2 text-red-500 hover:bg-red-100 rounded-lg"><Trash2 size={16}/></button>
+                <div className="w-full text-xs flex gap-4 text-gray-600">
+                  <label className="flex items-center gap-1"><input type="checkbox" checked={!!st.waiting} onChange={e => setSubtasks(prev => prev.map(item => item.id === st.id ? { ...item, waiting: e.target.checked, ...(e.target.checked ? { completed: false } : {}) } : item))}/>相手待ち</label>
+                  <label className="flex items-center gap-1"><input type="checkbox" checked={!!st.completed} onChange={e => setSubtasks(prev => prev.map(item => item.id === st.id ? { ...item, completed: e.target.checked, ...(e.target.checked ? { waiting: false } : {}) } : item))}/>完了</label>
+                </div>
+              </div>)}
+            </div>
+            {!subtasks.length && <p className="text-sm text-gray-400 py-3">やるべきことはまだありません。</p>}
+            <div className="mt-3 p-3 rounded-xl bg-blue-50 border border-blue-100 flex flex-wrap gap-2">
+              <input ref={inputRef} aria-label="新しいやるべきこと" placeholder="やるべきことを入力 → Enter で追加" value={newTitle} onChange={e => setNewTitle(e.target.value)} onKeyDown={e => {
+                if (e.key === 'Enter' && !e.ctrlKey && !e.nativeEvent.isComposing) { e.preventDefault(); addSubtask(); }
+              }} className="flex-1 min-w-[180px] border rounded-lg px-3 py-2 text-sm"/>
+              <input type="date" aria-label="新しいやるべきことの期限" value={newDueDate} onChange={e => setNewDueDate(e.target.value)} className="border rounded-lg px-2 py-2 text-sm"/>
+              <button type="button" onClick={addSubtask} disabled={!newTitle.trim()} className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-bold disabled:opacity-40">追加</button>
+              <p className="w-full text-xs text-blue-700">期限の未入力時: {dueDate || 'タスクの期限なし'}</p>
+            </div>
+          </div>
+          <label className="block text-sm font-bold">変更理由<textarea value={reason} onChange={e => setReason(e.target.value)} placeholder="期限などを変更した理由（任意）" rows={2} className="block w-full mt-2 border rounded-lg px-3 py-2 text-sm font-normal"/></label>
+          <p className="text-xs text-gray-500">期限の変更は日時とともに履歴へ残ります。Enter で追加、Ctrl+Enter で確定。</p>
+          {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+        </div>
+        <footer className="p-4 border-t bg-gray-50 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-sm font-bold rounded-lg border bg-white">キャンセル</button>
+          <button type="submit" className="px-5 py-2 text-sm font-bold rounded-lg bg-blue-600 text-white">確定</button>
+        </footer>
+      </form>
+    </div>
+  );
+};
+
+const ProgressTaskCard = ({ task, selected, onSelect, onSettings, onStart, onDragStart }) => {
+  const status = progressItemStatus(task);
+  return <article data-progress-task-id={task.id} data-status={status} draggable onDragStart={e => onDragStart(e, task.id)} onClick={onSelect} className={`border rounded-xl p-3 shadow-sm ${progressStatusClasses(status)} ${selected ? 'ring-2 ring-blue-500' : ''}`}>
+    <div className="flex gap-2 justify-between items-start">
+      <button type="button" onClick={e => { e.stopPropagation(); onSelect(); }} className="font-bold text-sm text-left break-words flex-1">{task.title}</button>
+      <button type="button" aria-label={`${task.title}の設定`} onClick={e => { e.stopPropagation(); onSettings(); }} className="p-1.5 rounded-lg hover:bg-white/70 shrink-0"><Settings size={16}/></button>
+    </div>
+    <div className="mt-2 mb-3 flex flex-wrap gap-2 text-xs items-center"><span className="font-bold px-2 py-0.5 rounded bg-white/70">{progressStatusLabel(status)}</span><span>タスク期日: {task.dueDate || '未設定'}</span></div>
+    <ul className="space-y-1.5">
+      {getProgressSubtasks(task).map(st => <li key={st.id} data-progress-subtask-id={st.id} data-status={progressItemStatus(st)} className={`border rounded-lg px-2 py-1.5 text-xs ${progressStatusClasses(progressItemStatus(st))}`}>
+        <div className={`break-words font-medium ${st.completed ? 'line-through' : ''}`}>{st.title}</div><div className="flex flex-wrap justify-between gap-1 mt-1 opacity-80"><span>{progressStatusLabel(progressItemStatus(st))}</span><span>期限: {st.dueDate || '未設定'}</span></div>
+      </li>)}
+    </ul>
+    {(!task.progressStage || task.progressStage === 'todo') && <button type="button" onClick={e => { e.stopPropagation(); onStart(); }} className="mt-3 w-full bg-white/80 border border-current rounded-lg py-1.5 text-xs font-bold hover:bg-white">着手する</button>}
+    {task.progressStage === 'doing' && <p className="mt-3 text-[11px] opacity-70">クリックして進捗・履歴を表示</p>}
+  </article>;
+};
+
+const ProgressThread = ({ task, onUpdateTask }) => {
+  const [text, setText] = useState('');
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [addTodo, setAddTodo] = useState(false);
+  const [dueDate, setDueDate] = useState('');
+  const [waiting, setWaiting] = useState(false);
+  const [completed, setCompleted] = useState(false);
+  const [query, setQuery] = useState('');
+  const [filterId, setFilterId] = useState('');
+  const historyRef = useRef(null);
+  const subtasks = getProgressSubtasks(task);
+  const history = task.progressHistory || [];
+  const options = new Map(subtasks.map(st => [st.id, st.title]));
+  history.forEach(entry => (entry.subtaskIds || []).forEach((id, i) => { if (!options.has(id)) options.set(id, `${entry.subtaskTitles?.[i] || '削除されたやるべきこと'}（削除済み）`); }));
+  const selected = subtasks.filter(st => selectedIds.includes(st.id));
+  const visibleHistory = history.filter(entry => (!filterId || entry.subtaskIds?.includes(filterId)) && (!query.trim() || [entry.text, ...(entry.subtaskTitles || []), entry.createdAt, entry.dueDate].filter(Boolean).join(' ').toLowerCase().includes(query.trim().toLowerCase())));
+  useEffect(() => { if (historyRef.current) historyRef.current.scrollTop = historyRef.current.scrollHeight; }, [history.length, task.id]);
+  const send = (e) => {
+    e.preventDefault();
+    if (addTodo && !text.trim()) return;
+    if (!text.trim() && !waiting && !(completed && selected.length)) return;
+    const commentText = text.trim() || (completed ? '選択したやるべきことを完了しました。' : '相手待ちにしました。');
+    const newId = addTodo ? createProgressId() : null;
+    onUpdateTask(task.id, previous => {
+      const previousSubtasks = getProgressSubtasks(previous);
+      const currentSelected = previousSubtasks.filter(st => selectedIds.includes(st.id));
+      const nextSubtasks = previousSubtasks.map(st => !selectedIds.includes(st.id) ? st : { ...st, waiting: completed ? false : waiting, ...(completed ? { completed: true } : waiting ? { completed: false } : {}) });
+      if (addTodo) nextSubtasks.push({ id: newId, title: text.trim(), dueDate: dueDate || previous.dueDate || '', completed: false, waiting: false, order: Date.now() });
+      const related = [...currentSelected, ...(addTodo ? [{ id: newId, title: text.trim() }] : [])];
+      const entry = { id: createProgressId(), kind: 'comment', createdAt: new Date().toISOString(), text: commentText, subtaskIds: related.map(st => st.id), subtaskTitles: related.map(st => st.title), status: completed ? 'completed' : waiting ? 'waiting' : 'active', dueDate: addTodo ? dueDate || previous.dueDate || '' : undefined, addedSubtask: addTodo };
+      return { ...previous, subtasks: nextSubtasks, ...(currentSelected.length ? {} : { waiting }), progressHistory: [...(previous.progressHistory || []), entry] };
+    });
+    setText(''); setSelectedIds([]); setAddTodo(false); setDueDate(''); setWaiting(false); setCompleted(false);
+  };
+  const canSend = addTodo ? !!text.trim() : !!text.trim() || waiting || (completed && selected.length > 0);
+  return <div className="flex flex-col flex-1 min-h-0">
+    <div className="px-4 py-3 border-b bg-white">
+      <h3 className="font-bold text-gray-900 break-words">{task.title}</h3>
+      <p className="text-xs text-gray-500 mt-1">タスク期日: {task.dueDate || '未設定'} · {progressStatusLabel(progressItemStatus(task))}</p>
+      <div className="flex flex-wrap gap-2 mt-3">
+        <label className="flex items-center gap-2 min-w-0 flex-1 border rounded-lg px-2 bg-gray-50"><Search size={14} className="text-gray-400 shrink-0"/><input aria-label="履歴を検索" placeholder="履歴を検索" value={query} onChange={e => setQuery(e.target.value)} className="py-2 text-xs bg-transparent min-w-0 w-full outline-none"/></label>
+        <select aria-label="やるべきことで絞り込み" value={filterId} onChange={e => setFilterId(e.target.value)} className="border rounded-lg p-2 text-xs max-w-full"><option value="">すべてのやるべきこと</option>{[...options].map(([id, title]) => <option key={id} value={id}>{title}</option>)}</select>
+      </div>
+    </div>
+    <div ref={historyRef} role="log" aria-label="進捗履歴" className="flex-1 overflow-y-auto min-h-0 p-4 space-y-4 bg-slate-100">
+      {!visibleHistory.length && <p className="text-center text-sm text-gray-400 py-8">{history.length ? '一致する履歴はありません。' : '進捗コメントを送って、履歴を残しましょう。'}</p>}
+      {visibleHistory.map(entry => <div key={entry.id} className={`flex flex-col ${entry.kind === 'comment' ? 'items-end' : 'items-start'}`}>
+        <time dateTime={entry.createdAt} className="text-[10px] text-gray-500 px-1 mb-1">{new Date(entry.createdAt).toLocaleString('ja-JP')}</time>
+        <div className={`max-w-full rounded-2xl border px-3 py-2 text-sm shadow-sm ${entry.kind === 'comment' ? 'bg-blue-600 border-blue-600 text-white rounded-tr-sm' : 'bg-white border-gray-200 text-gray-700 rounded-tl-sm'}`}>
+          {entry.kind !== 'comment' && <p className="text-[10px] font-bold text-gray-400 mb-1">変更履歴</p>}
+          <p className="whitespace-pre-wrap break-words">{entry.text}</p>
+          {!!entry.subtaskTitles?.length && <div className="flex flex-wrap gap-1 mt-2">{entry.subtaskTitles.map((title, i) => <span key={`${entry.subtaskIds?.[i]}-${i}`} className="text-[10px] rounded px-1.5 py-0.5 bg-black/10 break-all">{title}</span>)}</div>}
+          {entry.status && entry.kind === 'comment' && <p className="text-[10px] mt-1 opacity-80">{entry.status === 'active' ? '進捗を記録' : entry.status === 'waiting' ? '相手待ち' : '完了'}{entry.addedSubtask ? ` · やるべきこと追加（期限: ${entry.dueDate || '未設定'}）` : ''}</p>}
+        </div>
+      </div>)}
+    </div>
+    <form onSubmit={send} onKeyDown={e => { if (e.key === 'Enter' && e.ctrlKey && !e.nativeEvent.isComposing) { e.preventDefault(); if (canSend) send(e); } }} className="p-4 border-t bg-white space-y-3 shrink-0 max-h-[55%] overflow-y-auto">
+      <fieldset><legend className="text-xs font-bold text-gray-600 mb-2">関連するやるべきことを選択</legend><div className="max-h-28 overflow-y-auto flex flex-col gap-1.5">
+        {subtasks.map(st => <label key={st.id} className="flex gap-2 items-start text-xs text-gray-700"><input type="checkbox" aria-label={`関連: ${st.title}`} checked={selectedIds.includes(st.id)} onChange={e => { setSelectedIds(prev => e.target.checked ? [...prev, st.id] : prev.filter(id => id !== st.id)); setCompleted(false); }} className="mt-0.5"/><span className="break-words">{st.title} <span className="text-gray-400">{st.dueDate || '期限なし'} · {progressStatusLabel(progressItemStatus(st))}</span></span></label>)}
+        {!subtasks.length && <p className="text-xs text-gray-400">やるべきことはまだありません。</p>}
+      </div></fieldset>
+      <textarea aria-label="進捗コメント" placeholder="進捗を入力…（Ctrl+Enter で送信）" value={text} onChange={e => setText(e.target.value)} rows={3} className="w-full border rounded-xl p-3 text-sm resize-y focus:outline-none focus:ring-2 focus:ring-blue-400"/>
+      <div className="flex flex-wrap items-center gap-3 text-xs">
+        <label className="flex items-center gap-1.5"><input type="checkbox" checked={addTodo} onChange={e => setAddTodo(e.target.checked)}/>やるべきことの追加</label>
+        <label className="flex items-center gap-1.5 text-gray-600">追加するやるべきことの期限<input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} className="border rounded-md px-2 py-1 min-w-0"/></label>
+      </div>
+      {addTodo && <p className="text-xs text-blue-600">コメントを小タスクとして追加します。期限の未入力時: {task.dueDate || '未設定'}</p>}
+      <div className="flex flex-wrap justify-between items-center gap-3">
+        <div className="flex gap-4 text-xs">
+          <label className="flex items-center gap-1.5"><input type="checkbox" checked={waiting} onChange={e => { setWaiting(e.target.checked); if (e.target.checked) setCompleted(false); }}/>相手待ち</label>
+          <label className={`flex items-center gap-1.5 ${selected.length ? '' : 'text-gray-400'}`} title="関連するやるべきことを選択すると完了にできます"><input type="checkbox" disabled={!selected.length} checked={completed && selected.length > 0} onChange={e => { setCompleted(e.target.checked); if (e.target.checked) setWaiting(false); }}/>完了</label>
+        </div>
+        <button type="submit" disabled={!canSend} className="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white rounded-lg px-5 py-2 text-sm font-bold">送信</button>
+      </div>
+      <p className="text-[10px] text-gray-400">やるべきこと未選択の「相手待ち」はタスク全体に反映します。</p>
+    </form>
+  </div>;
+};
+
+const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
+  const [selectedId, setSelectedId] = useState(null);
+  const [settings, setSettings] = useState(null);
+  const [draggingId, setDraggingId] = useState(null);
+  const tracked = tasks.filter(task => task.progressEnabled);
+  const selectedTask = tracked.find(task => task.id === selectedId && task.progressStage === 'doing');
+  const settingsTask = tracked.find(task => task.id === settings?.id);
+  const startTask = task => setSettings({ id: task.id, starting: true });
+  const selectTask = task => { if (task.progressStage === 'doing') setSelectedId(task.id); };
+  const dropTask = (e, stage) => {
+    e.preventDefault();
+    const id = e.dataTransfer.getData('application/x-taskmatrix-progress') || draggingId;
+    const task = tracked.find(item => item.id === id);
+    setDraggingId(null);
+    if (!task || (task.progressStage || 'todo') === stage) return;
+    if (stage === 'doing') startTask(task);
+    else onUpdateTask(task.id, previous => ({ ...previous, progressStage: 'todo' }));
+  };
+  return <div className="h-full min-h-0 flex flex-col overflow-hidden">
+    <div className="px-6 py-3 bg-white/70 border-b flex flex-wrap items-center justify-between gap-2 shrink-0">
+      <p className="text-sm text-gray-600">ボードでチェックしたタスクを、やるべきことと会話の履歴で管理します。</p>
+      <div className="flex gap-3 text-xs"><span className="text-blue-700">● 通常</span><span className="text-green-700">● 相手待ち</span><span className="text-red-700">● 期限超過</span></div>
+    </div>
+    <div className="flex-1 min-h-0 overflow-x-auto p-4 md:p-6">
+      <div className="grid gap-4 h-full min-h-0" style={{ gridTemplateColumns: 'minmax(240px, 1fr) minmax(240px, 1fr) minmax(380px, 1.6fr)', minWidth: 920 }}>
+        {[{ stage: 'todo', title: '未着手ボード' }, { stage: 'doing', title: '着手中ボード' }].map(({ stage, title }) => {
+          const items = tracked.filter(task => (task.progressStage || 'todo') === stage);
+          return <section key={stage} aria-label={title} data-progress-stage={stage} onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }} onDrop={e => dropTask(e, stage)} className={`rounded-2xl border flex flex-col min-h-0 overflow-hidden ${draggingId ? 'border-blue-400 bg-blue-50' : 'border-gray-200 bg-gray-50'}`}>
+            <header className="p-4 border-b flex items-center justify-between bg-white shrink-0"><h2 className="text-sm font-black flex items-center gap-2">{title}<span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">{items.length}</span></h2>{stage === 'todo' && <button onClick={onAddTask} aria-label="未着手タスクを追加" className="p-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100"><Plus size={18}/></button>}</header>
+            <div className="overflow-y-auto p-3 space-y-3 flex-1 min-h-0">
+              {items.map(task => <ProgressTaskCard key={task.id} task={task} selected={selectedId === task.id} onSelect={() => selectTask(task)} onSettings={() => setSettings({ id: task.id, starting: false })} onStart={() => startTask(task)} onDragStart={(e, id) => { setDraggingId(id); e.dataTransfer.setData('application/x-taskmatrix-progress', id); e.dataTransfer.effectAllowed = 'move'; e.currentTarget.addEventListener('dragend', () => setDraggingId(null), { once: true }); }}/>) }
+              {!items.length && <p className="border-2 border-dashed border-gray-200 rounded-xl p-5 text-xs text-gray-400 text-center leading-relaxed">{stage === 'todo' ? 'ボードの「進捗ページに表示」にチェックするか、＋からタスクを追加してください。' : '未着手のカードをここへドラッグするか、「着手する」を押してください。'}</p>}
+            </div>
+          </section>;
+        })}
+        <section aria-label="進捗リストボード" className="rounded-2xl border border-gray-200 bg-white flex flex-col min-h-0 overflow-hidden">
+          <header className="px-4 py-3 border-b shrink-0"><h2 className="text-sm font-black">進捗リストボード</h2></header>
+          {selectedTask ? <ProgressThread key={selectedTask.id} task={selectedTask} onUpdateTask={onUpdateTask}/> : <div className="flex-1 flex flex-col items-center justify-center gap-3 text-gray-400 p-6 text-sm text-center"><List size={32}/><p>着手中のカードをクリックすると、<br/>進捗と変更履歴が表示されます。</p></div>}
+        </section>
+      </div>
+    </div>
+    {settingsTask && <ProgressSettingsModal key={`${settingsTask.id}-${settings.starting}`} task={settingsTask} starting={settings.starting} onClose={() => setSettings(null)} onSave={(patch, reason) => { onUpdateTask(settingsTask.id, previous => ({ ...previous, ...patch }), { reason }); if (settings.starting) setSelectedId(settingsTask.id); setSettings(null); }}/>}
+  </div>;
+};
+
 export default function App() {
   const [isDBReady, setIsDBReady] = useState(false);
   const [activeTab, setActiveTab] = useState('board');
   const [plannerView, setPlannerView] = useState('list');
 
-  const [tasks, setTasks] = useState([]);
+  const [tasks, setTaskRecords] = useState([]);
+  const setTasks = (update, metadata) => setTaskRecords(previous => {
+    const next = typeof update === 'function' ? update(previous) : update;
+    const previousById = new Map(previous.map(task => [task.id, task]));
+    return next.map(task => {
+      const old = previousById.get(task.id);
+      if (old === task) return task;
+      return appendProgressHistory(old, normalizeProgressTask(task), metadata);
+    });
+  });
+  const handleUpdateProgressTask = (id, update, metadata) => {
+    setTasks(previous => previous.map(task => {
+      if (task.id !== id) return task;
+      const next = update(task);
+      return task.dueDate !== next.dueDate ? { ...next, date: next.dueDate } : next;
+    }), metadata);
+  };
   const [projects, setProjects] = useState([]);
   const [recurringSchedules, setRecurringSchedules] = useState([]);
   const [recurringCompletions, setRecurringCompletions] = useState({});
@@ -1462,7 +1782,7 @@ export default function App() {
           (!t.id || t.id === 'undefined') ? { ...t, id: `t_${Date.now()}_${idx}_${Math.random().toString(36).substring(2,9)}` } : t
         );
 
-        setTasks(tasksWithId);
+        setTaskRecords(tasksWithId.map(normalizeProgressTask));
         setProjects(loadedProjects || initialProjects);
         setRecurringSchedules(loadedRecurringSchedules || initialRecurringSchedules);
         setRecurringCompletions(loadedRecurringCompletions || {});
@@ -1495,6 +1815,7 @@ export default function App() {
   const [showCompletedTasks, setShowCompletedTasks] = useState(false);
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState(null);
+  const [creatingProgressTask, setCreatingProgressTask] = useState(false);
   const [completingTask, setCompletingTask] = useState(null);
 
   const [newTaskDefaultDate, setNewTaskDefaultDate] = useState(TODAY_STR);
@@ -1600,7 +1921,7 @@ export default function App() {
     reader.onload = (event) => {
       try {
         const data = JSON.parse(event.target.result);
-        if (data.tasks && Array.isArray(data.tasks)) setTasks(data.tasks);
+        if (data.tasks && Array.isArray(data.tasks)) setTaskRecords(data.tasks.map(normalizeProgressTask));
         if (data.projects && Array.isArray(data.projects)) setProjects(data.projects);
         if (data.recurringSchedules && Array.isArray(data.recurringSchedules)) setRecurringSchedules(data.recurringSchedules);
         if (data.recurringCompletions && typeof data.recurringCompletions === 'object') setRecurringCompletions(data.recurringCompletions);
@@ -1690,6 +2011,7 @@ export default function App() {
             date: st.dueDate,
             dueDate: st.dueDate,
             completed: st.completed || false,
+            waiting: st.waiting || false,
             subtaskIndex: idx,
             order: stOrder,
             richResult: st.richResult,
@@ -1702,7 +2024,9 @@ export default function App() {
         });
       }
     });
-    return [...items, ...recurringOccurrences].sort((a, b) => a.order - b.order);
+    // A tracked recurring occurrence is materialized once, so it can own subtasks/history.
+    const materializedIds = new Set(tasks.map(task => task.id));
+    return [...items, ...recurringOccurrences.filter(task => !materializedIds.has(task.id))].sort((a, b) => a.order - b.order);
   }, [tasks, recurringOccurrences]);
 
   const handlePointerDown = (e, type, data) => {
@@ -1840,6 +2164,7 @@ export default function App() {
   }, [dragItem, tasks, displayItems]);
 
   const handleEditTask = (task) => {
+    setCreatingProgressTask(false);
     if (task.isRecurringOccurrence) {
       const schedule = recurringSchedules.find(item => item.id === task.recurringScheduleId);
       if (schedule) {
@@ -2031,7 +2356,10 @@ export default function App() {
     }
 
     if (taskData.id) {
-      setTasks(prev => prev.map(t => t.id === taskData.id ? { ...t, ...processedTaskData } : t));
+      setTasks(prev => prev.map(t => t.id === taskData.id ? {
+        ...t, ...processedTaskData,
+        date: t.dueDate !== processedTaskData.dueDate ? processedTaskData.dueDate : t.date
+      } : t));
       showToast(`「${taskData.title}」を更新しました`);
     } else {
       const newTask = {
@@ -2042,6 +2370,7 @@ export default function App() {
         resultImages: [],
         order: Date.now(),
         ...processedTaskData,
+        ...(creatingProgressTask ? { progressEnabled: true, progressStage: 'todo' } : {}),
         id: `t_${Date.now()}_${Math.random().toString(36).substring(2,9)}`
       };
       setTasks(prev => [...prev, newTask]);
@@ -2049,6 +2378,7 @@ export default function App() {
     }
     setIsTaskModalOpen(false);
     setEditingTask(null);
+    setCreatingProgressTask(false);
   };
 
   const handleSaveNewProject = (projectData) => {
@@ -2063,14 +2393,39 @@ export default function App() {
   };
 
   const handleOpenTaskModalWithDate = (date) => {
+    setCreatingProgressTask(false);
     setEditingTask(null);
     setNewTaskDefaultDate(date);
     setIsTaskModalOpen(true);
   };
 
   const handleOpenTaskModalFromFab = () => {
+    setCreatingProgressTask(false);
     setEditingTask(null);
     setNewTaskDefaultDate(TODAY_STR);
+    setIsTaskModalOpen(true);
+  };
+
+  const handleToggleProgress = (task, enabled) => {
+    if (task.isRecurringOccurrence) {
+      // Select this occurrence only; future dates keep their original recurrence.
+      setTasks(previous => [...previous, {
+        ...task, type: 'simple', isRecurringOccurrence: false,
+        sourceRecurringScheduleId: task.recurringScheduleId,
+        progressEnabled: enabled, progressStage: 'todo'
+      }]);
+    } else {
+      handleUpdateProgressTask(task.id, current => ({
+        ...current, progressEnabled: enabled,
+        ...(enabled ? { progressStage: 'todo' } : {})
+      }));
+    }
+  };
+
+  const handleAddProgressTask = () => {
+    setCreatingProgressTask(true);
+    setEditingTask(null);
+    setNewTaskDefaultDate(formatDate(new Date()));
     setIsTaskModalOpen(true);
   };
 
@@ -2211,7 +2566,7 @@ export default function App() {
             </button>
           </div>
 
-          <div className="flex bg-gray-100 p-1.5 rounded-xl border border-gray-200">
+          <div className="flex flex-wrap bg-gray-100 p-1.5 rounded-xl border border-gray-200">
             <button
               onClick={() => setActiveTab('today')}
               className={`flex items-center gap-2 px-4 md:px-5 py-2.5 rounded-lg text-sm font-bold transition-all ${activeTab === 'today' ? 'bg-white shadow-sm text-blue-700 ring-1 ring-gray-200' : 'text-gray-500 hover:text-gray-700'}`}
@@ -2223,6 +2578,12 @@ export default function App() {
               className={`flex items-center gap-2 px-4 md:px-5 py-2.5 rounded-lg text-sm font-bold transition-all ${activeTab === 'board' ? 'bg-white shadow-sm text-blue-700 ring-1 ring-gray-200' : 'text-gray-500 hover:text-gray-700'}`}
             >
               <Layout size={18} /> <span className="hidden sm:inline">ボード</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('progress')}
+              className={`flex items-center gap-2 px-4 md:px-5 py-2.5 rounded-lg text-sm font-bold transition-all ${activeTab === 'progress' ? 'bg-white shadow-sm text-blue-700 ring-1 ring-gray-200' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              <CheckSquare size={18} /> <span>進捗</span>
             </button>
             <button
               onClick={() => setActiveTab('list')}
@@ -2247,6 +2608,10 @@ export default function App() {
       </header>
 
       <main className="flex-1 overflow-hidden relative">
+
+        {activeTab === 'progress' && (
+          <ProgressPage tasks={tasks} onUpdateTask={handleUpdateProgressTask} onAddTask={handleAddProgressTask} />
+        )}
 
         {activeTab === 'today' && (
           <div className="h-full flex flex-col p-4 md:p-6 pb-24 max-w-[1200px] mx-auto w-full overflow-y-auto">
@@ -2333,6 +2698,7 @@ export default function App() {
                           onAddTask={handleOpenTaskModalWithDate}
                           onCompleteSubtask={handleCompleteSubtask}
                           onEditParentTask={handleEditParentTask}
+                          onToggleProgress={handleToggleProgress}
                         />
                       </div>
                     ))}
@@ -2695,7 +3061,7 @@ export default function App() {
         )}
       </main>
 
-      <div className="fixed bottom-8 right-8 flex flex-col items-end gap-3 z-40">
+      <div className={`${activeTab === 'progress' ? 'hidden' : 'fixed'} bottom-8 right-8 flex flex-col items-end gap-3 z-40`}>
         <label className="flex items-center gap-2 cursor-pointer bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 rounded-full px-4 py-3 shadow-lg transition-all font-bold text-sm">
           <input
             type="checkbox"
@@ -2793,7 +3159,7 @@ export default function App() {
 
       <TaskModal
         isOpen={isTaskModalOpen}
-        onClose={() => { setIsTaskModalOpen(false); setEditingTask(null); }}
+        onClose={() => { setIsTaskModalOpen(false); setEditingTask(null); setCreatingProgressTask(false); }}
         onSave={handleSaveTask}
         onDelete={handleDeleteTask}
         defaultDate={newTaskDefaultDate}
