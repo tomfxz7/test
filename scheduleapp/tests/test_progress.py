@@ -118,6 +118,189 @@ class ProgressTests(unittest.TestCase):
         box.fill(text);box.press('Control+Enter')
         expect(box).to_have_value('')
 
+    def entry(self,entry_id):
+        return self.page.locator('[data-progress-entry-id="'+entry_id+'"]')
+
+    def test_add_todo_records_only_addition_reaction(self):
+        original=task(progressEnabled=True,progressStage='doing',waiting=True)
+        original['subtasks'][0]['waiting']=True
+        self.seed([original])
+        self.progress();self.select_chat()
+        self.page.get_by_label('やるべきことの追加',exact=True).check()
+        self.send('コメントから追加する資料作成')
+        stored=self.stored()[0]
+        new_subtask=stored['subtasks'][-1]
+        self.assertEqual(new_subtask['title'],'コメントから追加する資料作成')
+        self.assertEqual(new_subtask['dueDate'],FUTURE)
+        self.assertTrue(stored['waiting'])
+        self.assertTrue(stored['subtasks'][0]['waiting'])
+        self.assertEqual(len(stored['progressHistory']),1)
+        reaction=stored['progressHistory'][0]
+        self.assertEqual(reaction['kind'],'change')
+        self.assertIn('追加しました',reaction['text'])
+        self.assertEqual(reaction['subtaskIds'],[new_subtask['id']])
+        expect(self.entry(reaction['id'])).to_contain_text('コメントから追加する資料作成')
+        expect(self.page.get_by_role('button',name='コメントを編集',exact=True)).to_have_count(0)
+        self.page.get_by_role('button',name='ボード',exact=True).click()
+        expect(self.page.locator('#task-'+new_subtask['id'])).to_contain_text('コメントから追加する資料作成')
+
+    def test_legacy_todo_bubble_is_hidden_without_deleting_saved_history(self):
+        history=[
+            dict(id='legacy-own',kind='comment',createdAt='2026-01-01T01:00:00.000Z',
+                 text='既存の調査',subtaskIds=['s1'],subtaskTitles=['既存の調査'],addedSubtask=True,status='active'),
+            dict(id='legacy-reaction',kind='change',createdAt='2026-01-01T01:00:00.001Z',
+                 text='やるべきこと「既存の調査」を追加しました',subtaskIds=['s1'],subtaskTitles=['既存の調査'])]
+        self.seed([task(progressEnabled=True,progressStage='doing',progressHistory=history)])
+        self.progress();self.select_chat()
+        expect(self.entry('legacy-own')).to_have_count(0)
+        expect(self.entry('legacy-reaction')).to_be_visible()
+        expect(self.page.get_by_role('button',name='コメントを編集',exact=True)).to_have_count(0)
+        self.assertEqual(self.stored()[0]['progressHistory'],history)
+
+    def test_comment_text_edit_preserves_later_status_and_history_metadata(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')])
+        self.progress();self.select_chat()
+        self.page.get_by_label('関連: 既存の調査',exact=True).check()
+        self.page.get_by_label('相手待ち',exact=True).check()
+        self.send('最初の担当者への依頼')
+        original=next(entry for entry in self.stored()[0]['progressHistory'] if entry['kind']=='comment')
+        self.page.get_by_label('関連: 既存の調査',exact=True).check()
+        self.page.get_by_label('完了',exact=True).check()
+        self.send('後から調査完了を記録')
+        before=self.stored()[0]
+        self.entry(original['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+        editor=self.page.get_by_label('コメントの編集',exact=True)
+        expect(editor).to_have_value('最初の担当者への依頼')
+        expect(self.page.get_by_label('関連: 既存の調査',exact=True)).to_be_checked()
+        expect(self.page.get_by_label('相手待ち',exact=True)).to_be_checked()
+        editor.fill('依頼内容を訂正しました')
+        editor.press('Control+Enter')
+        expect(editor).to_have_count(0)
+        expect(self.entry(original['id'])).to_contain_text('依頼内容を訂正しました')
+        expect(self.entry(original['id'])).to_contain_text('編集済み')
+        after=self.stored()[0]
+        edited=next(entry for entry in after['progressHistory'] if entry['id']==original['id'])
+        self.assertEqual(edited['createdAt'],original['createdAt'])
+        self.assertEqual(edited['subtaskIds'],original['subtaskIds'])
+        self.assertEqual(edited['status'],original['status'])
+        self.assertTrue(edited['editedAt'])
+        self.assertEqual(len(after['progressHistory']),len(before['progressHistory']))
+        self.assertEqual({key:value for key,value in after.items() if key!='progressHistory'},
+                         {key:value for key,value in before.items() if key!='progressHistory'})
+        self.page.get_by_label('履歴を検索',exact=True).fill('最初の担当者への依頼')
+        expect(self.entry(original['id'])).to_have_count(0)
+        self.page.get_by_label('履歴を検索',exact=True).fill('依頼内容を訂正しました')
+        expect(self.entry(original['id'])).to_be_visible()
+        self.page.reload();self.progress();self.select_chat()
+        expect(self.entry(original['id'])).to_contain_text('依頼内容を訂正しました')
+        with self.page.expect_download() as download:
+            self.page.get_by_role('button',name='エクスポート',exact=True).click()
+        saved=json.loads(Path(download.value.path()).read_text())
+        self.assertEqual(saved['tasks'][0]['progressHistory'],self.stored()[0]['progressHistory'])
+
+    def test_edit_comment_with_deleted_subtask_keeps_status_and_parent(self):
+        history=[dict(id='deleted-subtask-comment',kind='comment',createdAt='2026-01-01T01:00:00.000Z',
+                      text='削除済み項目の完了記録',subtaskIds=['removed'],subtaskTitles=['削除した項目'],status='completed')]
+        self.seed([task(progressEnabled=True,progressStage='doing',waiting=True,progressHistory=history)])
+        self.progress();self.select_chat()
+        before=self.stored()[0]
+        self.entry(history[0]['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+        editor=self.page.get_by_label('コメントの編集',exact=True)
+        editor.fill('削除済み項目の補足を訂正');editor.press('Control+Enter')
+        expect(editor).to_have_count(0)
+        after=self.stored()[0]
+        self.assertEqual(after['progressHistory'][0]['status'],'completed')
+        self.assertEqual(after['progressHistory'][0]['subtaskIds'],['removed'])
+        self.assertEqual(len(after['progressHistory']),1)
+        self.assertEqual({key:value for key,value in after.items() if key!='progressHistory'},
+                         {key:value for key,value in before.items() if key!='progressHistory'})
+
+    def test_progress_settings_rename_validates_cancels_and_shares_title(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')])
+        self.progress();self.select_chat()
+        before=self.stored()[0]
+        self.card().get_by_role('button',name='進捗テスト案件の設定',exact=True).click()
+        dialog=self.page.get_by_role('dialog',name='進捗の設定')
+        name=dialog.get_by_label('タスク名',exact=True)
+        expect(name).to_have_value('進捗テスト案件')
+        name.fill('')
+        dialog.get_by_role('button',name='確定',exact=True).click()
+        expect(dialog).to_be_visible()
+        self.assertEqual(self.stored()[0],before)
+        name.fill('キャンセルするタスク名')
+        dialog.get_by_role('button',name='キャンセル',exact=True).click()
+        self.assertEqual(self.stored()[0],before)
+        self.card().get_by_role('button',name='進捗テスト案件の設定',exact=True).click()
+        name.fill('  名前を変更した案件  ');name.press('Control+Enter')
+        expect(dialog).to_have_count(0)
+        expect(self.card().get_by_role('button',name='名前を変更した案件',exact=True)).to_be_visible()
+        renamed=self.stored()[0]
+        self.assertEqual(renamed['title'],'名前を変更した案件')
+        self.assertTrue(any('進捗テスト案件' in entry['text'] and '名前を変更した案件' in entry['text'] for entry in renamed['progressHistory']))
+        self.page.get_by_role('button',name='ボード',exact=True).click()
+        expect(self.page.locator('#task-track')).to_contain_text('名前を変更した案件')
+        self.page.reload();self.progress()
+        expect(self.card().get_by_role('button',name='名前を変更した案件',exact=True)).to_be_visible()
+
+    def test_comment_edit_cancel_and_empty_text(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')])
+        self.progress();self.select_chat();self.send('保持する元のコメント')
+        before=self.stored()[0]
+        comment=next(entry for entry in before['progressHistory'] if entry['kind']=='comment')
+        edit_button=self.entry(comment['id']).get_by_role('button',name='コメントを編集',exact=True)
+        edit_button.click()
+        editor=self.page.get_by_label('コメントの編集',exact=True)
+        editor.fill('  ')
+        expect(self.page.get_by_role('button',name='編集を保存',exact=True)).to_be_disabled()
+        editor.press('Control+Enter')
+        expect(editor).to_have_count(1)
+        self.page.get_by_role('button',name='編集をキャンセル',exact=True).click()
+        expect(editor).to_have_count(0)
+        self.assertEqual(self.stored()[0],before)
+        edit_button.click();editor.fill('取り消す変更');editor.press('Escape')
+        expect(editor).to_have_count(0)
+        self.assertEqual(self.stored()[0],before)
+
+    def test_comment_edit_updates_controls_and_can_convert_to_todo(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')])
+        self.progress();self.select_chat()
+        self.page.get_by_label('関連: 既存の調査',exact=True).check()
+        self.send('関連項目を変更するコメント')
+        original=next(entry for entry in self.stored()[0]['progressHistory'] if entry['kind']=='comment')
+        self.entry(original['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+        self.page.get_by_label('関連: 既存の調査',exact=True).uncheck()
+        self.page.get_by_label('関連: 期限切れの確認',exact=True).check()
+        self.page.get_by_label('相手待ち',exact=True).check()
+        self.page.get_by_label('コメントの編集',exact=True).fill('関連項目を回答待ちに訂正')
+        self.page.get_by_role('button',name='編集を保存',exact=True).click()
+        expect(self.page.get_by_label('コメントの編集',exact=True)).to_have_count(0)
+        stored=self.stored()[0]
+        edited=next(entry for entry in stored['progressHistory'] if entry['id']==original['id'])
+        self.assertEqual(edited['subtaskIds'],['s2'])
+        self.assertEqual(edited['status'],'waiting')
+        self.assertTrue(stored['subtasks'][1]['waiting'])
+        self.assertFalse(stored['subtasks'][0].get('waiting',False))
+        self.entry(original['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+        self.page.get_by_label('完了',exact=True).check()
+        self.page.get_by_role('button',name='編集を保存',exact=True).click()
+        expect(self.page.get_by_label('コメントの編集',exact=True)).to_have_count(0)
+        self.assertTrue(self.stored()[0]['subtasks'][1]['completed'])
+        self.assertFalse(self.stored()[0]['subtasks'][1]['waiting'])
+        self.entry(original['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+        self.page.get_by_label('完了',exact=True).uncheck()
+        self.page.get_by_label('関連: 期限切れの確認',exact=True).uncheck()
+        self.page.get_by_label('やるべきことの追加',exact=True).check()
+        self.page.get_by_label('追加するやるべきことの期限',exact=True).fill(LATER)
+        self.page.get_by_label('コメントの編集',exact=True).fill('編集から追加した小タスク')
+        self.page.get_by_role('button',name='編集を保存',exact=True).click()
+        expect(self.page.get_by_label('コメントの編集',exact=True)).to_have_count(0)
+        stored=self.stored()[0]
+        self.assertEqual(len(stored['subtasks']),3)
+        self.assertEqual(stored['subtasks'][-1]['title'],'編集から追加した小タスク')
+        self.assertEqual(stored['subtasks'][-1]['dueDate'],LATER)
+        self.assertFalse(any(entry['kind']=='comment' for entry in stored['progressHistory']))
+        self.assertEqual(sum('編集から追加した小タスク' in entry['text'] and '追加しました' in entry['text'] for entry in stored['progressHistory']),1)
+
     def test_board_selection_drag_and_shared_subtasks(self):
         self.seed([task(),task('other')])
         self.progress()

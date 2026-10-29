@@ -1519,6 +1519,7 @@ const progressStatusClasses = (status) => ({
 }[status]);
 
 const ProgressSettingsModal = ({ task, starting, onClose, onSave }) => {
+  const [title, setTitle] = useState(task.title || '');
   const [dueDate, setDueDate] = useState(task.dueDate || '');
   const [subtasks, setSubtasks] = useState(() => getProgressSubtasks(task).map(st => ({ ...st })));
   const [newTitle, setNewTitle] = useState('');
@@ -1549,9 +1550,10 @@ const ProgressSettingsModal = ({ task, starting, onClose, onSave }) => {
   };
   const confirm = (e) => {
     e.preventDefault();
+    if (!title.trim()) { setError('タスク名を入力してください。'); return; }
     if (subtasks.some(st => !st.title.trim())) { setError('やるべきことの名前を入力してください。'); return; }
     const additions = newTitle.trim() ? [{ id: createProgressId(), title: newTitle.trim(), dueDate: newDueDate || dueDate || task.dueDate || '', completed: false, waiting: false, order: Date.now() }] : [];
-    onSave({ dueDate, subtasks: [...subtasks.map(st => ({ ...st, title: st.title.trim(), dueDate: st.dueDate || dueDate })), ...additions], ...(starting ? { progressStage: 'doing' } : {}) }, reason.trim());
+    onSave({ title: title.trim(), dueDate, subtasks: [...subtasks.map(st => ({ ...st, title: st.title.trim(), dueDate: st.dueDate || dueDate })), ...additions], ...(starting ? { progressStage: 'doing' } : {}) }, reason.trim());
   };
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
@@ -1564,6 +1566,7 @@ const ProgressSettingsModal = ({ task, starting, onClose, onSave }) => {
           <button type="button" onClick={onClose} aria-label="進捗の設定を閉じる" className="p-2 rounded-lg hover:bg-gray-100"><X size={20}/></button>
         </header>
         <div className="overflow-y-auto p-5 space-y-5">
+          <label className="block text-sm font-bold">タスク名<input type="text" required value={title} onChange={e => setTitle(e.target.value)} className="block w-full mt-2 border rounded-lg px-3 py-2 font-normal"/></label>
           <label className="block text-sm font-bold">タスクの期限<input type="date" required value={dueDate} onChange={e => setDueDate(e.target.value)} className="block mt-2 border rounded-lg px-3 py-2 bg-white"/></label>
           <div>
             <h3 className="text-sm font-bold mb-2">やるべきこと（小タスク）</h3>
@@ -1629,30 +1632,70 @@ const ProgressThread = ({ task, onUpdateTask }) => {
   const [completed, setCompleted] = useState(false);
   const [query, setQuery] = useState('');
   const [filterId, setFilterId] = useState('');
+  const [editingId, setEditingId] = useState(null);
   const historyRef = useRef(null);
+  const composerRef = useRef(null);
   const subtasks = getProgressSubtasks(task);
-  const history = task.progressHistory || [];
+  // Older backups contain an extra own-message bubble for additions. The
+  // canonical addition reaction already records their text and deadline.
+  const history = (task.progressHistory || []).filter(entry => !(entry.kind === 'comment' && entry.addedSubtask));
+  const editingEntry = history.find(entry => entry.id === editingId && entry.kind === 'comment');
   const options = new Map(subtasks.map(st => [st.id, st.title]));
   history.forEach(entry => (entry.subtaskIds || []).forEach((id, i) => { if (!options.has(id)) options.set(id, `${entry.subtaskTitles?.[i] || '削除されたやるべきこと'}（削除済み）`); }));
   const selected = subtasks.filter(st => selectedIds.includes(st.id));
   const visibleHistory = history.filter(entry => (!filterId || entry.subtaskIds?.includes(filterId)) && (!query.trim() || [entry.text, ...(entry.subtaskTitles || []), entry.createdAt, entry.dueDate].filter(Boolean).join(' ').toLowerCase().includes(query.trim().toLowerCase())));
   useEffect(() => { if (historyRef.current) historyRef.current.scrollTop = historyRef.current.scrollHeight; }, [history.length, task.id]);
+  useEffect(() => { if (editingId) composerRef.current?.focus(); }, [editingId]);
+  const resetComposer = () => {
+    setText(''); setSelectedIds([]); setAddTodo(false); setDueDate(''); setWaiting(false); setCompleted(false); setEditingId(null);
+  };
+  const editComment = entry => {
+    setEditingId(entry.id); setText(entry.text);
+    setSelectedIds(entry.subtaskIds || []);
+    setWaiting(entry.status === 'waiting'); setCompleted(entry.status === 'completed');
+    setAddTodo(false); setDueDate(entry.dueDate || '');
+    composerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  };
   const send = (e) => {
     e.preventDefault();
+    if (editingId && !editingEntry) return;
     if (addTodo && !text.trim()) return;
     if (!text.trim() && !waiting && !(completed && selected.length)) return;
     const commentText = text.trim() || (completed ? '選択したやるべきことを完了しました。' : '相手待ちにしました。');
     const newId = addTodo ? createProgressId() : null;
     onUpdateTask(task.id, previous => {
+      const original = editingId ? (previous.progressHistory || []).find(entry => entry.id === editingId && entry.kind === 'comment') : null;
+      if (editingId && !original) return previous;
       const previousSubtasks = getProgressSubtasks(previous);
       const currentSelected = previousSubtasks.filter(st => selectedIds.includes(st.id));
-      const nextSubtasks = previousSubtasks.map(st => !selectedIds.includes(st.id) ? st : { ...st, waiting: completed ? false : waiting, ...(completed ? { completed: true } : waiting ? { completed: false } : {}) });
+      const status = completed && selectedIds.length ? 'completed' : waiting ? 'waiting' : 'active';
+      const sameSelection = original && [...(original.subtaskIds || [])].sort().join('\0') === [...selectedIds].sort().join('\0');
+      // Editing just the message must not replay an old status over later work.
+      // Changed checkboxes apply to the currently selected targets, without
+      // rewinding the state of targets that were removed from the selection.
+      const applyStatus = (!addTodo || waiting || completed) && (!original || !sameSelection || (original.status || 'active') !== status);
+      const nextSubtasks = previousSubtasks.map(st => {
+        if (!applyStatus || !selectedIds.includes(st.id)) return st;
+        return { ...st, waiting: completed ? false : waiting,
+          ...(original ? { completed: !!completed } : completed ? { completed: true } : waiting ? { completed: false } : {}) };
+      });
       if (addTodo) nextSubtasks.push({ id: newId, title: text.trim(), dueDate: dueDate || previous.dueDate || '', completed: false, waiting: false, order: Date.now() });
-      const related = [...currentSelected, ...(addTodo ? [{ id: newId, title: text.trim() }] : [])];
-      const entry = { id: createProgressId(), kind: 'comment', createdAt: new Date().toISOString(), text: commentText, subtaskIds: related.map(st => st.id), subtaskTitles: related.map(st => st.title), status: completed ? 'completed' : waiting ? 'waiting' : 'active', dueDate: addTodo ? dueDate || previous.dueDate || '' : undefined, addedSubtask: addTodo };
-      return { ...previous, subtasks: nextSubtasks, ...(currentSelected.length ? {} : { waiting }), progressHistory: [...(previous.progressHistory || []), entry] };
+      const timestamp = new Date().toISOString();
+      const entry = { ...(original || {}), id: original?.id || createProgressId(), kind: 'comment', createdAt: original?.createdAt || timestamp,
+        ...(original ? { editedAt: timestamp } : {}), text: commentText,
+        subtaskIds: sameSelection ? original.subtaskIds : currentSelected.map(st => st.id),
+        subtaskTitles: sameSelection ? original.subtaskTitles : currentSelected.map(st => st.title), status, addedSubtask: false };
+      let progressHistory = previous.progressHistory || [];
+      if (original) progressHistory = progressHistory.filter(item => item.id !== original.id);
+      // addTodo uses the automatic addition reaction from the shared audit.
+      // Keep an edited ordinary message in its original place in the timeline.
+      if (!addTodo) progressHistory = original
+        ? (previous.progressHistory || []).map(item => item.id === original.id ? entry : item)
+        : [...progressHistory, entry];
+      return { ...previous, subtasks: nextSubtasks,
+        ...(applyStatus && !selectedIds.length ? { waiting } : {}), progressHistory };
     });
-    setText(''); setSelectedIds([]); setAddTodo(false); setDueDate(''); setWaiting(false); setCompleted(false);
+    resetComposer();
   };
   const canSend = addTodo ? !!text.trim() : !!text.trim() || waiting || (completed && selected.length > 0);
   return <div className="flex flex-col flex-1 min-h-0">
@@ -1666,22 +1709,30 @@ const ProgressThread = ({ task, onUpdateTask }) => {
     </div>
     <div ref={historyRef} role="log" aria-label="進捗履歴" className="flex-1 overflow-y-auto min-h-0 p-4 space-y-4 bg-slate-100">
       {!visibleHistory.length && <p className="text-center text-sm text-gray-400 py-8">{history.length ? '一致する履歴はありません。' : '進捗コメントを送って、履歴を残しましょう。'}</p>}
-      {visibleHistory.map(entry => <div key={entry.id} className={`flex flex-col ${entry.kind === 'comment' ? 'items-end' : 'items-start'}`}>
+      {visibleHistory.map(entry => <div key={entry.id} data-progress-entry-id={entry.id} className={`flex flex-col ${entry.kind === 'comment' ? 'items-end' : 'items-start'}`}>
         <time dateTime={entry.createdAt} className="text-[10px] text-gray-500 px-1 mb-1">{new Date(entry.createdAt).toLocaleString('ja-JP')}</time>
         <div className={`max-w-full rounded-2xl border px-3 py-2 text-sm shadow-sm ${entry.kind === 'comment' ? 'bg-blue-600 border-blue-600 text-white rounded-tr-sm' : 'bg-white border-gray-200 text-gray-700 rounded-tl-sm'}`}>
           {entry.kind !== 'comment' && <p className="text-[10px] font-bold text-gray-400 mb-1">変更履歴</p>}
           <p className="whitespace-pre-wrap break-words">{entry.text}</p>
           {!!entry.subtaskTitles?.length && <div className="flex flex-wrap gap-1 mt-2">{entry.subtaskTitles.map((title, i) => <span key={`${entry.subtaskIds?.[i]}-${i}`} className="text-[10px] rounded px-1.5 py-0.5 bg-black/10 break-all">{title}</span>)}</div>}
           {entry.status && entry.kind === 'comment' && <p className="text-[10px] mt-1 opacity-80">{entry.status === 'active' ? '進捗を記録' : entry.status === 'waiting' ? '相手待ち' : '完了'}{entry.addedSubtask ? ` · やるべきこと追加（期限: ${entry.dueDate || '未設定'}）` : ''}</p>}
+          {entry.kind === 'comment' && <div className="flex items-center justify-end gap-2 mt-2 text-[11px]">
+            {entry.editedAt && <span title={`編集日時: ${new Date(entry.editedAt).toLocaleString('ja-JP')}`}>編集済み</span>}
+            <button type="button" aria-label="コメントを編集" onClick={() => editComment(entry)} className="rounded px-2 py-1 hover:bg-white/20 underline">編集</button>
+          </div>}
         </div>
       </div>)}
     </div>
-    <form onSubmit={send} onKeyDown={e => { if (e.key === 'Enter' && e.ctrlKey && !e.nativeEvent.isComposing) { e.preventDefault(); if (canSend) send(e); } }} className="p-4 border-t bg-white space-y-3 shrink-0 max-h-[55%] overflow-y-auto">
+    <form onSubmit={send} onKeyDown={e => {
+      if (e.key === 'Enter' && e.ctrlKey && !e.nativeEvent.isComposing) { e.preventDefault(); if (canSend) send(e); }
+      if (e.key === 'Escape' && editingId && !e.nativeEvent.isComposing) { e.preventDefault(); resetComposer(); }
+    }} className="p-4 border-t bg-white space-y-3 shrink-0 max-h-[55%] overflow-y-auto">
+      {editingId && <p className="text-xs font-bold text-blue-700" role="status">コメントを編集中 · 本文とチェック項目を変更できます</p>}
       <fieldset><legend className="text-xs font-bold text-gray-600 mb-2">関連するやるべきことを選択</legend><div className="max-h-28 overflow-y-auto flex flex-col gap-1.5">
         {subtasks.map(st => <label key={st.id} className="flex gap-2 items-start text-xs text-gray-700"><input type="checkbox" aria-label={`関連: ${st.title}`} checked={selectedIds.includes(st.id)} onChange={e => { setSelectedIds(prev => e.target.checked ? [...prev, st.id] : prev.filter(id => id !== st.id)); setCompleted(false); }} className="mt-0.5"/><span className="break-words">{st.title} <span className="text-gray-400">{st.dueDate || '期限なし'} · {progressStatusLabel(progressItemStatus(st))}</span></span></label>)}
         {!subtasks.length && <p className="text-xs text-gray-400">やるべきことはまだありません。</p>}
       </div></fieldset>
-      <textarea aria-label="進捗コメント" placeholder="進捗を入力…（Ctrl+Enter で送信）" value={text} onChange={e => setText(e.target.value)} rows={3} className="w-full border rounded-xl p-3 text-sm resize-y focus:outline-none focus:ring-2 focus:ring-blue-400"/>
+      <textarea ref={composerRef} aria-label={editingId ? 'コメントの編集' : '進捗コメント'} placeholder="進捗を入力…（Ctrl+Enter で送信）" value={text} onChange={e => setText(e.target.value)} rows={3} className="w-full border rounded-xl p-3 text-sm resize-y focus:outline-none focus:ring-2 focus:ring-blue-400"/>
       <div className="flex flex-wrap items-center gap-3 text-xs">
         <label className="flex items-center gap-1.5"><input type="checkbox" checked={addTodo} onChange={e => setAddTodo(e.target.checked)}/>やるべきことの追加</label>
         <label className="flex items-center gap-1.5 text-gray-600">追加するやるべきことの期限<input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} className="border rounded-md px-2 py-1 min-w-0"/></label>
@@ -1692,7 +1743,10 @@ const ProgressThread = ({ task, onUpdateTask }) => {
           <label className="flex items-center gap-1.5"><input type="checkbox" checked={waiting} onChange={e => { setWaiting(e.target.checked); if (e.target.checked) setCompleted(false); }}/>相手待ち</label>
           <label className={`flex items-center gap-1.5 ${selected.length ? '' : 'text-gray-400'}`} title="関連するやるべきことを選択すると完了にできます"><input type="checkbox" disabled={!selected.length} checked={completed && selected.length > 0} onChange={e => { setCompleted(e.target.checked); if (e.target.checked) setWaiting(false); }}/>完了</label>
         </div>
-        <button type="submit" disabled={!canSend} className="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white rounded-lg px-5 py-2 text-sm font-bold">送信</button>
+        <div className="flex gap-2">
+          {editingId && <button type="button" onClick={resetComposer} className="rounded-lg border px-3 py-2 text-xs font-bold">編集をキャンセル</button>}
+          <button type="submit" disabled={!canSend} className="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white rounded-lg px-5 py-2 text-sm font-bold">{editingId ? '編集を保存' : '送信'}</button>
+        </div>
       </div>
       <p className="text-[10px] text-gray-400">やるべきこと未選択の「相手待ち」はタスク全体に反映します。</p>
     </form>
