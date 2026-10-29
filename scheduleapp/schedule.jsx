@@ -227,60 +227,39 @@ const normalizeProgressTask = (task) => ({
   ...(task.subtasks ? { subtasks: getProgressSubtasks(task) } : {})
 });
 
-// All task writers go through this audit, including edits and calendar drags.
+// Keep only deadline changes for which the user supplied a reason.
 const appendProgressHistory = (previous, next, { reason = '' } = {}) => {
-  if (!previous?.progressEnabled && !next.progressEnabled && !previous?.progressHistory?.length) return next;
+  const explanation = reason.trim();
+  if (!previous || !explanation || (!previous.progressEnabled && !next.progressEnabled && !previous.progressHistory?.length)) return next;
   const createdAt = new Date().toISOString();
   const changes = [];
-  const record = (text, subtasks = [], detail = {}) => changes.push({
-    id: createProgressId(), kind: 'change', createdAt,
-    text: `${text}${reason.trim() ? `\n理由: ${reason.trim()}` : ''}`,
-    subtaskIds: subtasks.map(st => st.id), subtaskTitles: subtasks.map(st => st.title), ...detail
+  const record = (label, before, after, subtasks = []) => changes.push({
+    id: createProgressId(), kind: 'change', changeType: 'deadline', reason: explanation, createdAt,
+    text: `${label}の期限を ${before || '未設定'} → ${after || '未設定'} に変更しました\n理由: ${explanation}`,
+    subtaskIds: subtasks.map(st => st.id), subtaskTitles: subtasks.map(st => st.title)
   });
-  const dateLabel = value => value || '未設定';
-  if (!previous?.progressEnabled && next.progressEnabled) record('進捗ページに追加しました');
-  if (previous?.progressEnabled && !next.progressEnabled) record('進捗ページから外しました（タスクは保持）');
-  if (previous && previous.dueDate !== next.dueDate) {
-    record(`タスク「${next.title}」の期限を ${dateLabel(previous.dueDate)} → ${dateLabel(next.dueDate)} に変更しました`);
-  }
-  if (previous && previous.title !== next.title) record(`タスク名を「${previous.title}」→「${next.title}」に変更しました`);
-  if (previous && previous.progressStage !== next.progressStage && next.progressStage === 'doing') record('タスクに着手しました');
-  if (previous?.progressStage === 'doing' && next.progressStage === 'todo') record('未着手に戻しました');
-  if (previous && !!previous.waiting !== !!next.waiting) record(next.waiting ? 'タスク全体を相手待ちにしました' : 'タスク全体の相手待ちを解除しました');
-  if (previous && !!previous.completed !== !!next.completed) record(next.completed ? 'タスク全体を完了しました' : 'タスク全体を未完了に戻しました');
-  const before = getProgressSubtasks(previous || { id: next.id });
-  const after = getProgressSubtasks(next);
-  const beforeById = new Map(before.map(st => [st.id, st]));
-  const afterIds = new Set(after.map(st => st.id));
-  after.forEach(st => {
+  if (previous.dueDate !== next.dueDate) record(`タスク「${next.title}」`, previous.dueDate, next.dueDate);
+  const beforeById = new Map(getProgressSubtasks(previous).map(st => [st.id, st]));
+  getProgressSubtasks(next).forEach(st => {
     const old = beforeById.get(st.id);
-    if (!old) {
-      record(`やるべきこと「${st.title}」を追加しました（期限: ${dateLabel(st.dueDate)}）`, [st]);
-      return;
-    }
-    if (old.title !== st.title) record(`やるべきこと「${old.title}」→「${st.title}」に変更しました`, [st]);
-    if (old.dueDate !== st.dueDate) record(`「${st.title}」の期限を ${dateLabel(old.dueDate)} → ${dateLabel(st.dueDate)} に変更しました`, [st]);
-    if (!!old.completed !== !!st.completed) record(`「${st.title}」を${st.completed ? '完了' : '未完了'}にしました`, [st]);
-    if (!!old.waiting !== !!st.waiting) record(`「${st.title}」の相手待ちを${st.waiting ? '設定' : '解除'}しました`, [st]);
-    const oldSmall = new Map(getProgressSmallTasks(old).map(small => [small.id, small]));
-    const smallTasks = getProgressSmallTasks(st);
-    smallTasks.forEach(small => {
-      const prior = oldSmall.get(small.id);
-      const detail = { smallTaskId: small.id, smallTaskTitle: small.title };
-      if (!prior) record(`「${st.title}」に小さいタスク「${small.title}」を追加しました`, [st], detail);
-      else {
-        if (prior.title !== small.title) record(`小さいタスク「${prior.title}」→「${small.title}」に変更しました`, [st], detail);
-        if (!!prior.completed !== !!small.completed) record(`小さいタスク「${small.title}」を${small.completed ? '完了' : '未完了'}にしました`, [st], detail);
-        if (!!prior.waiting !== !!small.waiting) record(`小さいタスク「${small.title}」の相手待ちを${small.waiting ? '設定' : '解除'}しました`, [st], detail);
-      }
-    });
-    const smallIds = new Set(smallTasks.map(small => small.id));
-    getProgressSmallTasks(old).filter(small => !smallIds.has(small.id)).forEach(small => {
-      record(`「${st.title}」の小さいタスク「${small.title}」を削除しました`, [st], { smallTaskId: small.id, smallTaskTitle: small.title });
-    });
+    if (old && old.dueDate !== st.dueDate) record(`「${st.title}」`, old.dueDate, st.dueDate, [st]);
   });
-  before.filter(st => !afterIds.has(st.id)).forEach(st => record(`やるべきこと「${st.title}」を削除しました`, [st]));
   return changes.length ? { ...next, progressHistory: [...(next.progressHistory || []), ...changes] } : next;
+};
+
+const isVisibleProgressEntry = (entry) => {
+  if (entry.kind === 'comment') return !entry.addedSubtask;
+  if (entry.kind !== 'change') return false;
+  if (entry.changeType === 'deadline') return !!entry.reason?.trim();
+  // Preserve older reasoned deadline records without showing other old auto logs.
+  return /^(?:タスク「.*」|「.*」)の期限を [^\n]* → [^\n]* に変更しました\n理由:\s*\S/.test(entry.text || '');
+};
+
+const progressEntryClasses = (entry) => {
+  if (entry.kind !== 'comment') return 'bg-white border-gray-200 text-gray-700';
+  if (entry.status === 'waiting') return 'bg-green-50 border-green-300 text-green-800';
+  if (entry.smallTaskId) return 'bg-purple-50 border-purple-200 text-purple-900';
+  return 'bg-blue-50 border-blue-200 text-blue-900';
 };
 
 // --- Mock Initial Data ---
@@ -1611,7 +1590,7 @@ const ProgressSettingsModal = ({ task, starting, onClose, onSave }) => {
             </div>
           </div>
           <label className="block text-sm font-bold">変更理由<textarea value={reason} onChange={e => setReason(e.target.value)} placeholder="期限などを変更した理由（任意）" rows={2} className="block w-full mt-2 border rounded-lg px-3 py-2 text-sm font-normal"/></label>
-          <p className="text-xs text-gray-500">期限の変更は日時とともに履歴へ残ります。Enter で追加、Ctrl+Enter で確定。</p>
+          <p className="text-xs text-gray-500">期限の変更は、変更理由を入力した場合だけ履歴へ残ります。Enter で追加、Ctrl+Enter で確定。</p>
           {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         </div>
         <footer className="p-4 border-t bg-gray-50 flex justify-end gap-2">
@@ -1689,9 +1668,8 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
   const historyRef = useRef(null);
   const composerRef = useRef(null);
   const subtasks = getProgressSubtasks(task);
-  // Older backups contain an extra own-message bubble for additions. The
-  // canonical addition reaction already records their text and deadline.
-  const history = (task.progressHistory || []).filter(entry => !(entry.kind === 'comment' && entry.addedSubtask));
+  // Hide old automatic logs without deleting saved data or user comments.
+  const history = (task.progressHistory || []).filter(isVisibleProgressEntry);
   const editingEntry = history.find(entry => entry.id === editingId && entry.kind === 'comment');
   const options = new Map(subtasks.map(st => [st.id, st.title]));
   history.forEach(entry => (entry.subtaskIds || []).forEach((id, i) => { if (!options.has(id)) options.set(id, `${entry.subtaskTitles?.[i] || '削除されたやるべきこと'}（削除済み）`); }));
@@ -1771,7 +1749,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
         smallTaskTitle: sameTarget ? original.smallTaskTitle : currentTarget?.title || smallTarget?.title };
       let progressHistory = previous.progressHistory || [];
       if (original) progressHistory = progressHistory.filter(item => item.id !== original.id);
-      // Additions use the automatic reaction from the shared audit.
+      // Adding a task changes the shared data without posting a progress comment.
       // Keep an edited ordinary message in its original place in the timeline.
       if (!addTodo && !addSmall) progressHistory = original
         ? (previous.progressHistory || []).map(item => item.id === original.id ? entry : item)
@@ -1797,8 +1775,8 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
       {!visibleHistory.length && <p className="text-center text-sm text-gray-400 py-8">{history.length ? '一致する履歴はありません。' : '進捗コメントを送って、履歴を残しましょう。'}</p>}
       {visibleHistory.map(entry => <div key={entry.id} data-progress-entry-id={entry.id} className="flex flex-col items-stretch">
         <time dateTime={entry.createdAt} className="text-[10px] text-gray-500 px-1 mb-1">{new Date(entry.createdAt).toLocaleString('ja-JP')}</time>
-        <div className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm">
-          <p className="text-[10px] font-bold text-gray-400 mb-1">{entry.kind === 'comment' ? '進捗記録' : '変更履歴'}</p>
+        <div className={`w-full rounded-xl border px-3 py-2 text-sm shadow-sm ${progressEntryClasses(entry)}`}>
+          <p className="text-[10px] font-bold text-gray-400 mb-1">{entry.kind === 'comment' ? '進捗記録' : '期限変更'}</p>
           <p className="whitespace-pre-wrap break-words">{entry.text}</p>
           {!!entry.subtaskTitles?.length && <div className="flex flex-wrap gap-1 mt-2">{entry.subtaskTitles.map((title, i) => <span key={`${entry.subtaskIds?.[i]}-${i}`} className="text-[10px] rounded px-1.5 py-0.5 bg-black/10 break-all">{title}</span>)}</div>}
           {entry.smallTaskTitle && <p className="mt-1 text-xs text-gray-500 break-words">小さいタスク: {entry.smallTaskTitle}</p>}
