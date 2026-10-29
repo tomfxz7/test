@@ -534,6 +534,46 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(result['progressHistory'][0]['quote']['text'],source['text'])
         expect(self.entry(source['id'])).to_have_count(0)
 
+    def test_plain_comment_is_white_black_and_keeps_task_status(self):
+        original=task(progressEnabled=True,progressStage='doing',waiting=True)
+        self.seed([original]);self.progress();self.select_chat()
+        self.page.get_by_label('ただのコメント',exact=True).check()
+        expect(self.page.get_by_label('相手待ち',exact=True)).to_be_disabled()
+        expect(self.page.get_by_label('小さいタスクの追加',exact=True)).to_be_disabled()
+        self.send('進捗ではない補足')
+        stored=self.stored()[0];note=stored['progressHistory'][0]
+        self.assertTrue(note['plainComment'])
+        self.assertTrue(stored['waiting'])
+        self.assertEqual(stored['subtasks'],original['subtasks'])
+        box=self.entry(note['id']).locator(':scope > div')
+        expect(box).to_have_class(re.compile(r'\bbg-white\b'))
+        expect(box).to_have_class(re.compile(r'\bborder-black\b'))
+        self.page.reload();self.progress();self.select_chat()
+        expect(box).to_have_class(re.compile(r'\bborder-black\b'))
+        dialog=self.open_report(start=TODAY.isoformat(),end=TODAY.isoformat())
+        _,body=self.download_report(dialog)
+        self.assertIn('進捗記録: 0件',body)
+        self.assertIn('通常コメント: 1件',body)
+        self.assertIn('記録の状態: 通常コメント（進捗ではない）',body)
+        self.entry(note['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+        expect(self.page.get_by_label('ただのコメント',exact=True)).to_be_checked()
+
+    def test_plain_reply_uses_source_border_without_resolving_waiting(self):
+        source=dict(id='plain-source',kind='comment',createdAt='2026-01-01T01:00:00.000Z',text='相手からの回答待ち',status='waiting',subtaskIds=[],subtaskTitles=[])
+        self.seed([task(progressEnabled=True,progressStage='doing',waiting=True,progressHistory=[source])])
+        self.progress();self.select_chat();self.reply(source['id'])
+        self.page.get_by_label('ただのコメント',exact=True).check()
+        self.send('回答とは別の補足メモ')
+        stored=self.stored()[0]
+        self.assertTrue(stored['waiting'])
+        self.assertEqual(len(stored['progressHistory']),2)
+        note=stored['progressHistory'][-1]
+        self.assertEqual(note['quote']['id'],source['id'])
+        expect(self.entry(source['id'])).to_be_visible()
+        box=self.entry(note['id']).locator(':scope > div')
+        expect(box).to_have_class(re.compile(r'\bbg-white\b'))
+        expect(box).to_have_class(re.compile(r'\bborder-green-500\b'))
+
     def test_ordinary_reply_keeps_source_and_immutable_quote(self):
         source=dict(id='reply-source',kind='comment',createdAt='2026-01-01T01:00:00.000Z',
                     text='引用する最初の進捗',status='active',subtaskIds=['s1'],subtaskTitles=['既存の調査'])
