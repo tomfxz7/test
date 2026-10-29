@@ -258,9 +258,31 @@ const isVisibleProgressEntry = (entry) => {
 const progressEntryClasses = (entry) => {
   if (entry.kind !== 'comment') return 'bg-white border-gray-200 text-gray-700';
   if (entry.status === 'waiting') return 'bg-green-50 border-green-300 text-green-800';
+  if (entry.quote?.status === 'waiting') return 'bg-blue-50 border-blue-200 text-blue-900';
   if (entry.smallTaskId) return 'bg-purple-50 border-purple-200 text-purple-900';
   return 'bg-blue-50 border-blue-200 text-blue-900';
 };
+
+const createProgressQuote = (entry) => ({
+  id: entry.id, text: entry.text, createdAt: entry.createdAt, status: entry.status,
+  subtaskIds: [...(entry.subtaskIds || [])], subtaskTitles: [...(entry.subtaskTitles || [])],
+  smallTaskId: entry.smallTaskId, smallTaskTitle: entry.smallTaskTitle,
+  ...(entry.quote ? { quote: entry.quote } : {})
+});
+const progressQuoteSearchText = quote => quote
+  ? [quote.text, ...(quote.subtaskTitles || []), quote.smallTaskTitle, progressQuoteSearchText(quote.quote)].filter(Boolean).join(' ')
+  : '';
+
+const ProgressQuote = ({ quote }) => <blockquote aria-label="引用コメント" data-quoted-entry-id={quote.id}
+  className={`my-2 rounded-lg border-l-4 px-3 py-2 bg-white/60 text-xs ${quote.status === 'waiting' ? 'border-green-400' : 'border-blue-300'}`}>
+  <div className="flex flex-wrap gap-2 text-gray-500 mb-1">
+    <span>引用</span><time dateTime={quote.createdAt}>{new Date(quote.createdAt).toLocaleString('ja-JP')}</time>
+    {quote.status === 'waiting' && <span className="text-green-700">相手待ち</span>}
+  </div>
+  <p className="whitespace-pre-wrap break-words">{quote.text}</p>
+  {quote.smallTaskTitle && <p className="mt-1 text-gray-500 break-words">小さいタスク: {quote.smallTaskTitle}</p>}
+  {quote.quote && <ProgressQuote quote={quote.quote}/>}
+</blockquote>;
 
 // --- Mock Initial Data ---
 const initialTasks = [
@@ -1665,6 +1687,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
   const [query, setQuery] = useState('');
   const [filterId, setFilterId] = useState('');
   const [editingId, setEditingId] = useState(null);
+  const [replyTo, setReplyTo] = useState(null);
   const historyRef = useRef(null);
   const composerRef = useRef(null);
   const subtasks = getProgressSubtasks(task);
@@ -1676,11 +1699,11 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
   const selected = subtasks.filter(st => selectedIds.includes(st.id));
   const targetSubtask = subtasks.find(st => st.id === smallTarget?.subtaskId);
   const targetSmall = getProgressSmallTasks(targetSubtask).find(small => small.id === smallTarget?.smallTaskId);
-  const visibleHistory = history.filter(entry => (!filterId || entry.subtaskIds?.includes(filterId)) && (!query.trim() || [entry.text, ...(entry.subtaskTitles || []), entry.smallTaskTitle, entry.createdAt, entry.dueDate].filter(Boolean).join(' ').toLowerCase().includes(query.trim().toLowerCase())));
-  useEffect(() => { if (historyRef.current) historyRef.current.scrollTop = historyRef.current.scrollHeight; }, [history.length, task.id]);
+  const visibleHistory = history.filter(entry => (!filterId || entry.subtaskIds?.includes(filterId)) && (!query.trim() || [entry.text, ...(entry.subtaskTitles || []), entry.smallTaskTitle, entry.createdAt, entry.dueDate, progressQuoteSearchText(entry.quote)].filter(Boolean).join(' ').toLowerCase().includes(query.trim().toLowerCase())));
+  useEffect(() => { if (historyRef.current) historyRef.current.scrollTop = historyRef.current.scrollHeight; }, [history.length, history[history.length - 1]?.id, task.id]);
   useEffect(() => { if (editingId) composerRef.current?.focus(); }, [editingId]);
   const resetComposer = () => {
-    setText(''); setSelectedIds([]); setAddTodo(false); setAddSmall(false); setSmallTarget(null); setDueDate(''); setWaiting(false); setCompleted(false); setEditingId(null);
+    setText(''); setSelectedIds([]); setAddTodo(false); setAddSmall(false); setSmallTarget(null); setDueDate(''); setWaiting(false); setCompleted(false); setEditingId(null); setReplyTo(null);
   };
   useEffect(() => {
     if (!smallTaskTarget || smallTaskTarget.taskId !== task.id) { resetComposer(); return; }
@@ -1694,6 +1717,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
     composerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }, [smallTaskTarget?.requestId]);
   const editComment = entry => {
+    setReplyTo(null);
     setEditingId(entry.id); setText(entry.text);
     setSelectedIds(entry.subtaskIds || []);
     setWaiting(entry.status === 'waiting'); setCompleted(entry.status === 'completed');
@@ -1701,26 +1725,38 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
     setSmallTarget(entry.smallTaskId ? { subtaskId: entry.subtaskIds?.[0], smallTaskId: entry.smallTaskId, title: entry.smallTaskTitle, subtaskTitle: entry.subtaskTitles?.[0] } : null);
     composerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   };
+  const replyToComment = entry => {
+    resetComposer();
+    setReplyTo(createProgressQuote(entry));
+    setSelectedIds(entry.subtaskIds || []);
+    setSmallTarget(entry.smallTaskId ? { subtaskId: entry.subtaskIds?.[0], smallTaskId: entry.smallTaskId, title: entry.smallTaskTitle, subtaskTitle: entry.subtaskTitles?.[0] } : null);
+    composerRef.current?.focus();
+    composerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  };
   const send = (e) => {
     e.preventDefault();
     if (editingId && !editingEntry) return;
+    if (replyTo && ((addTodo || addSmall) || !text.trim())) return;
     if ((addTodo || addSmall) && !text.trim()) return;
     if (addSmall && selected.length !== 1) return;
-    if (smallTarget && !targetSmall && !editingId) return;
+    if (smallTarget && !targetSmall && !editingId && !replyTo) return;
     if (!text.trim() && !waiting && !(completed && selected.length)) return;
     const commentText = text.trim() || (completed ? (smallTarget ? '小さいタスクを完了しました。' : '選択したやるべきことを完了しました。') : '相手待ちにしました。');
     const newId = addTodo || addSmall ? createProgressId() : null;
     onUpdateTask(task.id, previous => {
       const original = editingId ? (previous.progressHistory || []).find(entry => entry.id === editingId && entry.kind === 'comment') : null;
       if (editingId && !original) return previous;
+      const replySource = replyTo ? (previous.progressHistory || []).find(entry => entry.id === replyTo.id && entry.kind === 'comment') : null;
+      if (replyTo && !replySource) return previous;
       const previousSubtasks = getProgressSubtasks(previous);
       const currentSelected = previousSubtasks.filter(st => selectedIds.includes(st.id));
       if (addSmall && currentSelected.length !== 1) return previous;
       const currentTargetParent = previousSubtasks.find(st => st.id === smallTarget?.subtaskId);
       const currentTarget = getProgressSmallTasks(currentTargetParent).find(small => small.id === smallTarget?.smallTaskId);
-      if (smallTarget && !currentTarget && !original) return previous;
+      if (smallTarget && !currentTarget && !original && !replySource) return previous;
       const status = completed && selectedIds.length ? 'completed' : waiting ? 'waiting' : 'active';
       const sameSelection = original && [...(original.subtaskIds || [])].sort().join('\0') === [...selectedIds].sort().join('\0');
+      const sameReplySelection = replySource && [...(replySource.subtaskIds || [])].sort().join('\0') === [...selectedIds].sort().join('\0');
       // Editing just the message must not replay an old status over later work.
       // Changed checkboxes apply to the currently selected targets, without
       // rewinding the state of targets that were removed from the selection.
@@ -1743,12 +1779,14 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
       const timestamp = new Date().toISOString();
       const entry = { ...(original || {}), id: original?.id || createProgressId(), kind: 'comment', createdAt: original?.createdAt || timestamp,
         ...(original ? { editedAt: timestamp } : {}), text: commentText,
-        subtaskIds: sameSelection ? original.subtaskIds : currentSelected.map(st => st.id),
-        subtaskTitles: sameSelection ? original.subtaskTitles : currentSelected.map(st => st.title), status, addedSubtask: false,
+        subtaskIds: sameSelection ? original.subtaskIds : sameReplySelection ? replySource.subtaskIds : currentSelected.map(st => st.id),
+        subtaskTitles: sameSelection ? original.subtaskTitles : sameReplySelection ? replySource.subtaskTitles : currentSelected.map(st => st.title), status, addedSubtask: false,
         smallTaskId: smallTarget?.smallTaskId,
-        smallTaskTitle: sameTarget ? original.smallTaskTitle : currentTarget?.title || smallTarget?.title };
+        smallTaskTitle: sameTarget ? original.smallTaskTitle : currentTarget?.title || smallTarget?.title,
+        quote: replySource ? createProgressQuote(replySource) : original?.quote };
       let progressHistory = previous.progressHistory || [];
       if (original) progressHistory = progressHistory.filter(item => item.id !== original.id);
+      if (replySource?.status === 'waiting') progressHistory = progressHistory.filter(item => item.id !== replySource.id);
       // Adding a task changes the shared data without posting a progress comment.
       // Keep an edited ordinary message in its original place in the timeline.
       if (!addTodo && !addSmall) progressHistory = original
@@ -1759,7 +1797,8 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
     });
     resetComposer();
   };
-  const canSend = smallTarget && !targetSmall && !editingId ? false
+  const canSend = replyTo && (!text.trim() || !history.some(entry => entry.id === replyTo.id)) ? false
+    : smallTarget && !targetSmall && !editingId && !replyTo ? false
     : addSmall ? !!text.trim() && selected.length === 1
     : addTodo ? !!text.trim() : !!text.trim() || waiting || (completed && selected.length > 0);
   return <div className="flex flex-col flex-1 min-h-0">
@@ -1777,12 +1816,14 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
         <time dateTime={entry.createdAt} className="text-[10px] text-gray-500 px-1 mb-1">{new Date(entry.createdAt).toLocaleString('ja-JP')}</time>
         <div className={`w-full rounded-xl border px-3 py-2 text-sm shadow-sm ${progressEntryClasses(entry)}`}>
           <p className="text-[10px] font-bold text-gray-400 mb-1">{entry.kind === 'comment' ? '進捗記録' : '期限変更'}</p>
+          {entry.quote && <ProgressQuote quote={entry.quote}/>}
           <p className="whitespace-pre-wrap break-words">{entry.text}</p>
           {!!entry.subtaskTitles?.length && <div className="flex flex-wrap gap-1 mt-2">{entry.subtaskTitles.map((title, i) => <span key={`${entry.subtaskIds?.[i]}-${i}`} className="text-[10px] rounded px-1.5 py-0.5 bg-black/10 break-all">{title}</span>)}</div>}
           {entry.smallTaskTitle && <p className="mt-1 text-xs text-gray-500 break-words">小さいタスク: {entry.smallTaskTitle}</p>}
           {entry.status && entry.kind === 'comment' && <p className="text-[10px] mt-1 opacity-80">{entry.status === 'active' ? '進捗を記録' : entry.status === 'waiting' ? '相手待ち' : '完了'}{entry.addedSubtask ? ` · やるべきこと追加（期限: ${entry.dueDate || '未設定'}）` : ''}</p>}
           {entry.kind === 'comment' && <div className="flex items-center justify-end gap-2 mt-2 text-[11px]">
             {entry.editedAt && <span title={`編集日時: ${new Date(entry.editedAt).toLocaleString('ja-JP')}`}>編集済み</span>}
+            <button type="button" aria-label="コメントに返信" onClick={() => replyToComment(entry)} className="rounded px-2 py-1 text-blue-700 hover:bg-blue-50 underline">返信</button>
             <button type="button" aria-label="コメントを編集" onClick={() => editComment(entry)} className="rounded px-2 py-1 text-blue-700 hover:bg-blue-50 underline">編集</button>
           </div>}
         </div>
@@ -1790,13 +1831,20 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
     </div>
     <form onSubmit={send} onKeyDown={e => {
       if (e.key === 'Enter' && e.ctrlKey && !e.nativeEvent.isComposing) { e.preventDefault(); if (canSend) send(e); }
-      if (e.key === 'Escape' && editingId && !e.nativeEvent.isComposing) { e.preventDefault(); resetComposer(); }
+      if (e.key === 'Escape' && (editingId || replyTo) && !e.nativeEvent.isComposing) { e.preventDefault(); resetComposer(); }
     }} className="p-4 border-t bg-white space-y-3 shrink-0 max-h-[55%] overflow-y-auto">
       {editingId && <p className="text-xs font-bold text-blue-700" role="status">コメントを編集中 · 本文とチェック項目を変更できます</p>}
+      {(replyTo || editingEntry?.quote) && <section role="region" aria-label="返信先" className="rounded-lg border border-blue-200 px-3 py-2">
+        <ProgressQuote quote={replyTo || editingEntry.quote}/>
+        {replyTo && <>
+          {replyTo.status === 'waiting' && <p className="text-xs text-blue-700">送信すると、相手待ちの元コメントをこの返信の引用にまとめます。</p>}
+          <button type="button" aria-label="返信をキャンセル" onClick={() => setReplyTo(null)} className="text-xs text-blue-700 underline">返信をキャンセル</button>
+        </>}
+      </section>}
       {smallTarget && <div className="rounded-lg border border-blue-200 bg-blue-50 p-2 text-xs text-blue-800">
         <p className="font-bold break-words">小さいタスクへのコメント: {targetSmall?.title || smallTarget.title}</p>
         <p className="mt-1 break-words">やるべきこと: {targetSubtask?.title || smallTarget.subtaskTitle}</p>
-        {!targetSmall && <p className="mt-1">対象は削除されています。保存済みコメントの本文を編集できます。</p>}
+        {!targetSmall && <p className="mt-1">対象は削除されています。状態は変更せず、保存済みコメントの編集・返信ができます。</p>}
         <button type="button" onClick={() => { setSmallTarget(null); setCompleted(false); setWaiting(false); }} className="mt-1 underline">やるべきことへのコメントに戻る</button>
       </div>}
       <fieldset><legend className="text-xs font-bold text-gray-600 mb-2">関連するやるべきことを選択</legend><div className="max-h-28 overflow-y-auto flex flex-col gap-1.5">
@@ -1805,8 +1853,8 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
       </div></fieldset>
       <textarea ref={composerRef} aria-label={editingId ? 'コメントの編集' : '進捗コメント'} placeholder="進捗を入力…（Ctrl+Enter で送信）" value={text} onChange={e => setText(e.target.value)} rows={3} className="w-full border rounded-xl p-3 text-sm resize-y focus:outline-none focus:ring-2 focus:ring-blue-400"/>
       <div className="flex flex-wrap items-center gap-3 text-xs">
-        <label className="flex items-center gap-1.5"><input type="checkbox" checked={addTodo} onChange={e => { setAddTodo(e.target.checked); if (e.target.checked) { setAddSmall(false); setSmallTarget(null); } }}/>やるべきことの追加</label>
-        <label className="flex items-center gap-1.5"><input type="checkbox" checked={addSmall} onChange={e => { setAddSmall(e.target.checked); if (e.target.checked) { setAddTodo(false); setSmallTarget(null); } }}/>小さいタスクの追加</label>
+        <label className="flex items-center gap-1.5"><input type="checkbox" disabled={!!replyTo} checked={addTodo} onChange={e => { setAddTodo(e.target.checked); if (e.target.checked) { setAddSmall(false); setSmallTarget(null); } }}/>やるべきことの追加</label>
+        <label className="flex items-center gap-1.5"><input type="checkbox" disabled={!!replyTo} checked={addSmall} onChange={e => { setAddSmall(e.target.checked); if (e.target.checked) { setAddTodo(false); setSmallTarget(null); } }}/>小さいタスクの追加</label>
         {!addSmall && !smallTarget && <label className="flex items-center gap-1.5 text-gray-600">追加するやるべきことの期限<input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} className="border rounded-md px-2 py-1 min-w-0"/></label>}
       </div>
       {addTodo && <p className="text-xs text-blue-600">コメントを小タスクとして追加します。期限の未入力時: {task.dueDate || '未設定'}</p>}
