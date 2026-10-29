@@ -309,8 +309,18 @@ class ProgressTests(unittest.TestCase):
         self.assertNotIn('date',small)
         self.assertTrue(stored['waiting'])
         self.assertTrue(stored['subtasks'][0]['waiting'])
-        self.assertEqual(stored.get('progressHistory',[]),[])
-        expect(self.page.locator('[data-progress-entry-id]')).to_have_count(0)
+        self.assertEqual(len(stored['progressHistory']),1)
+        message=stored['progressHistory'][0]
+        self.assertEqual(message['kind'],'comment')
+        self.assertTrue(message['addedSmallTask'])
+        self.assertEqual(message['status'],'active')
+        self.assertEqual(message['text'],small['title'])
+        self.assertEqual(message['subtaskIds'],['s1'])
+        self.assertEqual(message['smallTaskId'],small['id'])
+        self.assertEqual(message['smallTaskTitle'],small['title'])
+        expect(self.page.locator('[data-progress-entry-id]')).to_have_count(1)
+        expect(self.entry(message['id'])).to_contain_text('小さいタスクの追加')
+        expect(self.entry(message['id']).locator(':scope > div')).to_have_class(re.compile(r'\bbg-purple-50\b'))
         row=self.page.locator('[data-progress-small-task-id="'+small['id']+'"]')
         expect(row).to_have_count(0)
         toggle=self.page.get_by_role('button',name='既存の調査の小さいタスクを展開',exact=True)
@@ -318,6 +328,236 @@ class ProgressTests(unittest.TestCase):
         expect(row).to_be_visible()
         expect(row).not_to_contain_text('期限')
         toggle.click();expect(row).to_have_count(0)
+
+    def test_waiting_small_task_addition_is_lime_persists_and_replies_blue(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')])
+        self.progress();self.select_chat()
+        self.page.get_by_label('関連: 既存の調査',exact=True).check()
+        self.page.get_by_label('小さいタスクの追加',exact=True).check()
+        self.page.get_by_label('相手待ち',exact=True).check()
+        self.send('回答待ちの資料確認')
+        stored=self.stored()[0]
+        small=stored['subtasks'][0]['smallTasks'][0]
+        self.assertTrue(small['waiting'])
+        self.assertFalse(small['completed'])
+        self.assertNotIn('dueDate',small)
+        self.assertFalse(stored['subtasks'][0].get('waiting',False))
+        self.assertFalse(stored.get('waiting',False))
+        self.assertEqual(len(stored['progressHistory']),1)
+        message=stored['progressHistory'][0]
+        self.assertTrue(message['addedSmallTask'])
+        self.assertEqual(message['status'],'waiting')
+        self.assertEqual(message['smallTaskId'],small['id'])
+        self.assertEqual(message['text'],small['title'])
+        self.assertEqual(message['subtaskIds'],['s1'])
+        box=self.entry(message['id']).locator(':scope > div')
+        expect(box).to_have_class(re.compile(r'\bbg-lime-50\b'))
+        self.page.get_by_label('やるべきことで絞り込み',exact=True).select_option('s1')
+        expect(self.entry(message['id'])).to_be_visible()
+        self.page.reload();self.progress();self.select_chat()
+        expect(box).to_have_class(re.compile(r'\bbg-lime-50\b'))
+        with self.page.expect_download() as download:
+            self.page.get_by_role('button',name='エクスポート',exact=True).click()
+        backup=Path(download.value.path()).read_bytes()
+        self.assertEqual(json.loads(backup)['tasks'][0]['progressHistory'],[message])
+        self.seed([])
+        self.page.locator('input[type=file]').set_input_files(dict(name='small-addition.json',mimeType='application/json',buffer=backup))
+        self.progress();self.select_chat()
+        expect(box).to_have_class(re.compile(r'\bbg-lime-50\b'))
+        self.reply(message['id']);self.send('確認への回答を受領しました')
+        stored=self.stored()[0]
+        self.assertEqual(len(stored['progressHistory']),1)
+        reply=stored['progressHistory'][0]
+        self.assertFalse(reply['addedSmallTask'])
+        self.assertEqual(reply['quote']['id'],message['id'])
+        self.assertTrue(reply['quote']['addedSmallTask'])
+        self.assertEqual(reply['quote']['text'],small['title'])
+        self.assertEqual(reply['smallTaskId'],small['id'])
+        self.assertFalse(stored['subtasks'][0]['smallTasks'][0]['waiting'])
+        expect(self.entry(message['id'])).to_have_count(0)
+        expect(self.entry(reply['id']).locator(':scope > div')).to_have_class(re.compile(r'\bbg-blue-50\b'))
+
+    def test_small_task_addition_comment_can_edit_status_without_duplicate_tasks(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')])
+        self.progress();self.select_chat()
+        self.page.get_by_label('関連: 既存の調査',exact=True).check()
+        self.page.get_by_label('小さいタスクの追加',exact=True).check()
+        self.send('調査資料の照合')
+        before=self.stored()[0]
+        message=before['progressHistory'][0]
+        small=before['subtasks'][0]['smallTasks'][0]
+        box=self.entry(message['id']).locator(':scope > div')
+        self.entry(message['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+        expect(self.page.get_by_label('小さいタスクの追加',exact=True)).not_to_be_checked()
+        self.page.get_by_label('相手待ち',exact=True).check()
+        self.page.get_by_label('コメントの編集',exact=True).fill('照合のため資料の回答を依頼しました')
+        self.page.get_by_role('button',name='編集を保存',exact=True).click()
+        after=self.stored()[0]
+        self.assertEqual(len(after['progressHistory']),1)
+        self.assertEqual(len(after['subtasks'][0]['smallTasks']),1)
+        edited=after['progressHistory'][0]
+        self.assertEqual(edited['id'],message['id'])
+        self.assertEqual(edited['createdAt'],message['createdAt'])
+        self.assertEqual(edited['smallTaskId'],small['id'])
+        self.assertTrue(edited['addedSmallTask'])
+        self.assertEqual(edited['status'],'waiting')
+        self.assertTrue(after['subtasks'][0]['smallTasks'][0]['waiting'])
+        self.assertEqual(after['subtasks'][0]['smallTasks'][0]['title'],small['title'])
+        expect(box).to_have_class(re.compile(r'\bbg-lime-50\b'))
+        self.entry(message['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+        self.page.get_by_label('相手待ち',exact=True).uncheck()
+        self.page.get_by_role('button',name='編集を保存',exact=True).click()
+        final=self.stored()[0]
+        self.assertTrue(final['progressHistory'][0]['addedSmallTask'])
+        self.assertFalse(final['subtasks'][0]['smallTasks'][0]['waiting'])
+        self.assertEqual(len(final['subtasks'][0]['smallTasks']),1)
+        expect(box).to_have_class(re.compile(r'\bbg-purple-50\b'))
+
+    def test_delete_small_task_addition_comment_removes_task_and_keeps_quote(self):
+        original=task(progressEnabled=True,progressStage='doing',waiting=True)
+        original['subtasks'][0].update(waiting=True,smallTasks=[dict(id='keep',title='残す小さい項目',completed=False)])
+        original['subtasks'][1]['smallTasks']=[dict(id='other',title='別の親の項目',completed=False)]
+        self.seed([original]);self.progress();self.select_chat()
+        self.page.get_by_label('関連: 既存の調査',exact=True).check()
+        self.page.get_by_label('小さいタスクの追加',exact=True).check()
+        self.send('コメントと一緒に削除する項目')
+        added=self.stored()[0]
+        message=added['progressHistory'][0]
+        small=added['subtasks'][0]['smallTasks'][-1]
+        self.reply(message['id']);self.send('削除後も引用を残す進捗')
+        before=self.stored()[0]
+        reply=before['progressHistory'][-1]
+        self.page.get_by_role('button',name='既存の調査の小さいタスクを展開',exact=True).click()
+        row=self.page.locator('[data-progress-small-task-id="'+small['id']+'"]')
+        expect(row).to_be_visible()
+        self.entry(message['id']).get_by_role('button',name='コメントを削除',exact=True).click()
+        expected=json.loads(json.dumps(before))
+        expected['progressHistory']=[reply]
+        expected['subtasks'][0]['smallTasks']=[before['subtasks'][0]['smallTasks'][0]]
+        self.assertEqual(self.stored()[0],expected)
+        expect(self.entry(message['id'])).to_have_count(0)
+        expect(row).to_have_count(0)
+        expect(self.entry(reply['id']).get_by_role('blockquote',name='引用コメント')).to_contain_text(message['text'])
+        self.page.reload();self.progress();self.select_chat()
+        self.assertEqual(self.stored()[0],expected)
+        with self.page.expect_download() as download:
+            self.page.get_by_role('button',name='エクスポート',exact=True).click()
+        self.assertEqual(json.loads(Path(download.value.path()).read_text())['tasks'][0],expected)
+
+    def test_small_task_row_delete_keeps_comments_and_other_tasks(self):
+        comment=dict(id='small-note',kind='comment',createdAt='2026-01-01T01:00:00.000Z',
+                     text='削除後も保持する進捗',status='waiting',subtaskIds=['s1'],subtaskTitles=['既存の調査'],
+                     smallTaskId='remove',smallTaskTitle='一覧から削除する項目')
+        original=task(progressEnabled=True,progressStage='doing',waiting=True,progressHistory=[comment])
+        original['subtasks'][0].update(waiting=True,smallTasks=[
+            dict(id='remove',title='一覧から削除する項目',waiting=True,completed=False),
+            dict(id='keep',title='一覧に残す項目',completed=False)])
+        original['subtasks'][1]['smallTasks']=[dict(id='other',title='別の項目',completed=True)]
+        self.seed([original]);self.progress();self.select_chat()
+        self.page.get_by_role('button',name='既存の調査の小さいタスクを展開',exact=True).click()
+        row=self.page.locator('[data-progress-small-task-id="remove"]')
+        row.dblclick()
+        self.page.get_by_label('進捗コメント',exact=True).fill('送信していない下書き')
+        row.get_by_role('button',name='一覧から削除する項目を削除',exact=True).click()
+        expected=json.loads(json.dumps(original))
+        expected['subtasks'][0]['smallTasks']=[original['subtasks'][0]['smallTasks'][1]]
+        self.assertEqual(self.stored()[0],expected)
+        expect(row).to_have_count(0)
+        expect(self.page.locator('[data-progress-small-task-id="keep"]')).to_be_visible()
+        expect(self.entry(comment['id'])).to_be_visible()
+        expect(self.page.get_by_label('進捗コメント',exact=True)).to_have_value('')
+        self.entry(comment['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+        self.page.get_by_label('コメントの編集',exact=True).fill('削除済み項目の記録を訂正')
+        self.page.get_by_role('button',name='編集を保存',exact=True).click()
+        after=self.stored()[0]
+        self.assertEqual(after['subtasks'],expected['subtasks'])
+        self.assertEqual(after['progressHistory'][0]['smallTaskId'],'remove')
+        self.assertEqual(after['progressHistory'][0]['text'],'削除済み項目の記録を訂正')
+
+    def test_small_task_delete_preserves_unrelated_reply_draft(self):
+        source=dict(id='other-reply',kind='comment',createdAt='2026-01-01T01:00:00.000Z',
+                    text='別件の返信元',status='active',subtaskIds=[],subtaskTitles=[])
+        original=task(progressEnabled=True,progressStage='doing',progressHistory=[source])
+        original['subtasks'][0]['smallTasks']=[dict(id='remove',title='以前に選択した項目',completed=False)]
+        self.seed([original]);self.progress();self.select_chat()
+        self.page.get_by_role('button',name='既存の調査の小さいタスクを展開',exact=True).click()
+        row=self.page.locator('[data-progress-small-task-id="remove"]')
+        row.dblclick();self.send('以前の項目への記録')
+        self.reply(source['id'])
+        editor=self.page.get_by_label('進捗コメント',exact=True)
+        editor.fill('別件の返信を入力中')
+        history=self.stored()[0]['progressHistory']
+        row.get_by_role('button',name='以前に選択した項目を削除',exact=True).click()
+        expect(row).to_have_count(0)
+        expect(self.page.get_by_role('region',name='返信先',exact=True)).to_be_visible()
+        expect(editor).to_have_value('別件の返信を入力中')
+        self.assertEqual(self.stored()[0]['progressHistory'],history)
+        editor.press('Control+Enter')
+        final=self.stored()[0]
+        self.assertEqual(final['subtasks'][0]['smallTasks'],[])
+        self.assertEqual(final['progressHistory'][-1]['quote']['id'],source['id'])
+
+    def test_delete_ordinary_small_comment_keeps_task_quote_and_other_editor(self):
+        source=dict(id='source-note',kind='comment',createdAt='2026-01-01T01:00:00.000Z',
+                    text='引用元の通常コメント',status='active',subtaskIds=['s1'],subtaskTitles=['既存の調査'],
+                    smallTaskId='small1',smallTaskTitle='残す作業')
+        reply=dict(id='reply-note',kind='comment',createdAt='2026-01-02T01:00:00.000Z',
+                   text='引用を保持する返信',status='active',subtaskIds=['s1'],subtaskTitles=['既存の調査'],
+                   smallTaskId='small1',smallTaskTitle='残す作業',quote=source)
+        original=task(progressEnabled=True,progressStage='doing',waiting=True,progressHistory=[source,reply])
+        original['subtasks'][0]['smallTasks']=[dict(id='small1',title='残す作業',completed=False,waiting=True)]
+        self.seed([original]);self.progress();self.select_chat()
+        self.entry(reply['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+        editor=self.page.get_by_label('コメントの編集',exact=True)
+        editor.fill('編集中の返信も保持')
+        self.entry(source['id']).get_by_role('button',name='コメントを削除',exact=True).click()
+        expect(editor).to_have_value('編集中の返信も保持')
+        expected=json.loads(json.dumps(original))
+        expected['progressHistory']=[reply]
+        self.assertEqual(self.stored()[0],expected)
+        self.page.get_by_role('button',name='編集を保存',exact=True).click()
+        after=self.stored()[0]
+        self.assertEqual(after['progressHistory'][0]['quote'],source)
+        self.assertEqual(after['subtasks'],original['subtasks'])
+        expect(self.entry(source['id'])).to_have_count(0)
+        expect(self.entry(reply['id']).get_by_role('blockquote',name='引用コメント')).to_contain_text(source['text'])
+
+    def test_deleting_current_comment_exits_edit_or_reply_without_resurrection(self):
+        source=dict(id='delete-current',kind='comment',createdAt='2026-01-01T01:00:00.000Z',
+                    text='入力中に削除するコメント',status='waiting',subtaskIds=[],subtaskTitles=[])
+        for mode in ['edit','reply']:
+            with self.subTest(mode=mode):
+                self.seed([task(progressEnabled=True,progressStage='doing',waiting=True,progressHistory=[source])])
+                self.progress();self.select_chat()
+                if mode=='edit':
+                    self.entry(source['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+                    self.page.get_by_label('コメントの編集',exact=True).fill('編集中の下書き')
+                else:
+                    self.reply(source['id'])
+                    self.page.get_by_label('進捗コメント',exact=True).fill('返信の下書き')
+                self.entry(source['id']).get_by_role('button',name='コメントを削除',exact=True).click()
+                self.assertEqual(self.stored()[0]['progressHistory'],[])
+                self.assertTrue(self.stored()[0]['waiting'])
+                expect(self.page.get_by_label('コメントの編集',exact=True)).to_have_count(0)
+                expect(self.page.get_by_role('region',name='返信先',exact=True)).to_have_count(0)
+                expect(self.page.get_by_label('進捗コメント',exact=True)).to_have_value('')
+                self.send('削除後の新しい記録')
+                history=self.stored()[0]['progressHistory']
+                self.assertEqual(len(history),1)
+                self.assertNotEqual(history[0]['id'],source['id'])
+
+    def test_delete_deadline_reason_keeps_deadlines(self):
+        note=dict(id='deadline-reason',kind='change',changeType='deadline',reason='顧客との日程調整',
+                  text=f'タスク「進捗テスト案件」の期限を {FUTURE} → {LATER} に変更しました\n理由: 顧客との日程調整',
+                  createdAt='2026-01-01T01:00:00.000Z',subtaskIds=[],subtaskTitles=[])
+        original=task(progressEnabled=True,progressStage='doing',progressHistory=[note])
+        original['dueDate']=LATER
+        self.seed([original]);self.progress();self.select_chat()
+        expect(self.entry(note['id']).locator(':scope > div')).to_have_class(re.compile(r'\bbg-white\b'))
+        self.entry(note['id']).get_by_role('button',name='コメントを削除',exact=True).click()
+        expected=json.loads(json.dumps(original));expected['progressHistory']=[]
+        self.assertEqual(self.stored()[0],expected)
+        expect(self.entry(note['id'])).to_have_count(0)
 
     def test_nested_small_task_doubleclick_comment_edit_and_status_scope(self):
         original=task(progressEnabled=True,progressStage='doing')
