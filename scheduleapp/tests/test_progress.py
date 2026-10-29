@@ -330,7 +330,7 @@ class ProgressTests(unittest.TestCase):
         self.send('途中の進捗です')
         self.assertEqual(len(self.stored()[0]['subtasks'][0]['smallTasks']),1)
         midway=self.stored()[0]['progressHistory'][-1]
-        expect(self.entry(midway['id']).locator(':scope > div')).to_have_class(re.compile(r'\bbg-indigo-50\b'))
+        expect(self.entry(midway['id']).locator(':scope > div')).to_have_class(re.compile(r'\bbg-violet-50\b'))
         expect(self.entry(source['id'])).to_be_visible()
         row.dblclick()
         self.page.get_by_label('完了',exact=True).check()
@@ -495,7 +495,7 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(self.stored()[0]['progressHistory'],[source])
         self.assertTrue(self.stored()[0]['waiting'])
 
-    def test_nested_waiting_reply_is_indigo_and_only_resolves_small_task(self):
+    def test_nested_waiting_reply_is_violet_and_only_resolves_small_task(self):
         source=dict(id='small-wait',kind='comment',createdAt='2026-01-01T01:00:00.000Z',
                     text='小さい作業の回答を待っています',status='waiting',subtaskIds=['s1'],subtaskTitles=['既存の調査'],
                     smallTaskId='small1',smallTaskTitle='資料の数字を確認')
@@ -514,7 +514,7 @@ class ProgressTests(unittest.TestCase):
         self.assertFalse(stored['subtasks'][0]['smallTasks'][0]['waiting'])
         self.assertTrue(stored['subtasks'][0]['waiting'])
         self.assertTrue(stored['waiting'])
-        expect(self.entry(message['id']).locator(':scope > div')).to_have_class(re.compile(r'\bbg-indigo-50\b'))
+        expect(self.entry(message['id']).locator(':scope > div')).to_have_class(re.compile(r'\bbg-violet-50\b'))
         self.page.get_by_label('やるべきことで絞り込み',exact=True).select_option('s1')
         expect(self.entry(message['id'])).to_be_visible()
 
@@ -535,7 +535,7 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(message['subtaskIds'],['s1'])
         self.assertTrue(stored['subtasks'][0]['waiting'])
         self.assertTrue(stored['waiting'])
-        expect(self.entry(message['id']).locator(':scope > div')).to_have_class(re.compile(r'\bbg-indigo-50\b'))
+        expect(self.entry(message['id']).locator(':scope > div')).to_have_class(re.compile(r'\bbg-violet-50\b'))
 
     def test_reply_to_deleted_todo_keeps_historical_parent_filter(self):
         source=dict(id='deleted-todo-wait',kind='comment',createdAt='2026-01-01T01:00:00.000Z',
@@ -621,7 +621,7 @@ class ProgressTests(unittest.TestCase):
         expect(row).not_to_contain_text('期限')
         toggle.click();expect(row).to_have_count(0)
 
-    def test_waiting_small_task_addition_is_green_persists_and_replies_indigo(self):
+    def test_waiting_small_task_addition_is_green_persists_and_replies_violet(self):
         self.seed([task(progressEnabled=True,progressStage='doing')])
         self.progress();self.select_chat()
         self.page.get_by_label('関連: 既存の調査',exact=True).check()
@@ -667,7 +667,7 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(reply['smallTaskId'],small['id'])
         self.assertFalse(stored['subtasks'][0]['smallTasks'][0]['waiting'])
         expect(self.entry(message['id'])).to_have_count(0)
-        expect(self.entry(reply['id']).locator(':scope > div')).to_have_class(re.compile(r'\bbg-indigo-50\b'))
+        expect(self.entry(reply['id']).locator(':scope > div')).to_have_class(re.compile(r'\bbg-violet-50\b'))
 
     def test_small_task_addition_comment_can_edit_status_without_duplicate_tasks(self):
         self.seed([task(progressEnabled=True,progressStage='doing')])
@@ -1015,7 +1015,7 @@ class ProgressTests(unittest.TestCase):
             entry.update(createdAt=f'2026-01-01T01:00:{index:02d}.000Z',subtaskIds=['s1'],subtaskTitles=['既存の調査'])
         self.seed([task(progressEnabled=True,progressStage='doing',progressHistory=entries)])
         self.progress();self.select_chat()
-        expected={'normal':'bg-blue-50','waiting':'bg-green-50','small':'bg-purple-50','small-waiting':'bg-green-50','small-completed':'bg-blue-50','small-reply':'bg-indigo-50','deadline':'bg-white'}
+        expected={'normal':'bg-blue-50','waiting':'bg-green-50','small':'bg-purple-50','small-waiting':'bg-green-50','small-completed':'bg-blue-50','small-reply':'bg-violet-50','deadline':'bg-white'}
         expect(self.page.locator('[data-progress-entry-id]')).to_have_count(len(expected))
         for key,color in expected.items():
             expect(self.entry(key).locator(':scope > div')).to_have_class(re.compile(r'\b'+color+r'\b'))
@@ -1048,7 +1048,7 @@ class ProgressTests(unittest.TestCase):
         self.send('小さい項目の通常進捗')
         small_message=self.stored()[0]['progressHistory'][-1]
         small_box=self.entry(small_message['id']).locator(':scope > div')
-        expect(small_box).to_have_class(re.compile(r'\bbg-indigo-50\b'))
+        expect(small_box).to_have_class(re.compile(r'\bbg-violet-50\b'))
         self.entry(small_message['id']).get_by_role('button',name='コメントを編集',exact=True).click()
         self.page.get_by_label('相手待ち',exact=True).check()
         self.page.get_by_role('button',name='編集を保存',exact=True).click()

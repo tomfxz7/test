@@ -267,7 +267,7 @@ const progressEntryClasses = (entry) => {
   if (entry.kind !== 'comment') return 'bg-white border-gray-200 text-gray-700';
   if (entry.status === 'completed') return 'bg-blue-50 border-blue-200 text-blue-900';
   if (entry.status === 'waiting') return 'bg-green-50 border-green-300 text-green-800';
-  if (entry.smallTaskId && entry.quote && !entry.addedSmallTask) return 'bg-indigo-50 border-indigo-200 text-indigo-900';
+  if (entry.smallTaskId && entry.quote && !entry.addedSmallTask) return 'bg-violet-50 border-violet-200 text-violet-900';
   if (entry.quote?.status === 'waiting') return 'bg-blue-50 border-blue-200 text-blue-900';
   if (entry.smallTaskId || entry.addedSmallTask) return 'bg-purple-50 border-purple-200 text-purple-900';
   return 'bg-blue-50 border-blue-200 text-blue-900';
