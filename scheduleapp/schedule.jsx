@@ -1636,8 +1636,22 @@ const ProgressSettingsModal = ({ task, starting, onClose, onSave }) => {
   );
 };
 
-const ProgressTaskCard = ({ task, selected, onSelect, onSettings, onStart, onDragStart, onCommentSmallTask, onDeleteSmallTask }) => {
+const WaitingSmallTaskRow = ({ entry, onReply, onDelete }) => <li data-progress-waiting-task-id={entry.id}
+  onDoubleClick={e => { e.stopPropagation(); onReply(); }}
+  className="rounded-lg border border-green-300 bg-green-50 text-green-800 px-2 py-1.5 flex items-center gap-2">
+  <button type="button" onClick={onReply} className="flex-1 min-w-0 text-left break-words">
+    {entry.text}<span className="block text-[10px] mt-0.5">相手待ち · クリックして引用返信</span>
+  </button>
+  <button type="button" aria-label={`${entry.text}に返信`} onClick={onReply} className="text-[10px] underline shrink-0">返信</button>
+  <button type="button" aria-label={`${entry.text}の相手待ちを削除`} onClick={e => { e.stopPropagation(); onDelete(); }}
+    onDoubleClick={e => e.stopPropagation()} className="p-1 text-red-700 shrink-0"><Trash2 size={14}/></button>
+</li>;
+
+const ProgressTaskCard = ({ task, selected, onSelect, onSettings, onStart, onDragStart, onCommentSmallTask, onDeleteSmallTask, onReplyWaiting, onDeleteWaiting }) => {
   const [expandedIds, setExpandedIds] = useState([]);
+  const waitingEntries = (task.progressHistory || []).filter(entry => entry.kind === 'comment' && entry.status === 'waiting' && !entry.smallTaskId && !entry.addedSubtask);
+  const parentIds = new Set(getProgressSubtasks(task).map(st => st.id));
+  const unassignedWaiting = waitingEntries.filter(entry => !(entry.subtaskIds || []).some(id => parentIds.has(id)));
   const status = progressItemStatus(task);
   return <article data-progress-task-id={task.id} data-status={status} draggable onDragStart={e => onDragStart(e, task.id)} onClick={onSelect} className={`border rounded-xl p-3 shadow-sm ${progressStatusClasses(status)} ${selected ? 'ring-2 ring-blue-500' : ''}`}>
     <div className="flex gap-2 justify-between items-start">
@@ -1648,6 +1662,7 @@ const ProgressTaskCard = ({ task, selected, onSelect, onSettings, onStart, onDra
     <ul className="space-y-1.5">
       {getProgressSubtasks(task).map(st => {
         const smallTasks = getProgressSmallTasks(st);
+        const waitingTasks = waitingEntries.filter(entry => entry.subtaskIds?.includes(st.id));
         const expanded = expandedIds.includes(st.id);
         return <li key={st.id} data-progress-subtask-id={st.id} data-status={progressItemStatus(st)} className={`border rounded-lg text-xs overflow-hidden ${progressStatusClasses(progressItemStatus(st))}`} onClick={e => e.stopPropagation()}>
           <button type="button" aria-label={`${st.title}の小さいタスクを展開`} aria-expanded={expanded}
@@ -1656,14 +1671,16 @@ const ProgressTaskCard = ({ task, selected, onSelect, onSettings, onStart, onDra
             <div className="flex gap-1.5 items-start">
               {expanded ? <ChevronDown size={14} className="shrink-0 mt-0.5"/> : <ChevronRight size={14} className="shrink-0 mt-0.5"/>}
               <span className={`break-words font-medium flex-1 min-w-0 ${st.completed ? 'line-through' : ''}`}>{st.title}</span>
-              <span className="text-[10px] shrink-0 opacity-70">小さいタスク {smallTasks.length}</span>
+              <span className="text-[10px] shrink-0 opacity-70">小さいタスク {smallTasks.length + waitingTasks.length}</span>
             </div>
             <div className="flex flex-wrap justify-between gap-1 mt-1 opacity-80"><span>{progressStatusLabel(progressItemStatus(st))}</span><span>期限: {st.dueDate || '未設定'}</span></div>
           </button>
           {expanded && <div className="px-2 pb-2 border-t border-current/10">
-            {!smallTasks.length && <p className="py-2 text-[11px] opacity-70">小さいタスクはまだありません。コメント欄から追加できます。</p>}
-            {!!smallTasks.length && <p className="py-1.5 text-[10px] opacity-70">ダブルクリック、Enter、またはコメントボタンで記録</p>}
+            {!smallTasks.length && !waitingTasks.length && <p className="py-2 text-[11px] opacity-70">小さいタスクはまだありません。コメント欄から追加できます。</p>}
+            {!!(smallTasks.length + waitingTasks.length) && <p className="py-1.5 text-[10px] opacity-70">ダブルクリック、Enter、またはコメントボタンで記録</p>}
             <ul className="space-y-1.5">
+              {waitingTasks.map(entry => <WaitingSmallTaskRow key={entry.id} entry={entry}
+                onReply={() => onReplyWaiting(entry.id)} onDelete={() => onDeleteWaiting(entry.id)}/>)}
               {smallTasks.map(small => <li key={small.id} data-progress-small-task-id={small.id} data-status={progressItemStatus(small)}
                 onDoubleClick={e => { e.stopPropagation(); onCommentSmallTask(st.id, small.id); }}
                 onDragStart={e => { e.preventDefault(); e.stopPropagation(); }}
@@ -1685,6 +1702,11 @@ const ProgressTaskCard = ({ task, selected, onSelect, onSettings, onStart, onDra
         </li>;
       })}
     </ul>
+    {!!unassignedWaiting.length && <div className="mt-3 border rounded-lg p-2 bg-white/50" onClick={e => e.stopPropagation()}>
+      <p className="text-xs font-bold mb-2">小さいタスク（タスク全体の相手待ち）</p>
+      <ul className="space-y-1.5">{unassignedWaiting.map(entry => <WaitingSmallTaskRow key={entry.id} entry={entry}
+        onReply={() => onReplyWaiting(entry.id)} onDelete={() => onDeleteWaiting(entry.id)}/>)}</ul>
+    </div>}
     {(!task.progressStage || task.progressStage === 'todo') && <button type="button" onClick={e => { e.stopPropagation(); onStart(); }} className="mt-3 w-full bg-white/80 border border-current rounded-lg py-1.5 text-xs font-bold hover:bg-white">着手する</button>}
     {task.progressStage === 'doing' && <p className="mt-3 text-[11px] opacity-70">クリックして進捗・履歴を表示</p>}
   </article>;
@@ -1720,9 +1742,16 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
   const resetComposer = () => {
     setText(''); setSelectedIds([]); setAddTodo(false); setAddSmall(false); setSmallTarget(null); setDueDate(''); setWaiting(false); setCompleted(false); setEditingId(null); setReplyTo(null);
   };
+  const missingDraftSource = !!((editingId && !editingEntry) || (replyTo && !history.some(entry => entry.id === replyTo.id)));
+  useEffect(() => { if (missingDraftSource) resetComposer(); }, [missingDraftSource]);
   useEffect(() => {
     if (!smallTaskTarget || smallTaskTarget.taskId !== task.id) { resetComposer(); return; }
     resetComposer();
+    if (smallTaskTarget.replyEntryId) {
+      const entry = (task.progressHistory || []).find(item => item.id === smallTaskTarget.replyEntryId && item.kind === 'comment');
+      if (entry) replyToComment(entry);
+      return;
+    }
     const parent = getProgressSubtasks(task).find(st => st.id === smallTaskTarget.subtaskId);
     const small = getProgressSmallTasks(parent).find(item => item.id === smallTaskTarget.smallTaskId);
     if (!parent || !small) return;
@@ -1917,6 +1946,13 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
   const deleteSmallTask = (task, id) => {
     onUpdateTask(task.id, previous => removeProgressSmallTask(previous, id));
   };
+  const replyWaiting = (task, replyEntryId) => {
+    setSelectedId(task.id);
+    setSmallTaskTarget({ taskId: task.id, replyEntryId, requestId: createProgressId() });
+  };
+  const deleteWaiting = (task, id) => {
+    onUpdateTask(task.id, previous => ({ ...previous, progressHistory: (previous.progressHistory || []).filter(entry => entry.id !== id) }));
+  };
   const commentSmallTask = (task, subtaskId, smallTaskId) => {
     setSelectedId(task.id);
     setSmallTaskTarget({ taskId: task.id, subtaskId, smallTaskId, requestId: createProgressId() });
@@ -1942,7 +1978,7 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
           return <section key={stage} aria-label={title} data-progress-stage={stage} onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }} onDrop={e => dropTask(e, stage)} className={`rounded-2xl border flex flex-col min-h-0 overflow-hidden ${draggingId ? 'border-blue-400 bg-blue-50' : 'border-gray-200 bg-gray-50'}`}>
             <header className="p-4 border-b flex items-center justify-between bg-white shrink-0"><h2 className="text-sm font-black flex items-center gap-2">{title}<span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">{items.length}</span></h2>{stage === 'todo' && <button onClick={onAddTask} aria-label="未着手タスクを追加" className="p-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100"><Plus size={18}/></button>}</header>
             <div className="overflow-y-auto p-3 space-y-3 flex-1 min-h-0">
-              {items.map(task => <ProgressTaskCard key={task.id} task={task} selected={selectedId === task.id} onSelect={() => selectTask(task)} onSettings={() => setSettings({ id: task.id, starting: false })} onStart={() => startTask(task)} onDeleteSmallTask={id => deleteSmallTask(task, id)} onCommentSmallTask={(subtaskId, smallTaskId) => commentSmallTask(task, subtaskId, smallTaskId)} onDragStart={(e, id) => { setDraggingId(id); e.dataTransfer.setData('application/x-taskmatrix-progress', id); e.dataTransfer.effectAllowed = 'move'; e.currentTarget.addEventListener('dragend', () => setDraggingId(null), { once: true }); }}/>) }
+              {items.map(task => <ProgressTaskCard key={task.id} task={task} selected={selectedId === task.id} onSelect={() => selectTask(task)} onSettings={() => setSettings({ id: task.id, starting: false })} onStart={() => startTask(task)} onReplyWaiting={id => replyWaiting(task, id)} onDeleteWaiting={id => deleteWaiting(task, id)} onDeleteSmallTask={id => deleteSmallTask(task, id)} onCommentSmallTask={(subtaskId, smallTaskId) => commentSmallTask(task, subtaskId, smallTaskId)} onDragStart={(e, id) => { setDraggingId(id); e.dataTransfer.setData('application/x-taskmatrix-progress', id); e.dataTransfer.effectAllowed = 'move'; e.currentTarget.addEventListener('dragend', () => setDraggingId(null), { once: true }); }}/>) }
               {!items.length && <p className="border-2 border-dashed border-gray-200 rounded-xl p-5 text-xs text-gray-400 text-center leading-relaxed">{stage === 'todo' ? 'ボードの「進捗ページに表示」にチェックするか、＋からタスクを追加してください。' : '未着手のカードをここへドラッグするか、「着手する」を押してください。'}</p>}
             </div>
           </section>;
