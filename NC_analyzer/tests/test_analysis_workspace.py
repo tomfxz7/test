@@ -164,18 +164,18 @@ class AnalysisWorkspaceTests(unittest.TestCase):
             self.page.get_by_role('gridcell', name=file_name + ' の表示名セル', exact=True).first.dblclick()
         editor.fill(name)
         editor.blur()
-        clear = self.page.get_by_role('button', name='選択解除', exact=True)
-        if clear.count() and clear.is_enabled():
-            clear.click()
+        self.clear_selection()
 
     def assign_group(self, name, group):
         editor = self.page.get_by_label(name + ' のグループ', exact=True)
         if not editor.count():
             self.page.get_by_role('gridcell', name=name + ' のグループセル', exact=True).dblclick()
         editor.select_option(group)
-        clear = self.page.get_by_role('button', name='選択解除', exact=True)
-        if clear.count() and clear.is_enabled():
-            clear.click()
+        self.clear_selection()
+
+    def clear_selection(self):
+        self.page.locator('.nc-center').focus()
+        self.page.keyboard.press('Escape')
 
     def drag_cells(self, start, end):
         start.scroll_into_view_if_needed()
@@ -212,8 +212,8 @@ class AnalysisWorkspaceTests(unittest.TestCase):
         self.page.get_by_role('button', name='選択ファイルを上へ', exact=True).click()
         expect(self.page.locator('[data-result-id] h3')).to_have_text(['A', 'C', 'Beta'])
         self.add_group('比較')
-        self.page.get_by_label('選択ファイルの移動先グループ', exact=True).select_option('比較')
-        self.page.get_by_role('button', name='グループ変更', exact=True).click()
+        self.page.get_by_role('gridcell', name='C のグループセル', exact=True).click(button='right')
+        self.page.get_by_role('menuitem', name='比較', exact=True).click()
         self.page.get_by_role('button', name='グループ比較', exact=True).click()
         expect(self.page.locator('[data-result-group] h3')).to_have_text(['Group 1', '比較'])
         group = self.page.locator('[data-result-group="Group 1"]')
@@ -260,7 +260,8 @@ class AnalysisWorkspaceTests(unittest.TestCase):
             self.assertAlmostEqual(wav.getnframes() / wav.getframerate(), 2.6, delta=1 / wav.getframerate())
             self.assertEqual(wav.getnchannels(), 1)
             samples = struct.unpack('<' + 'h' * wav.getnframes(), wav.readframes(wav.getnframes()))
-            self.assertLessEqual(max(map(abs, samples)), 328)  # Monitoring gain is never exported.
+            self.assertGreater(max(map(abs, samples)), 600)
+            self.assertLessEqual(max(map(abs, samples)), 657)  # The current 2x gain is exported.
         self.page.get_by_label('split IN (秒)', exact=True).fill('3.3')
         self.wait_for_results(1)
         expect(self.page.locator('[data-result-id] .nc-result-head')).to_contain_text('00:03.300')
@@ -529,7 +530,7 @@ class AnalysisWorkspaceTests(unittest.TestCase):
         cells.first.dblclick()
         self.page.get_by_label('A のグループ', exact=True).select_option('空調')
         self.assertEqual([item['groupName'] for item in self.project_json()['dataItems']], ['空調'] * 3 + ['Group 1'])
-        self.page.get_by_role('button', name='選択解除', exact=True).click()
+        self.clear_selection()
         self.drag_cells(cells.nth(2), cells.nth(3))
         cells.nth(2).click(button='right')
         self.page.get_by_role('menuitem', name='比較', exact=True).click()
@@ -564,7 +565,7 @@ class AnalysisWorkspaceTests(unittest.TestCase):
         self.page.get_by_label('A.wav の表示名', exact=True).fill('取り消す')
         self.page.keyboard.press('Escape')
         expect(self.page.get_by_role('gridcell', name='A.wav の表示名セル', exact=True)).to_have_text('場所A')
-        self.page.get_by_role('button', name='選択解除', exact=True).click()
+        self.clear_selection()
         rows = self.page.locator('[data-clip-id]')
         self.drag_cells(rows.first.locator('[data-column=fileName]'), rows.last.locator('[role=gridcell][data-column=nc]'))
         self.page.evaluate("navigator.clipboard.writeText('偽の音源.wav\\t新A\\t新グループ\\tNC-999\\n別.wav\\t新B\\t新グループ\\tNC-888')")
@@ -587,8 +588,8 @@ class AnalysisWorkspaceTests(unittest.TestCase):
         self.page.get_by_role('gridcell', name='A のグループセル', exact=True).click(modifiers=['Control'])
         expect(self.page.locator('[role=gridcell][aria-selected=true]')).to_have_count(2)
         self.page.get_by_role('button', name='表示名 ↕', exact=True).click()
-        self.page.get_by_label('選択ファイルの移動先グループ', exact=True).select_option('部署')
-        self.page.get_by_role('button', name='グループ変更', exact=True).click()
+        self.page.get_by_role('gridcell', name='B のグループセル', exact=True).click(button='right')
+        self.page.get_by_role('menuitem', name='部署', exact=True).click()
         self.assertEqual([(item['legendName'], item['groupName']) for item in self.project_json()['dataItems']],
                          [('A', 'Group 1'), ('B', '部署'), ('C', '部署'), ('D', 'Group 1')])
         self.page.get_by_role('gridcell', name='D のグループセル', exact=True).click()
@@ -599,6 +600,58 @@ class AnalysisWorkspaceTests(unittest.TestCase):
         self.page.get_by_label('プロジェクト名', exact=True).fill('サイドバーの入力')
         self.assertEqual([item['legendName'] for item in self.project_json()['dataItems']], ['A', 'B', 'C', 'D'])
         self.assertEqual(self.page.evaluate('window.testAnalysisCalls.length'), 4)
+
+    def test_escape_after_bulk_move_and_full_long_filename(self):
+        long_name = '測定場所と条件を含む非常に長いファイル名_' + 'measurement_2026_' * 9 + '.wav'
+        self.upload('A.wav', 'B.wav', long_name)
+        self.wait_for_results(3)
+        self.page.get_by_label('B を選択', exact=True).check()
+        self.page.get_by_label(long_name[:-4] + ' を選択', exact=True).check()
+        self.page.get_by_role('button', name='選択ファイルを上へ', exact=True).click()
+        self.page.keyboard.press('Escape')
+        expect(self.page.locator('[role=gridcell][aria-selected=true]')).to_have_count(0)
+        expect(self.page.get_by_label('B を選択', exact=True)).not_to_be_checked()
+        expect(self.page.get_by_role('button', name='選択ファイルを上へ', exact=True)).to_be_disabled()
+        cell = self.page.get_by_role('gridcell', name=long_name, exact=True)
+        self.assertTrue(cell.evaluate('el => el.scrollWidth <= el.clientWidth + 1'))
+        scroller = self.page.locator('.nc-sheet .nc-table-scroll')
+        self.assertTrue(scroller.evaluate('el => el.scrollWidth > el.clientWidth'))
+        scroller.evaluate('el => el.scrollLeft = el.scrollWidth')
+        self.assertLessEqual(self.page.evaluate('document.documentElement.scrollWidth'), 1600)
+
+    def test_gain_100x_frequency_settings_and_amplified_exports(self):
+        self.upload('amplify.wav', amplitude=0.02)
+        self.wait_for_results(1)
+        baseline = self.project_json()['dataItems'][0]['rawValues']
+        expect(self.page.get_by_role('button', name='グループ変更', exact=True)).to_have_count(0)
+        expect(self.page.get_by_role('button', name='選択解除', exact=True)).to_have_count(0)
+        self.page.get_by_label('再生音量', exact=True).fill('10000')
+        self.page.get_by_role('button', name='スペクトログラム', exact=True).click()
+        expect(self.page.get_by_label('最低周波数 (Hz)', exact=True)).to_have_value('100')
+        expect(self.page.get_by_label('最高周波数 (Hz)', exact=True)).to_have_value('1000')
+        self.page.get_by_label('最高周波数 (Hz)', exact=True).fill('8000')
+        self.page.get_by_label('最低周波数 (Hz)', exact=True).fill('50')
+        expect(self.page.locator('canvas')).to_have_attribute('aria-label', 'amplify の50〜8000 Hzスペクトログラム範囲選択')
+        self.assertEqual(self.project_json()['dataItems'][0]['rawValues'], baseline)
+        self.assertEqual(self.page.evaluate('window.testAnalysisCalls.length'), 1)
+        for button in ['切り抜きWAV', 'CSV＋切り抜きWAVをZIP出力']:
+            _, data = self.download(button)
+            if button != '切り抜きWAV':
+                with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                    data = archive.read(next(name for name in archive.namelist() if name.endswith('.wav')))
+            with wave.open(io.BytesIO(data), 'rb') as wav:
+                samples = struct.unpack('<' + 'h' * wav.getnframes(), wav.readframes(wav.getnframes()))
+                self.assertEqual(max(samples), 32767)
+                self.assertEqual(min(samples), -32768)
+        _, nca = self.download('NCA出力')
+        with zipfile.ZipFile(io.BytesIO(nca)) as archive:
+            settings = json.loads(archive.read('project.json'))
+            self.assertEqual(settings['display']['spectrogramFrequencies'], {'min': 50, 'max': 8000})
+            self.assertEqual(settings['clips'][0]['playbackGainPercent'], 10000)
+            self.assertEqual(archive.read(settings['clips'][0]['audioFile']), wav_bytes(amplitude=0.02))
+        self.import_nca(nca)
+        expect(self.page.get_by_label('再生音量', exact=True)).to_have_value('10000')
+        expect(self.page.get_by_label('最高周波数 (Hz)', exact=True)).to_have_value('8000')
 
 
 if __name__ == '__main__':
