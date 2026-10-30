@@ -193,7 +193,7 @@ const formatTime = (seconds) => {
     return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
 };
 
-const createTrimmedWav = (buffer, startTime, endTime) => {
+const createTrimmedWav = (buffer, startTime, endTime, gain = 1) => {
     const start = Math.max(0, Math.floor(startTime * buffer.sampleRate));
     const end = Math.min(buffer.length, Math.ceil(endTime * buffer.sampleRate));
     const frames = end - start;
@@ -211,7 +211,7 @@ const createTrimmedWav = (buffer, startTime, endTime) => {
     let offset = 44;
     for (let i = start; i < end; i++) {
         for (let channel = 0; channel < channels; channel++) {
-            const sample = Math.max(-1, Math.min(1, buffer.getChannelData(channel)[i]));
+            const sample = Math.max(-1, Math.min(1, buffer.getChannelData(channel)[i] * gain));
             view.setInt16(offset, sample < 0 ? sample * 32768 : sample * 32767, true);
             offset += 2;
         }
@@ -480,7 +480,7 @@ const ResultChart = ({ items, title, visibleNcCurves, lineWidth, pointSize, yAxi
     );
 };
 
-const SpectrogramEditor = ({ clip, disabled, onChange, zoom, height }) => {
+const SpectrogramEditor = ({ clip, disabled, onChange, zoom, height, frequencyMin, frequencyMax }) => {
     const canvasRef = useRef(null);
     const rasterRef = useRef(null);
     const sourceRef = useRef(null);
@@ -489,8 +489,8 @@ const SpectrogramEditor = ({ clip, disabled, onChange, zoom, height }) => {
     const [isPlaying, setIsPlaying] = useState(false);
     const [dragTarget, setDragTarget] = useState(null);
     const [playhead, setPlayhead] = useState(clip.start);
-    // These gains are monitoring aids only. They do not alter the source,
-    // analysis result, or exported WAV data.
+    // Playback gain also applies to trimmed WAV exports; analysis and source
+    // samples remain unchanged. Spectrogram gain only changes the display.
     const playbackGainPercent = clip.playbackGainPercent ?? 100;
     const spectrogramGain = clip.spectrogramGain ?? 1;
 
@@ -551,12 +551,12 @@ const SpectrogramEditor = ({ clip, disabled, onChange, zoom, height }) => {
             // 範囲のドラッグではFFTを再計算せず、同じスペクトログラムを再利用する。
             const cached = rasterRef.current;
             let offscreen = cached?.canvas;
-            if (!cached || cached.buffer !== clip.buffer || cached.gain !== spectrogramGain || cached.width !== width || cached.height !== height) {
-            // 100〜1000 Hzを対数軸で描く。各チャンネルのスペクトルパワーを
+            const maxFrequency = Math.min(frequencyMax, clip.buffer.sampleRate / 2);
+            const minFrequency = Math.min(frequencyMin, maxFrequency - 1);
+            if (!cached || cached.buffer !== clip.buffer || cached.gain !== spectrogramGain || cached.width !== width || cached.height !== height || cached.min !== minFrequency || cached.max !== maxFrequency) {
+            // 設定した周波数範囲を対数軸で描く。各チャンネルのスペクトルパワーを
             // 平均するため、ステレオ再生時も片チャンネルだけに偏らない表示になる。
             const fftSize = 2048;
-            const minFrequency = 100;
-            const maxFrequency = Math.min(1000, clip.buffer.sampleRate / 2);
             const columns = Math.max(1, Math.min(1800, Math.round(width)));
             const rows = Math.max(1, Math.round(height));
             const image = ctx.createImageData(columns, rows);
@@ -594,12 +594,12 @@ const SpectrogramEditor = ({ clip, disabled, onChange, zoom, height }) => {
             offscreen = document.createElement('canvas');
             offscreen.width = columns; offscreen.height = rows;
             offscreen.getContext('2d').putImageData(image, 0, 0);
-            rasterRef.current = { canvas: offscreen, buffer: clip.buffer, gain: spectrogramGain, width, height };
+            rasterRef.current = { canvas: offscreen, buffer: clip.buffer, gain: spectrogramGain, width, height, min: minFrequency, max: maxFrequency };
             }
             ctx.imageSmoothingEnabled = false;
             ctx.drawImage(offscreen, 0, 0, width, height);
             ctx.font = '10px sans-serif'; ctx.fillStyle = 'rgba(255,255,255,.85)';
-            ctx.fillText('1000 Hz', 5, 12); ctx.fillText('100 Hz', 5, height - 5);
+            ctx.fillText(`${maxFrequency} Hz`, 5, 12); ctx.fillText(`${minFrequency} Hz`, 5, height - 5);
             const inX = clip.start / clip.buffer.duration * width;
             const outX = clip.end / clip.buffer.duration * width;
             ctx.fillStyle = 'rgba(15, 23, 42, .32)'; ctx.fillRect(0, 0, inX, height); ctx.fillRect(outX, 0, width - outX, height);
@@ -611,7 +611,7 @@ const SpectrogramEditor = ({ clip, disabled, onChange, zoom, height }) => {
         const observer = new ResizeObserver(draw);
         observer.observe(canvas);
         return () => observer.disconnect();
-    }, [clip.buffer, clip.start, clip.end, spectrogramGain, zoom, height]);
+    }, [clip.buffer, clip.start, clip.end, spectrogramGain, zoom, height, frequencyMin, frequencyMax]);
 
     const pointerTime = (event) => {
         const rect = canvasRef.current.getBoundingClientRect();
@@ -682,7 +682,7 @@ const SpectrogramEditor = ({ clip, disabled, onChange, zoom, height }) => {
             <div className="nc-spectrogram-content" style={{ width: `${zoom * 100}%`, height }}>
                 <canvas ref={canvasRef} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove}
                     onPointerUp={() => setDragTarget(null)} onPointerCancel={() => setDragTarget(null)}
-                    style={{ width: '100%', height: '100%', touchAction: 'none', cursor: 'ew-resize' }} aria-label={`${clip.name} の100〜1000 Hzスペクトログラム範囲選択`} />
+                    style={{ width: '100%', height: '100%', touchAction: 'none', cursor: 'ew-resize' }} aria-label={`${clip.name} の${frequencyMin}〜${frequencyMax} Hzスペクトログラム範囲選択`} />
                 <div className="nc-playhead"
                     style={{ left: `${(playhead / clip.buffer.duration) * 100}%` }} aria-hidden="true" />
             </div>
@@ -772,7 +772,6 @@ const workspaceStyles = `
 .nc-search svg { position:absolute; left:8px; top:8px; color:#94a3b8; }
 .nc-app .nc-search input { padding-left:29px !important; }
 .nc-toolbar select { flex:1; }
-.nc-toolbar .nc-bulk { background:#f8fafc; border:1px solid #e2e8f0; border-radius:7px; padding:7px; }
 .nc-table-scroll { overflow:auto; }
 .nc-table { border-collapse:collapse; width:100%; font-size:11px; }
 .nc-table th { padding:10px 7px; text-align:left; background:#f8fafc; color:#64748b; white-space:nowrap; border-bottom:1px solid #e2e8f0; font-weight:600; }
@@ -793,7 +792,7 @@ const workspaceStyles = `
 
 .nc-sheet { outline:none; }
 .nc-sheet:focus-visible { box-shadow:inset 0 0 0 2px #93c5fd; }
-.nc-sheet-table { white-space:nowrap; table-layout:fixed; min-width:630px; font-size:12px; }
+.nc-sheet-table { white-space:nowrap; table-layout:auto; width:max-content; min-width:100%; font-size:12px; }
 .nc-sheet-table thead th { border:1px solid #cbd5e1; background:#f1f5f9; padding:8px; }
  .nc-sheet-table thead th:nth-child(-n+3) { padding:6px 3px; font-size:10px; }
 .nc-sheet-table thead th:nth-child(1) { width:54px; }
@@ -804,6 +803,7 @@ const workspaceStyles = `
 .nc-sheet-table thead th:nth-child(7) { width:70px; }
 .nc-sheet-table thead th:nth-child(8) { width:65px; }
 .nc-sheet-table .nc-sheet-cell { border:1px solid #cbd5e1; padding:8px 10px; height:37px; overflow:hidden; text-overflow:ellipsis; cursor:cell; user-select:none; touch-action:none; }
+.nc-sheet-table .nc-sheet-cell[data-column=fileName] { overflow:visible; text-overflow:clip; }
 .nc-sheet-cell:hover { background:#f8fafc; }
 .nc-sheet-table .nc-cell-selected { background:#dbeafe; }
 .nc-sheet-table .nc-cell-active { box-shadow:inset 0 0 0 2px #2563eb; }
@@ -924,6 +924,7 @@ const AnalysisTable = ({ clips, groups, selectedIds, setSelectedIds, resultById,
             selectedIds.forEach(id => { if (!existing.has(id)) ANALYSIS_COLUMNS.forEach(column => next.add(sheetKey(id, column.key))); });
             return next;
         });
+        if (!selectedIds.length) { setActiveCell(null); anchorRef.current = null; setContextMenu(null); }
     }, [selectedIds]);
     useEffect(() => {
         if (disabled) { dragRef.current = null; editingRef.current = null; setEditing(null); setContextMenu(null); }
@@ -1173,7 +1174,6 @@ export default function App() {
     const [groups, setGroups] = useState(['Group 1']);
     const [newGroupName, setNewGroupName] = useState('');
     const [selectedIds, setSelectedIds] = useState([]);
-    const [bulkGroup, setBulkGroup] = useState('Group 1');
     const [search, setSearch] = useState('');
     const [groupFilter, setGroupFilter] = useState('');
     const [viewMode, setViewMode] = useState('table');
@@ -1185,6 +1185,7 @@ export default function App() {
     const [monitorTarget, setMonitorTarget] = useState('all');
     const [spectrogramZoom, setSpectrogramZoom] = useState(1);
     const [spectrogramHeight, setSpectrogramHeight] = useState(140);
+    const [spectrogramFrequencies, setSpectrogramFrequencies] = useState({ min: 100, max: 1000 });
     const [lineWidth, setLineWidth] = useState(2);
     const [pointSize, setPointSize] = useState(3);
     const [yAxisMaxAuto, setYAxisMaxAuto] = useState(true);
@@ -1201,7 +1202,7 @@ export default function App() {
         if (skipDirtyRef.current) { skipDirtyRef.current = false; setIsDirty(false); }
         else setIsDirty(true);
     }, [clips, rawResults, groups, calibFile, calibLevel, offset, useClipNameOnly, allPlaybackGainPercent,
-        allSpectrogramGain, spectrogramZoom, spectrogramHeight, lineWidth, pointSize, yAxisMaxAuto,
+        allSpectrogramGain, spectrogramZoom, spectrogramHeight, spectrogramFrequencies, lineWidth, pointSize, yAxisMaxAuto,
         yAxisMaxManual, visibleNcCurves, projectName, viewMode, resultView]);
 
     const results = useMemo(() => {
@@ -1209,7 +1210,7 @@ export default function App() {
         return clips.flatMap(clip => {
             const result = byId.get(clip.id);
             return result ? [{ ...result, sourceFileName: clip.file.name, clipName: clip.name,
-                groupName: clip.groupName, color: clip.color, isVisible: clip.isVisible, useClipNameOnly,
+                groupName: clip.groupName, color: clip.color, playbackGainPercent: clip.playbackGainPercent, isVisible: clip.isVisible, useClipNameOnly,
                 isUpdating: calibrationPending || (calibFile && offset === null) || result.sourceBuffer !== clip.buffer ||
                     result.selectedStart !== clip.start || result.selectedEnd !== clip.end || result.offset !== (offset ?? 100),
                 nc: evaluateNC(result.levels) }] : [];
@@ -1333,14 +1334,14 @@ export default function App() {
     const addGroup = event => {
         event.preventDefault(); const name = newGroupName.trim();
         if (!name || groups.includes(name)) { setErrorMsg('空でない、重複しないグループ名を入力してください。'); return; }
-        setGroups(current => [...current, name]); setBulkGroup(name); setNewGroupName(''); setErrorMsg('');
+        setGroups(current => [...current, name]); setNewGroupName(''); setErrorMsg('');
     };
     const renameGroup = (oldName, name) => {
         if (name === oldName) return;
         if (!name || groups.includes(name)) { setErrorMsg('空でない、重複しないグループ名を入力してください。'); return; }
         setGroups(current => current.map(group => group === oldName ? name : group));
         setClips(current => current.map(clip => clip.groupName === oldName ? { ...clip, groupName: name } : clip));
-        if (bulkGroup === oldName) setBulkGroup(name); if (groupFilter === oldName) setGroupFilter(name);
+        if (groupFilter === oldName) setGroupFilter(name);
         setErrorMsg('');
     };
     const removeGroup = name => {
@@ -1348,7 +1349,7 @@ export default function App() {
         const fallback = groups.find(group => group !== name);
         setGroups(current => current.filter(group => group !== name));
         setClips(current => current.map(clip => clip.groupName === name ? { ...clip, groupName: fallback } : clip));
-        if (bulkGroup === name) setBulkGroup(fallback); if (groupFilter === name) setGroupFilter('');
+        if (groupFilter === name) setGroupFilter('');
     };
 
     // 校正音や基準レベルの変更を自動で反映する。古い復号結果は採用しない。
@@ -1440,7 +1441,7 @@ export default function App() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [clips, offset, calibFile, calibLevel, calibrationPending]);
 
-    const downloadResultWav = result => downloadBlob(createTrimmedWav(result.buffer, 0, result.buffer.duration),
+    const downloadResultWav = result => downloadBlob(createTrimmedWav(result.buffer, 0, result.buffer.duration, result.playbackGainPercent / 100),
         `${getOutputBaseName(result.sourceFileName, result.clipName, result.useClipNameOnly)}.wav`);
     const downloadAllFiles = async () => {
         setIsProcessing(true); setErrorMsg('');
@@ -1449,7 +1450,7 @@ export default function App() {
             validResults.forEach(result => {
                 const base = getOutputBaseName(result.sourceFileName, result.clipName, useClipNameOnly);
                 entries.push({ name: createUniquePath(`${base}.csv`, paths), data: `\uFEFF${createLpeqCsv(result.levels)}` });
-                entries.push({ name: createUniquePath(`${base}.wav`, paths), data: createTrimmedWav(result.buffer, 0, result.buffer.duration) });
+                entries.push({ name: createUniquePath(`${base}.wav`, paths), data: createTrimmedWav(result.buffer, 0, result.buffer.duration, result.playbackGainPercent / 100) });
             });
             downloadBlob(await createZipBlob(entries), 'NC解析結果.zip');
         } catch (err) { setErrorMsg(`一括出力に失敗しました: ${err.message}`); }
@@ -1481,7 +1482,7 @@ export default function App() {
         };
         const savedClips = clips.map(clip => {
             const result = resultById.get(clip.id);
-            return { name: clip.name, groupName: clip.groupName, color: clip.color, isVisible: clip.isVisible,
+            return { name: clip.name, groupName: clip.groupName, color: clip.color, playbackGainPercent: clip.playbackGainPercent, isVisible: clip.isVisible,
                 start: clip.start, end: clip.end, audioFile: addAudio(clip.file, 'audio'), sourceFileName: clip.file.name,
                 playbackGainPercent: clip.playbackGainPercent, spectrogramGain: clip.spectrogramGain,
                 result: result && !result.isUpdating ? { levels: result.levels, offset: result.offset } : null };
@@ -1491,7 +1492,7 @@ export default function App() {
             output: { useClipNameOnly },
             analysis: { octaveBand: '1/1', frequencies: FREQUENCIES, fftSize: 8192, overlap: 4096 },
             calibration: { referenceLevel: Number(calibLevel), offset, audioFile: addAudio(calibFile, 'calibration'), sourceFileName: calibFile?.name || null },
-            display: { allPlaybackGainPercent, allSpectrogramGain, spectrogramZoom, spectrogramHeight,
+            display: { allPlaybackGainPercent, allSpectrogramGain, spectrogramZoom, spectrogramHeight, spectrogramFrequencies,
                 lineWidth, pointSize, yAxisMaxAuto, yAxisMaxManual, visibleNcCurves, viewMode, resultView },
             clips: savedClips
         }, null, 2) });
@@ -1568,7 +1569,7 @@ export default function App() {
                 const clip = { id: newId(), ...asset, name: typeof saved.name === 'string' ? saved.name : `切り抜き${index + 1}`,
                     groupName: groupMap.get(saved.groupName || 'Group 1'), start, end: Math.min(end, asset.buffer.duration), isVisible: saved.isVisible !== false,
                     color: /^#[0-9a-f]{6}$/i.test(saved.color) ? saved.color : SERIES_COLORS[((append ? clips.length : 0) + index) % SERIES_COLORS.length],
-                    playbackGainPercent: append ? allPlaybackGainPercent : clampSetting(saved.playbackGainPercent ?? display.allPlaybackGainPercent, 0, 1000, 100),
+                    playbackGainPercent: append ? allPlaybackGainPercent : clampSetting(saved.playbackGainPercent ?? display.allPlaybackGainPercent, 0, 10000, 100),
                     spectrogramGain: append ? allSpectrogramGain : clampSetting(saved.spectrogramGain ?? display.allSpectrogramGain, 1, 100, 1) };
                 restoredClips.push(clip);
                 if (Array.isArray(saved.result?.levels) && saved.result.levels.length === 8 && saved.result.levels.every(Number.isFinite) && saved.result.offset === effectiveOffset) {
@@ -1589,14 +1590,16 @@ export default function App() {
                 setCalibFile(calibrationAsset?.file || null); setCalibLevel(Number.isFinite(reference) ? reference : 94); setOffset(restoredOffset);
                 setUseClipNameOnly(Boolean(settings.output?.useClipNameOnly));
                 setProjectName(typeof settings.name === 'string' ? settings.name : file.name.replace(/\.nca$/i, ''));
-                setAllPlaybackGainPercent(clampSetting(display.allPlaybackGainPercent, 0, 1000, 100));
+                setAllPlaybackGainPercent(clampSetting(display.allPlaybackGainPercent, 0, 10000, 100));
                 setAllSpectrogramGain(clampSetting(display.allSpectrogramGain, 1, 100, 1));
                 setSpectrogramZoom(clampSetting(display.spectrogramZoom, 1, 8, 1)); setSpectrogramHeight(clampSetting(display.spectrogramHeight, 100, 360, 140));
+                const frequencyMax = clampSetting(display.spectrogramFrequencies?.max, 2, 24000, 1000);
+                setSpectrogramFrequencies({ min: clampSetting(display.spectrogramFrequencies?.min, 1, frequencyMax - 1, Math.min(100, frequencyMax - 1)), max: frequencyMax });
                 setLineWidth(clampSetting(display.lineWidth, 1, 8, 2)); setPointSize(clampSetting(display.pointSize, 0, 8, 3));
                 setYAxisMaxAuto(display.yAxisMaxAuto !== false); setYAxisMaxManual(clampSetting(display.yAxisMaxManual, 10, 200, 100));
                 setVisibleNcCurves(Array.isArray(display.visibleNcCurves) ? [...new Set(display.visibleNcCurves.filter(nc => Number.isInteger(nc) && nc >= 15 && nc <= 70))] : [20, 30, 40, 50, 60]);
                 setViewMode(display.viewMode === 'spectrogram' ? 'spectrogram' : 'table'); setResultView(display.resultView === 'group' ? 'group' : 'individual');
-                setBulkGroup(nextGroups[0]); setGroupFilter(''); setSearch(''); setMonitorTarget('all');
+                setGroupFilter(''); setSearch(''); setMonitorTarget('all');
                 setProjectFileHandle(handle); setProjectFileName(file.name); setIsDirty(false);
                 setSaveStatus(handle ? `${file.name} を読み込み、上書き保存先に設定しました。` : `${file.name} を読み込みました。上書きする場合は保存先を指定してください。`);
             }
@@ -1671,11 +1674,15 @@ export default function App() {
                 <section className="nc-card"><div className="nc-card-body nc-stack">
                     <h2 className="nc-section-label"><AudioLines />再生・スペクトログラム</h2>
                     <label className="nc-field">音量・感度の適用先<select value={monitoringClip ? monitorTarget : 'all'} onChange={event => setMonitorTarget(event.target.value)}><option value="all">全ファイル（新規読み込みの既定値）</option>{clips.map(clip => <option key={clip.id} value={clip.id}>{clip.name}</option>)}</select></label>
-                    <label className="nc-field"><span className="nc-row nc-between">再生音量<output>{monitoringClip?.playbackGainPercent ?? allPlaybackGainPercent}%</output></span><input aria-label="再生音量" type="range" min="0" max="1000" step="10" value={monitoringClip?.playbackGainPercent ?? allPlaybackGainPercent} onChange={event => updateMonitoring('playbackGainPercent', Number(event.target.value))} /></label>
+                    <label className="nc-field"><span className="nc-row nc-between">再生音量<output>{monitoringClip?.playbackGainPercent ?? allPlaybackGainPercent}%</output></span><input aria-label="再生音量" type="range" min="0" max="10000" step="10" value={monitoringClip?.playbackGainPercent ?? allPlaybackGainPercent} onChange={event => updateMonitoring('playbackGainPercent', Number(event.target.value))} /></label>
                     <label className="nc-field"><span className="nc-row nc-between">スペクトログラム感度<output>{monitoringClip?.spectrogramGain ?? allSpectrogramGain}倍</output></span><input aria-label="スペクトログラム感度" type="range" min="1" max="100" value={monitoringClip?.spectrogramGain ?? allSpectrogramGain} onChange={event => updateMonitoring('spectrogramGain', Number(event.target.value))} /></label>
                     <label className="nc-field"><span className="nc-row nc-between">時間軸の拡大<output>{spectrogramZoom}倍</output></span><input aria-label="時間軸の拡大" type="range" min="1" max="8" step="0.5" value={spectrogramZoom} onChange={event => setSpectrogramZoom(Number(event.target.value))} /></label>
                     <label className="nc-field"><span className="nc-row nc-between">スペクトログラムの高さ<output>{spectrogramHeight}px</output></span><input aria-label="スペクトログラムの高さ" type="range" min="100" max="360" step="10" value={spectrogramHeight} onChange={event => setSpectrogramHeight(Number(event.target.value))} /></label>
-                    <p className="nc-muted">黄色の端をドラッグして範囲を選択。拡大時は横にスクロールできます。縦軸は100〜1000 Hzの対数軸です。音量・表示の調整は解析値や出力WAVには影響しません。音量は徐々に上げてください。</p>
+                    <div className="nc-pair">
+                        <label className="nc-field">最低周波数 (Hz)<input type="number" min="1" max={spectrogramFrequencies.max - 1} value={spectrogramFrequencies.min} onChange={event => setSpectrogramFrequencies(current => ({ ...current, min: clampSetting(event.target.value, 1, current.max - 1, 100) }))} /></label>
+                        <label className="nc-field">最高周波数 (Hz)<input type="number" min={spectrogramFrequencies.min + 1} max="24000" value={spectrogramFrequencies.max} onChange={event => setSpectrogramFrequencies(current => ({ ...current, max: clampSetting(event.target.value, current.min + 1, 24000, 1000) }))} /></label>
+                    </div>
+                    <p className="nc-muted">黄色の端をドラッグして範囲を選択。拡大時は横にスクロールできます。縦軸は設定した周波数の対数軸です（音源のナイキスト周波数まで）。再生音量は100倍（10000%）まで設定でき、切り抜きWAVにも適用します。PCMの上限を超えた波形はクリップされます。NC解析値は変わりません。</p>
                 </div></section>
                 <section className="nc-card"><div className="nc-card-body nc-stack">
                     <h2 className="nc-section-label"><BarChart3 />グラフ・出力設定</h2>
@@ -1691,7 +1698,11 @@ export default function App() {
                 </div></section>
             </aside>
 
-            <section className="nc-center nc-column nc-card" aria-label="解析ファイル一覧">
+            <section className="nc-center nc-column nc-card" tabIndex={-1} aria-label="解析ファイル一覧" onKeyDown={event => {
+                if (event.key === 'Escape' && !event.defaultPrevented && !event.target.closest('input,select,textarea')) {
+                    setSelectedIds([]);
+                }
+            }}>
                 <div className="nc-sticky-head"><div className="nc-card-head"><h2><List />解析ファイル一覧 <span className="nc-badge nc-count">{clips.length}</span></h2></div>
                     <div className="nc-toolbar">
                         <div className="nc-row nc-between"><div className="nc-segment" role="group" aria-label="ファイル一覧の表示方法"><button type="button" aria-pressed={viewMode === 'table'} onClick={() => setViewMode('table')}><List />表形式</button><button type="button" aria-pressed={viewMode === 'spectrogram'} onClick={() => setViewMode('spectrogram')}><AudioLines />スペクトログラム</button></div></div>
@@ -1700,10 +1711,6 @@ export default function App() {
                         <div className="nc-row nc-between"><label className="nc-row nc-muted"><SelectAllCheckbox clips={filteredClips} selectedIds={selectedIds} disabled={isProcessing} onChange={toggleAll} />全選択 <b>{selectedCount}件選択中</b></label>
                             <div className="nc-row"><button type="button" aria-label="選択ファイルを上へ" className="nc-icon" disabled={!selectedCount} onClick={() => moveSelected('up')}><ArrowUp /></button><button type="button" aria-label="選択ファイルを下へ" className="nc-icon" disabled={!selectedCount} onClick={() => moveSelected('down')}><ArrowDown /></button>
                                 <button type="button" className="nc-danger" disabled={!selectedCount} onClick={() => { if (window.confirm(`選択した ${selectedCount} 件の解析範囲を削除しますか？`)) removeClips(selectedIds); }}><Trash2 />削除</button></div></div>
-                        <div className="nc-row nc-bulk"><select disabled={!selectedCount} aria-label="選択ファイルの移動先グループ" value={bulkGroup} onChange={event => setBulkGroup(event.target.value)}>{groups.map(group => <option key={group}>{group}</option>)}</select>
-                            <button type="button" disabled={!selectedCount} onClick={() => applyTableEdits(Object.fromEntries(selectedIds.map(id => [id, { groupName: bulkGroup }])))}>グループ変更</button>
-                            <button type="button" disabled={!selectedCount} onClick={() => setSelectedIds([])}>選択解除</button>
-                        </div>
                         {viewMode === 'spectrogram' && <div className="nc-row nc-muted"><span>並び替え:</span>{sortLabel('name', '表示名')}{sortLabel('groupName', 'グループ')}{sortLabel('duration', '範囲長')}{sortLabel('nc', 'NC')}</div>}
                     </div>
                 </div>
@@ -1714,9 +1721,9 @@ export default function App() {
                         <button type="button" className="nc-icon" aria-label={`${clip.name} の範囲を複製`} onClick={() => duplicateClip(clip.id)}><Copy /></button>
                         <button type="button" className="nc-icon nc-danger" aria-label={`${clip.name} を削除`} onClick={() => removeClips([clip.id])}><Trash2 /></button></div>
                         <div className="nc-row nc-between"><span className="nc-file-label">{clip.file.name}</span>{groupSelect(clip)}<label className="nc-row nc-muted">{visibleClip(clip)}グラフ表示</label></div></div>
-                    <SpectrogramEditor clip={clip} disabled={isProcessing} zoom={spectrogramZoom} height={spectrogramHeight} onChange={changes => updateClip(clip.id, changes)} />
+                    <SpectrogramEditor clip={clip} disabled={isProcessing} zoom={spectrogramZoom} height={spectrogramHeight} frequencyMin={spectrogramFrequencies.min} frequencyMax={spectrogramFrequencies.max} onChange={changes => updateClip(clip.id, changes)} />
                 </article>)}</div>}
-                {clips.length > 0 && <div className="nc-card-body nc-muted">セルをドラッグで範囲選択。グループ列をダブルクリック、右クリック、または上のグループ変更で選択行に一括割り当て。Shiftで範囲拡張、Ctrl / ⌘で追加選択、Ctrl+C / Vで表のコピー・貼り付け。並び順は結果・出力にも共通です。</div>}
+                {clips.length > 0 && <div className="nc-card-body nc-muted">セルをドラッグで範囲選択。グループ列をダブルクリック、または右クリックで選択行に一括割り当て。Shiftで範囲拡張、Ctrl / ⌘で追加選択、Ctrl+C / Vで表のコピー・貼り付け。並び順は結果・出力にも共通です。</div>}
             </section>
 
             <section className="nc-results nc-column nc-stack" aria-label="解析結果">
