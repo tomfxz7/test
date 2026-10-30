@@ -790,6 +790,33 @@ const workspaceStyles = `
 .nc-empty { padding:48px 24px; text-align:center; display:flex; align-items:center; flex-direction:column; gap:12px; color:#64748b; }
 .nc-empty > svg { width:34px !important; height:34px !important; color:#94a3b8; }
 .nc-empty strong { color:#475569; font-size:14px; }
+
+.nc-sheet { outline:none; }
+.nc-sheet:focus-visible { box-shadow:inset 0 0 0 2px #93c5fd; }
+.nc-sheet-table { white-space:nowrap; table-layout:fixed; min-width:630px; font-size:12px; }
+.nc-sheet-table thead th { border:1px solid #cbd5e1; background:#f1f5f9; padding:8px; }
+ .nc-sheet-table thead th:nth-child(-n+3) { padding:6px 3px; font-size:10px; }
+.nc-sheet-table thead th:nth-child(1) { width:54px; }
+.nc-sheet-table thead th:nth-child(2),.nc-sheet-table thead th:nth-child(3) { width:32px; }
+.nc-sheet-table thead th:nth-child(4) { width:145px; }
+.nc-sheet-table thead th:nth-child(5) { width:125px; }
+.nc-sheet-table thead th:nth-child(6) { width:105px; }
+.nc-sheet-table thead th:nth-child(7) { width:70px; }
+.nc-sheet-table thead th:nth-child(8) { width:65px; }
+.nc-sheet-table .nc-sheet-cell { border:1px solid #cbd5e1; padding:8px 10px; height:37px; overflow:hidden; text-overflow:ellipsis; cursor:cell; user-select:none; touch-action:none; }
+.nc-sheet-cell:hover { background:#f8fafc; }
+.nc-sheet-table .nc-cell-selected { background:#dbeafe; }
+.nc-sheet-table .nc-cell-active { box-shadow:inset 0 0 0 2px #2563eb; }
+.nc-sheet-table .nc-cell-hidden { color:#94a3b8; text-decoration:line-through; }
+.nc-sheet-table .nc-cell-editing { padding:0; overflow:visible; background:white; }
+.nc-app .nc-sheet-table .nc-cell-editing input,.nc-app .nc-sheet-table .nc-cell-editing select { width:100%; height:36px; border:2px solid #2563eb; border-radius:0; outline:none; padding:5px 8px; font-size:12px; }
+.nc-sheet-table .nc-sheet-utility,.nc-sheet-table .nc-sheet-row-header { padding:3px; border:1px solid #cbd5e1; text-align:center; background:#f8fafc; }
+.nc-sheet-table .nc-sheet-row-header { cursor:cell; user-select:none; touch-action:none; font-size:10px; font-weight:500; color:#64748b; }
+.nc-sheet-row-header.nc-selected { background:#dbeafe; color:#1d4ed8; }
+.nc-sheet-menu { position:fixed; z-index:40; width:230px; max-height:250px; overflow:auto; padding:5px; background:white; border:1px solid #cbd5e1; box-shadow:0 8px 25px #0f172a26; border-radius:7px; }
+.nc-sheet-menu p { padding:8px; color:#64748b; font-size:11px; border-bottom:1px solid #e2e8f0; }
+.nc-app .nc-sheet-menu button { display:block; width:100%; border:0; text-align:left; padding:9px; font-weight:500; }
+
 .nc-editor-list { padding:12px; display:flex; flex-direction:column; gap:12px; }
 .nc-editor-card { border:1px solid #e2e8f0; border-radius:8px; overflow:hidden; }
 .nc-editor-card.nc-selected { border-color:#93c5fd; }
@@ -863,6 +890,271 @@ const SelectAllCheckbox = ({ clips, selectedIds, onChange, disabled }) => {
         disabled={disabled || !clips.length} onChange={event => onChange(event.target.checked)} />;
 };
 
+// index.html と同じ、セル範囲を選んで後からグループを割り当てる表。
+// 選択は行番号ではなくIDに結び付け、ソート後も別ファイルに操作が移らないようにする。
+const ANALYSIS_COLUMNS = [
+    { key: 'fileName', label: '元ファイル', readOnly: true },
+    { key: 'name', label: '表示名' },
+    { key: 'groupName', label: 'グループ' },
+    { key: 'nc', label: 'NC', readOnly: true }
+];
+const sheetKey = (id, column) => JSON.stringify([id, column]);
+
+const AnalysisTable = ({ clips, groups, selectedIds, setSelectedIds, resultById, pendingIds, calibrationPending,
+    disabled, onApplyEdits, onRemove, onDuplicate, onSort, dragHandle, rowDragProps }) => {
+    const rootRef = useRef(null);
+    const dragRef = useRef(null);
+    const anchorRef = useRef(null);
+    const [selectedCells, setSelectedCells] = useState(() => new Set(selectedIds.flatMap(id => ANALYSIS_COLUMNS.map(column => sheetKey(id, column.key)))));
+    const [editing, setEditing] = useState(null);
+    const editingRef = useRef(null);
+    const [contextMenu, setContextMenu] = useState(null);
+    const [activeCell, setActiveCell] = useState(null);
+    const currentRef = useRef(null);
+
+    const selectCells = (cells, active = activeCell) => {
+        setSelectedCells(cells); setActiveCell(active);
+        setSelectedIds([...new Set([...cells].map(key => JSON.parse(key)[0]))]);
+    };
+    useEffect(() => {
+        // チェックボックス・全選択・スペクトログラム側の行選択とも同期する。
+        setSelectedCells(current => {
+            const next = new Set([...current].filter(key => selectedIds.includes(JSON.parse(key)[0])));
+            const existing = new Set([...next].map(key => JSON.parse(key)[0]));
+            selectedIds.forEach(id => { if (!existing.has(id)) ANALYSIS_COLUMNS.forEach(column => next.add(sheetKey(id, column.key))); });
+            return next;
+        });
+    }, [selectedIds]);
+    useEffect(() => {
+        if (disabled) { dragRef.current = null; editingRef.current = null; setEditing(null); setContextMenu(null); }
+    }, [disabled]);
+
+    const rectangle = (from, to) => {
+        const fromRow = clips.findIndex(clip => clip.id === from.id), toRow = clips.findIndex(clip => clip.id === to.id);
+        const fromCol = ANALYSIS_COLUMNS.findIndex(column => column.key === from.column), toCol = ANALYSIS_COLUMNS.findIndex(column => column.key === to.column);
+        if (Math.min(fromRow, toRow, fromCol, toCol) < 0) return new Set([sheetKey(to.id, to.column)]);
+        const next = new Set();
+        for (let r = Math.min(fromRow, toRow); r <= Math.max(fromRow, toRow); r++) {
+            for (let c = Math.min(fromCol, toCol); c <= Math.max(fromCol, toCol); c++) next.add(sheetKey(clips[r].id, ANALYSIS_COLUMNS[c].key));
+        }
+        return next;
+    };
+    const focusGrid = () => rootRef.current?.focus({ preventScroll: true });
+    const beginSelection = (event, clip, column) => {
+        if (disabled || event.button !== 0 || event.target.closest('input,select,button')) return;
+        event.preventDefault(); focusGrid(); setContextMenu(null);
+        const cell = { id: clip.id, column };
+        const key = sheetKey(clip.id, column);
+        const additive = event.ctrlKey || event.metaKey;
+        if (!additive && !event.shiftKey && selectedCells.has(key) && selectedCells.size > 1) {
+            // 選択範囲内のダブルクリックで、一括グループ編集の対象を保持する。
+            anchorRef.current = cell; setActiveCell(cell);
+            dragRef.current = { pointerId: event.pointerId, anchor: cell, base: new Set(), last: key, x: event.clientX, y: event.clientY };
+            return;
+        }
+        const base = additive ? new Set(selectedCells) : new Set();
+        if (additive && base.has(key)) { base.delete(key); selectCells(base, cell); dragRef.current = null; anchorRef.current = cell; return; }
+        const anchor = event.shiftKey && anchorRef.current && clips.some(item => item.id === anchorRef.current.id) ? anchorRef.current : cell;
+        anchorRef.current = anchor;
+        selectCells(new Set([...base, ...rectangle(anchor, cell)]), cell);
+        dragRef.current = { pointerId: event.pointerId, anchor, base, last: key, x: event.clientX, y: event.clientY };
+    };
+    const extendSelection = cell => {
+        const drag = dragRef.current;
+        if (!drag) return;
+        if (drag.wholeRow) cell = { ...cell, column: ANALYSIS_COLUMNS.at(-1).key };
+        const key = sheetKey(cell.id, cell.column);
+        if (key === drag.last) return;
+        drag.last = key;
+        selectCells(new Set([...drag.base, ...rectangle(drag.anchor, cell)]), cell);
+    };
+    currentRef.current = { extendSelection };
+    useEffect(() => {
+        let frame;
+        const updateFromPoint = () => {
+            const drag = dragRef.current, root = rootRef.current;
+            if (!drag || !root) return;
+            const scroller = root.querySelector('.nc-table-scroll'), column = root.closest('.nc-column');
+            const bounds = scroller.getBoundingClientRect(), vertical = column.getBoundingClientRect();
+            const top = Math.max(bounds.top + 38, vertical.top), bottom = Math.min(bounds.bottom, vertical.bottom, window.innerHeight);
+            if (drag.x >= bounds.left - 24 && drag.x <= bounds.right + 24) {
+                if (drag.y > bottom - 24) column.scrollTop += 12;
+                else if (drag.y < top + 16) column.scrollTop -= 12;
+                if (drag.x > bounds.right - 24) scroller.scrollLeft += 12;
+                else if (drag.x < bounds.left + 24) scroller.scrollLeft -= 12;
+                const x = Math.max(bounds.left + 2, Math.min(drag.x, bounds.right - 2));
+                const y = Math.max(top + 2, Math.min(drag.y, bottom - 2));
+                const cell = document.elementFromPoint(x, y)?.closest('[data-sheet-row][data-column]');
+                if (cell && root.contains(cell)) currentRef.current.extendSelection({ id: cell.dataset.sheetRow, column: cell.dataset.column });
+            }
+        };
+        const tick = () => { updateFromPoint(); if (dragRef.current) frame = requestAnimationFrame(tick); };
+        const move = event => {
+            if (!dragRef.current || dragRef.current.pointerId !== event.pointerId) return;
+            dragRef.current.x = event.clientX; dragRef.current.y = event.clientY;
+            if (!frame) frame = requestAnimationFrame(tick);
+        };
+        const stop = () => { dragRef.current = null; cancelAnimationFrame(frame); frame = null; };
+        const closeMenu = event => { if (!event.target.closest('.nc-sheet-menu')) setContextMenu(null); };
+        window.addEventListener('pointermove', move); window.addEventListener('pointerup', stop); window.addEventListener('pointercancel', stop);
+        window.addEventListener('blur', stop); window.addEventListener('pointerdown', closeMenu);
+        return () => {
+            stop(); window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop);
+            window.removeEventListener('pointercancel', stop); window.removeEventListener('blur', stop); window.removeEventListener('pointerdown', closeMenu);
+        };
+    }, []);
+
+    const startEdit = (clip, column, initialValue) => {
+        if (disabled || !['name', 'groupName'].includes(column)) return;
+        if (!selectedCells.has(sheetKey(clip.id, column))) selectCells(new Set([sheetKey(clip.id, column)]), { id: clip.id, column });
+        const draft = { id: clip.id, column, value: initialValue ?? clip[column] };
+        editingRef.current = draft; setEditing(draft); setContextMenu(null); dragRef.current = null;
+    };
+    const closeEdit = () => { editingRef.current = null; setEditing(null); focusGrid(); };
+    const commitName = advance => {
+        const draft = editingRef.current;
+        if (!draft) return;
+        onApplyEdits({ [draft.id]: { name: draft.value } });
+        closeEdit();
+        if (advance) {
+            const index = clips.findIndex(clip => clip.id === draft.id) + advance;
+            if (clips[index]) { anchorRef.current = { id: clips[index].id, column: 'name' }; startEdit(clips[index], 'name'); }
+        }
+    };
+    const applyGroup = name => {
+        if (disabled) return;
+        onApplyEdits(Object.fromEntries(selectedIds.map(id => [id, { groupName: name }])));
+        closeEdit(); setContextMenu(null);
+    };
+    const cellValue = (clip, column) => {
+        if (column === 'fileName') return clip.file.name;
+        if (column === 'duration') return `${formatTime(clip.start)} – ${formatTime(clip.end)}`;
+        if (column === 'nc') {
+            const result = resultById.get(clip.id);
+            return result && !result.isUpdating ? `NC-${formatNC(result.nc.overall)}` : pendingIds.includes(clip.id) || calibrationPending ? '更新中…' : '解析待ち';
+        }
+        return clip[column];
+    };
+    const selectedBounds = () => {
+        const cells = [...selectedCells].map(key => JSON.parse(key)).map(([id, column]) => ({ r: clips.findIndex(clip => clip.id === id), c: ANALYSIS_COLUMNS.findIndex(item => item.key === column) })).filter(cell => cell.r >= 0 && cell.c >= 0);
+        return cells.length ? { minR: Math.min(...cells.map(cell => cell.r)), maxR: Math.max(...cells.map(cell => cell.r)), minC: Math.min(...cells.map(cell => cell.c)), maxC: Math.max(...cells.map(cell => cell.c)) } : null;
+    };
+    const handleCopy = event => {
+        if (editing || event.target.closest('input,select') || !selectedCells.size) return;
+        const bounds = selectedBounds(); if (!bounds) return;
+        const rows = [];
+        for (let r = bounds.minR; r <= bounds.maxR; r++) {
+            const row = [];
+            for (let c = bounds.minC; c <= bounds.maxC; c++) row.push(selectedCells.has(sheetKey(clips[r].id, ANALYSIS_COLUMNS[c].key)) ? String(cellValue(clips[r], ANALYSIS_COLUMNS[c].key)).replace(/[\t\r\n]/g, ' ') : '');
+            rows.push(row.join('\t'));
+        }
+        event.preventDefault(); event.clipboardData.setData('text/plain', rows.join('\n'));
+    };
+    const handlePaste = event => {
+        if (disabled || editing || event.target.closest('input,select')) return;
+        const bounds = selectedBounds(); if (!bounds) return;
+        const text = event.clipboardData.getData('text/plain').replace(/\r\n?/g, '\n').replace(/\n$/, '');
+        if (!text) return;
+        event.preventDefault();
+        const rows = text.split('\n').map(row => row.split('\t')), updates = {};
+        const write = (id, column, value) => {
+            if (!['name', 'groupName'].includes(column)) return;
+            const next = column === 'groupName' ? value.trim() || groups[0] : value;
+            updates[id] = { ...(updates[id] || {}), [column]: next };
+        };
+        if (rows.length === 1 && rows[0].length === 1) {
+            selectedCells.forEach(key => { const [id, column] = JSON.parse(key); if (clips.some(clip => clip.id === id)) write(id, column, rows[0][0]); });
+        } else rows.forEach((row, r) => row.forEach((value, c) => {
+            if (clips[bounds.minR + r] && ANALYSIS_COLUMNS[bounds.minC + c]) write(clips[bounds.minR + r].id, ANALYSIS_COLUMNS[bounds.minC + c].key, value);
+        }));
+        onApplyEdits(updates);
+    };
+    const handleKeyDown = event => {
+        if (disabled || editing || event.target.closest('input,select,button')) return;
+        const command = event.ctrlKey || event.metaKey;
+        if (command && event.key.toLowerCase() === 'a') {
+            event.preventDefault(); selectCells(new Set(clips.flatMap(clip => ANALYSIS_COLUMNS.map(column => sheetKey(clip.id, column.key))))); return;
+        }
+        if (event.key === 'Escape') { setContextMenu(null); selectCells(new Set(), null); return; }
+        if (event.key === 'Delete' || event.key === 'Backspace') {
+            event.preventDefault(); const edits = {};
+            selectedCells.forEach(key => { const [id, column] = JSON.parse(key);
+                if (column === 'name' || column === 'groupName') edits[id] = { ...(edits[id] || {}), [column]: column === 'groupName' ? groups[0] : '' }; });
+            onApplyEdits(edits); return;
+        }
+        if (!activeCell) return;
+        const clip = clips.find(item => item.id === activeCell.id); if (!clip) return;
+        if (event.key === 'F2' || event.key === 'Enter' || (!command && !event.altKey && !event.isComposing && event.key.length === 1)) {
+            event.preventDefault(); startEdit(clip, activeCell.column, event.key.length === 1 && activeCell.column === 'name' ? event.key : undefined); return;
+        }
+        const r = clips.findIndex(item => item.id === activeCell.id), c = ANALYSIS_COLUMNS.findIndex(column => column.key === activeCell.column);
+        const movement = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1], Tab: [0, event.shiftKey ? -1 : 1] }[event.key];
+        if (movement) {
+            if (event.key === 'Tab' && (c + movement[1] < 0 || c + movement[1] >= ANALYSIS_COLUMNS.length)) return;
+            event.preventDefault(); const next = { id: clips[Math.max(0, Math.min(clips.length - 1, r + movement[0]))].id, column: ANALYSIS_COLUMNS[Math.max(0, Math.min(ANALYSIS_COLUMNS.length - 1, c + movement[1]))].key };
+            const anchor = event.shiftKey && event.key !== 'Tab' ? anchorRef.current || activeCell : next;
+            anchorRef.current = anchor; selectCells(rectangle(anchor, next), next);
+        }
+    };
+    const selectRow = (event, clip) => {
+        if (disabled || event.target.closest('button')) return;
+        event.preventDefault(); focusGrid();
+        const next = event.ctrlKey || event.metaKey ? new Set(selectedCells) : new Set();
+        const anchor = event.shiftKey && anchorRef.current && clips.some(item => item.id === anchorRef.current.id) ? { id: anchorRef.current.id, column: ANALYSIS_COLUMNS[0].key } : { id: clip.id, column: ANALYSIS_COLUMNS[0].key };
+        anchorRef.current = anchor;
+        const end = { id: clip.id, column: ANALYSIS_COLUMNS.at(-1).key };
+        selectCells(new Set([...next, ...rectangle(anchor, end)]), end);
+        dragRef.current = { pointerId: event.pointerId, anchor, base: next, last: '', x: event.clientX, y: event.clientY, wholeRow: true };
+    };
+
+    return <div ref={rootRef} className="nc-sheet" tabIndex={0} aria-label="ファイル表のセル操作" onKeyDown={handleKeyDown} onCopy={handleCopy} onPaste={handlePaste}>
+        <div className="nc-table-scroll"><table className="nc-table nc-sheet-table" role="grid" aria-label="解析ファイル表" aria-multiselectable="true" aria-rowcount={clips.length + 1} aria-colcount={ANALYSIS_COLUMNS.length + 4}>
+            <thead><tr><th>#</th><th>選択</th><th>表示</th>{ANALYSIS_COLUMNS.map(column => <th key={column.key}>{onSort(column.key, column.label)}</th>)}<th>操作</th></tr></thead>
+            <tbody>{clips.map((clip, index) => <tr key={clip.id} data-clip-id={clip.id} aria-rowindex={index + 2} {...rowDragProps(clip.id)}>
+                <th scope="row" data-sheet-row={clip.id} data-column={ANALYSIS_COLUMNS.at(-1).key} className={`nc-sheet-row-header ${selectedIds.includes(clip.id) ? 'nc-selected' : ''}`} onPointerDown={event => selectRow(event, clip)}>
+                    <div className="nc-row" style={{ flexWrap: 'nowrap', gap: 2 }}>{dragHandle(clip)}<span>{index + 1}</span></div>
+                </th>
+                <td className="nc-sheet-utility"><input type="checkbox" aria-label={`${clip.name} を選択`} checked={selectedIds.includes(clip.id)} disabled={disabled} onChange={event => setSelectedIds(current => event.target.checked ? [...new Set([...current, clip.id])] : current.filter(id => id !== clip.id))} /></td>
+                <td className="nc-sheet-utility"><input type="checkbox" aria-label={`${clip.name} のグラフを表示`} checked={clip.isVisible} disabled={disabled} onChange={event => {
+                    const ids = selectedIds.includes(clip.id) ? selectedIds : [clip.id]; onApplyEdits(Object.fromEntries(ids.map(id => [id, { isVisible: event.target.checked }])));
+                }} /></td>
+                {ANALYSIS_COLUMNS.map(column => {
+                    const selected = selectedCells.has(sheetKey(clip.id, column.key));
+                    const isEditing = editing?.id === clip.id && editing.column === column.key;
+                    const cell = { id: clip.id, column: column.key };
+                    return <td key={column.key} role="gridcell" data-sheet-row={clip.id} data-column={column.key} aria-selected={selected} aria-readonly={Boolean(column.readOnly)}
+                        aria-label={column.key === 'name' ? `${clip.file.name} の表示名セル` : column.key === 'groupName' ? `${clip.name} のグループセル` : undefined}
+                        className={`nc-sheet-cell ${selected ? 'nc-cell-selected' : ''} ${activeCell?.id === clip.id && activeCell.column === column.key ? 'nc-cell-active' : ''} ${isEditing ? 'nc-cell-editing' : ''} ${!clip.isVisible ? 'nc-cell-hidden' : ''}`}
+                        onPointerDown={event => beginSelection(event, clip, column.key)} onPointerEnter={() => {
+                            const drag = dragRef.current;
+                            if (drag?.wholeRow) extendSelection({ id: clip.id, column: ANALYSIS_COLUMNS.at(-1).key }); else extendSelection(cell);
+                        }}
+                        onDoubleClick={() => startEdit(clip, column.key)} onContextMenu={event => {
+                            if (disabled) return; event.preventDefault(); dragRef.current = null;
+                            if (!selectedIds.includes(clip.id)) { selectCells(new Set([sheetKey(clip.id, column.key)]), cell); anchorRef.current = cell; }
+                            setContextMenu({ x: Math.max(4, Math.min(event.clientX, window.innerWidth - 240)), y: Math.max(4, Math.min(event.clientY, window.innerHeight - 260)) });
+                        }} title={column.readOnly ? cellValue(clip, column.key) : 'ダブルクリックで編集 / ドラッグで範囲選択'}>
+                        {isEditing && column.key === 'name' ? <input type="text" autoFocus aria-label={`${clip.file.name} の表示名`} value={editing.value}
+                            onFocus={event => event.target.select()} onChange={event => { const draft = { ...editing, value: event.target.value }; editingRef.current = draft; setEditing(draft); }}
+                            onBlur={() => commitName()} onKeyDown={event => {
+                                if (event.isComposing || event.nativeEvent.isComposing) return;
+                                if (event.key === 'Escape') { event.preventDefault(); closeEdit(); }
+                                else if (event.key === 'Enter' || event.key === 'Tab') { event.preventDefault(); commitName(event.shiftKey ? -1 : 1); }
+                            }} /> : isEditing && column.key === 'groupName' ? <select autoFocus aria-label={`${clip.name} のグループ`} value={clip.groupName}
+                            onChange={event => applyGroup(event.target.value)} onBlur={() => { editingRef.current = null; setEditing(null); }} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); closeEdit(); } }}>
+                            {groups.map(group => <option key={group}>{group}</option>)}</select> : cellValue(clip, column.key)}
+                    </td>;
+                })}
+                <td className="nc-sheet-utility"><button type="button" className="nc-icon" disabled={disabled} aria-label={`${clip.name} の範囲を複製`} onClick={() => onDuplicate(clip.id)}><Copy /></button>
+                    <button type="button" className="nc-icon nc-danger" disabled={disabled} aria-label={`${clip.name} を削除`} onClick={() => onRemove(selectedIds.includes(clip.id) ? selectedIds : [clip.id])}><Trash2 /></button></td>
+            </tr>)}</tbody>
+        </table></div>
+        {contextMenu && <div role="menu" aria-label="選択行のグループを変更" className="nc-sheet-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onKeyDown={event => { if (event.key === 'Escape') { setContextMenu(null); focusGrid(); } }}>
+            <p>{selectedIds.length} 行のグループを変更</p>{groups.map(group => <button type="button" role="menuitem" key={group} onClick={() => applyGroup(group)}>{group}</button>)}
+        </div>}
+    </div>;
+};
+
 export default function App() {
     const projectInputRef = useRef(null);
     const dragIdRef = useRef(null);
@@ -880,7 +1172,6 @@ export default function App() {
     const [errorMsg, setErrorMsg] = useState('');
     const [groups, setGroups] = useState(['Group 1']);
     const [newGroupName, setNewGroupName] = useState('');
-    const [uploadGroup, setUploadGroup] = useState('Group 1');
     const [selectedIds, setSelectedIds] = useState([]);
     const [bulkGroup, setBulkGroup] = useState('Group 1');
     const [search, setSearch] = useState('');
@@ -955,7 +1246,7 @@ export default function App() {
             for (const file of files) {
                 const buffer = await decodeFile(file);
                 decoded.push({ id: newId(), file, buffer, name: file.name.replace(/\.wav$/i, ''),
-                    groupName: uploadGroup, color: SERIES_COLORS[(clips.length + decoded.length) % SERIES_COLORS.length],
+                    groupName: groups[0], color: SERIES_COLORS[(clips.length + decoded.length) % SERIES_COLORS.length],
                     isVisible: true, start: 0, end: buffer.duration,
                     playbackGainPercent: allPlaybackGainPercent, spectrogramGain: allSpectrogramGain });
             }
@@ -966,6 +1257,14 @@ export default function App() {
     const updateClip = (id, changes) => {
         setClips(current => current.map(clip => clip.id === id ? { ...clip, ...changes } : clip));
         if ('name' in changes || 'groupName' in changes) setSortState(null);
+    };
+    const applyTableEdits = updates => {
+        const additions = [...new Set(Object.values(updates).map(update => update.groupName).filter(name => name && !groups.includes(name)))];
+        if (additions.length) setGroups(current => [...new Set([...current, ...additions])]);
+        if (Object.keys(updates).length) {
+            setClips(current => current.map(clip => updates[clip.id] ? { ...clip, ...updates[clip.id] } : clip));
+            setSortState(null);
+        }
     };
     const updateMonitoring = (key, value) => {
         if (monitorTarget === 'all') {
@@ -1034,14 +1333,14 @@ export default function App() {
     const addGroup = event => {
         event.preventDefault(); const name = newGroupName.trim();
         if (!name || groups.includes(name)) { setErrorMsg('空でない、重複しないグループ名を入力してください。'); return; }
-        setGroups(current => [...current, name]); setUploadGroup(name); setBulkGroup(name); setNewGroupName(''); setErrorMsg('');
+        setGroups(current => [...current, name]); setBulkGroup(name); setNewGroupName(''); setErrorMsg('');
     };
     const renameGroup = (oldName, name) => {
         if (name === oldName) return;
         if (!name || groups.includes(name)) { setErrorMsg('空でない、重複しないグループ名を入力してください。'); return; }
         setGroups(current => current.map(group => group === oldName ? name : group));
         setClips(current => current.map(clip => clip.groupName === oldName ? { ...clip, groupName: name } : clip));
-        if (uploadGroup === oldName) setUploadGroup(name); if (bulkGroup === oldName) setBulkGroup(name); if (groupFilter === oldName) setGroupFilter(name);
+        if (bulkGroup === oldName) setBulkGroup(name); if (groupFilter === oldName) setGroupFilter(name);
         setErrorMsg('');
     };
     const removeGroup = name => {
@@ -1049,7 +1348,7 @@ export default function App() {
         const fallback = groups.find(group => group !== name);
         setGroups(current => current.filter(group => group !== name));
         setClips(current => current.map(clip => clip.groupName === name ? { ...clip, groupName: fallback } : clip));
-        if (uploadGroup === name) setUploadGroup(fallback); if (bulkGroup === name) setBulkGroup(fallback); if (groupFilter === name) setGroupFilter('');
+        if (bulkGroup === name) setBulkGroup(fallback); if (groupFilter === name) setGroupFilter('');
     };
 
     // 校正音や基準レベルの変更を自動で反映する。古い復号結果は採用しない。
@@ -1297,7 +1596,7 @@ export default function App() {
                 setYAxisMaxAuto(display.yAxisMaxAuto !== false); setYAxisMaxManual(clampSetting(display.yAxisMaxManual, 10, 200, 100));
                 setVisibleNcCurves(Array.isArray(display.visibleNcCurves) ? [...new Set(display.visibleNcCurves.filter(nc => Number.isInteger(nc) && nc >= 15 && nc <= 70))] : [20, 30, 40, 50, 60]);
                 setViewMode(display.viewMode === 'spectrogram' ? 'spectrogram' : 'table'); setResultView(display.resultView === 'group' ? 'group' : 'individual');
-                setUploadGroup(nextGroups[0]); setBulkGroup(nextGroups[0]); setGroupFilter(''); setSearch(''); setMonitorTarget('all');
+                setBulkGroup(nextGroups[0]); setGroupFilter(''); setSearch(''); setMonitorTarget('all');
                 setProjectFileHandle(handle); setProjectFileName(file.name); setIsDirty(false);
                 setSaveStatus(handle ? `${file.name} を読み込み、上書き保存先に設定しました。` : `${file.name} を読み込みました。上書きする場合は保存先を指定してください。`);
             }
@@ -1358,17 +1657,16 @@ export default function App() {
                 </div></section>
                 <section className="nc-card"><div className="nc-card-body nc-stack">
                     <h2 className="nc-section-label"><Upload />2. 解析対象の読み込み</h2>
-                    <label className="nc-field">読み込み先グループ<select value={uploadGroup} onChange={event => setUploadGroup(event.target.value)}>{groups.map(group => <option key={group}>{group}</option>)}</select></label>
                     <FileDropZone label="解析対象WAVを読み込む" hint="複数ファイルをドロップ / クリックして選択" accept=".wav,audio/wav" multiple disabled={isProcessing} onFiles={handleMeasFiles} />
                     <div className="nc-note" role="status" aria-label="自動解析の状態"><Activity /><span>{isProcessing ? 'ファイルを処理中…' : calibrationPending ? '校正が終わると自動で再解析します。' : isAnalyzing ? `${pendingAnalysisIds.length} 件の解析結果を更新中…` : '自動解析オン / 変更した範囲だけ更新します。'}</span></div>
-                    <p className="nc-muted">読み込みと同時に解析します。範囲の変更はそのファイルだけ、校正条件の変更は全ファイルに自動で反映します。</p>
+                    <p className="nc-muted">WAVは「{groups[0]}」にまとめて読み込み、自動解析します。グループは別で作成し、表でセル範囲を選択して後から割り当ててください。</p>
                 </div></section>
                 <section className="nc-card"><div className="nc-card-body nc-stack">
                     <h2 className="nc-section-label"><List />グループ設定</h2>
                     <form onSubmit={addGroup} className="nc-row"><input aria-label="新規グループ名" placeholder="新規グループ名" value={newGroupName} onChange={event => setNewGroupName(event.target.value)} style={{ flex: 1 }} /><button type="submit" className="nc-icon" aria-label="グループを追加"><Plus /></button></form>
                     {groups.map(group => <div key={group} className="nc-group-entry"><GroupNameField name={group} disabled={isProcessing} onRename={name => renameGroup(group, name)} />
                         <span className="nc-badge">{clips.filter(clip => clip.groupName === group).length}</span><button type="button" className="nc-icon nc-danger" aria-label={`${group} グループを削除`} disabled={groups.length <= 1} onClick={() => removeGroup(group)}><Trash2 /></button></div>)}
-                    <p className="nc-muted">名前はEnterで確定。グループを削除すると、所属ファイルは先頭のグループへ移動します。</p>
+                    <p className="nc-muted">グループはここで作成し、表のドラッグ選択・右クリックでファイルを割り当てます。名前はEnterで確定。削除時は先頭のグループへ移動します。</p>
                 </div></section>
                 <section className="nc-card"><div className="nc-card-body nc-stack">
                     <h2 className="nc-section-label"><AudioLines />再生・スペクトログラム</h2>
@@ -1402,27 +1700,23 @@ export default function App() {
                         <div className="nc-row nc-between"><label className="nc-row nc-muted"><SelectAllCheckbox clips={filteredClips} selectedIds={selectedIds} disabled={isProcessing} onChange={toggleAll} />全選択 <b>{selectedCount}件選択中</b></label>
                             <div className="nc-row"><button type="button" aria-label="選択ファイルを上へ" className="nc-icon" disabled={!selectedCount} onClick={() => moveSelected('up')}><ArrowUp /></button><button type="button" aria-label="選択ファイルを下へ" className="nc-icon" disabled={!selectedCount} onClick={() => moveSelected('down')}><ArrowDown /></button>
                                 <button type="button" className="nc-danger" disabled={!selectedCount} onClick={() => { if (window.confirm(`選択した ${selectedCount} 件の解析範囲を削除しますか？`)) removeClips(selectedIds); }}><Trash2 />削除</button></div></div>
-                        {selectedCount > 0 && <div className="nc-row nc-bulk"><select aria-label="選択ファイルの移動先グループ" value={bulkGroup} onChange={event => setBulkGroup(event.target.value)}>{groups.map(group => <option key={group}>{group}</option>)}</select>
-                            <button type="button" onClick={() => setClips(current => current.map(clip => selectedIds.includes(clip.id) ? { ...clip, groupName: bulkGroup } : clip))}>グループ変更</button>
-</div>}
+                        <div className="nc-row nc-bulk"><select disabled={!selectedCount} aria-label="選択ファイルの移動先グループ" value={bulkGroup} onChange={event => setBulkGroup(event.target.value)}>{groups.map(group => <option key={group}>{group}</option>)}</select>
+                            <button type="button" disabled={!selectedCount} onClick={() => applyTableEdits(Object.fromEntries(selectedIds.map(id => [id, { groupName: bulkGroup }])))}>グループ変更</button>
+                            <button type="button" disabled={!selectedCount} onClick={() => setSelectedIds([])}>選択解除</button>
+                        </div>
                         {viewMode === 'spectrogram' && <div className="nc-row nc-muted"><span>並び替え:</span>{sortLabel('name', '表示名')}{sortLabel('groupName', 'グループ')}{sortLabel('duration', '範囲長')}{sortLabel('nc', 'NC')}</div>}
                     </div>
                 </div>
-                {!filteredClips.length ? <div className="nc-empty"><AudioLines /><strong>{clips.length ? '該当するファイルがありません' : '解析するWAVを追加'}</strong><p className="nc-muted">{clips.length ? '検索やグループの絞り込みを変更してください。' : '左側にWAVをドロップすると、ここに一覧が表示されます。'}</p></div> : viewMode === 'table' ? <div className="nc-table-scroll"><table className="nc-table" aria-label="解析ファイル表">
-                    <thead><tr><th></th><th>選択</th><th>{sortLabel('name', '表示名')} / {sortLabel('fileName', '元ファイル')}</th><th>{sortLabel('groupName', 'グループ')}</th><th>{sortLabel('nc', 'NC')}</th><th>表示</th><th></th></tr></thead>
-                    <tbody>{filteredClips.map(clip => <tr key={clip.id} data-clip-id={clip.id} className={selectedIds.includes(clip.id) ? 'nc-selected' : ''} {...rowDragProps(clip.id)}>
-                        <td>{dragHandle(clip)}</td><td>{selectClip(clip)}</td><td className="nc-name-cell">{nameInput(clip)}<p className="nc-file-label">{clip.file.name}</p><span className="nc-muted">{formatTime(clip.start)} – {formatTime(clip.end)}</span></td>
-                        <td className="nc-group-cell">{groupSelect(clip)}</td><td className="nc-compact">{resultById.has(clip.id) && !resultById.get(clip.id).isUpdating ? `NC-${formatNC(resultById.get(clip.id).nc.overall)}` : <span className="nc-muted">{pendingAnalysisIds.includes(clip.id) || calibrationPending ? '更新中…' : '解析待ち'}</span>}</td><td>{visibleClip(clip)}</td>
-                        <td><button type="button" className="nc-icon" aria-label={`${clip.name} の範囲を複製`} onClick={() => duplicateClip(clip.id)}><Copy /></button></td>
-                    </tr>)}</tbody>
-                </table></div> : <div className="nc-editor-list">{filteredClips.map(clip => <article key={clip.id} data-clip-id={clip.id} className={`nc-editor-card ${selectedIds.includes(clip.id) ? 'nc-selected' : ''}`} {...rowDragProps(clip.id)}>
+                {!filteredClips.length ? <div className="nc-empty"><AudioLines /><strong>{clips.length ? '該当するファイルがありません' : '解析するWAVを追加'}</strong><p className="nc-muted">{clips.length ? '検索やグループの絞り込みを変更してください。' : '左側にWAVをドロップすると、ここに一覧が表示されます。'}</p></div> : viewMode === 'table' ? <AnalysisTable clips={filteredClips} groups={groups} selectedIds={selectedIds} setSelectedIds={setSelectedIds}
+                    resultById={resultById} pendingIds={pendingAnalysisIds} calibrationPending={calibrationPending} disabled={isProcessing}
+                    onApplyEdits={applyTableEdits} onRemove={removeClips} onDuplicate={duplicateClip} onSort={sortLabel} dragHandle={dragHandle} rowDragProps={rowDragProps} /> : <div className="nc-editor-list">{filteredClips.map(clip => <article key={clip.id} data-clip-id={clip.id} className={`nc-editor-card ${selectedIds.includes(clip.id) ? 'nc-selected' : ''}`} {...rowDragProps(clip.id)}>
                     <div className="nc-editor-head nc-stack"><div className="nc-row">{dragHandle(clip)}{selectClip(clip)}{nameInput(clip)}
                         <button type="button" className="nc-icon" aria-label={`${clip.name} の範囲を複製`} onClick={() => duplicateClip(clip.id)}><Copy /></button>
                         <button type="button" className="nc-icon nc-danger" aria-label={`${clip.name} を削除`} onClick={() => removeClips([clip.id])}><Trash2 /></button></div>
                         <div className="nc-row nc-between"><span className="nc-file-label">{clip.file.name}</span>{groupSelect(clip)}<label className="nc-row nc-muted">{visibleClip(clip)}グラフ表示</label></div></div>
                     <SpectrogramEditor clip={clip} disabled={isProcessing} zoom={spectrogramZoom} height={spectrogramHeight} onChange={changes => updateClip(clip.id, changes)} />
                 </article>)}</div>}
-                {clips.length > 0 && <div className="nc-card-body nc-muted">ドラッグハンドルまたは選択後の矢印で並び替え。表の見出しからソートできます。表示順はスペクトログラム・結果・出力に共通です。</div>}
+                {clips.length > 0 && <div className="nc-card-body nc-muted">セルをドラッグで範囲選択。グループ列をダブルクリック、右クリック、または上のグループ変更で選択行に一括割り当て。Shiftで範囲拡張、Ctrl / ⌘で追加選択、Ctrl+C / Vで表のコピー・貼り付け。並び順は結果・出力にも共通です。</div>}
             </section>
 
             <section className="nc-results nc-column nc-stack" aria-label="解析結果">
