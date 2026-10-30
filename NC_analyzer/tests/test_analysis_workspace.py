@@ -653,6 +653,108 @@ class AnalysisWorkspaceTests(unittest.TestCase):
         expect(self.page.get_by_label('再生音量', exact=True)).to_have_value('10000')
         expect(self.page.get_by_label('最高周波数 (Hz)', exact=True)).to_have_value('8000')
 
+    def background(self, name):
+        return self.page.get_by_label(name + ' を暗騒音に指定', exact=True)
+
+    def result_levels(self, name):
+        card = self.page.locator('[data-result-id]').filter(has=self.page.get_by_role('heading', name=name, exact=True))
+        return card.locator('.nc-details tbody td:nth-child(2)').evaluate_all('els => els.map(el => Number(el.textContent))')
+
+    def test_shared_background_overlays_all_groups_without_fft(self):
+        self.page.get_by_label('解析対象WAVを読み込む', exact=True).set_input_files([
+            {'name': 'noise.wav', 'mimeType': 'audio/wav', 'buffer': wav_bytes(amplitude=0.01)},
+            {'name': 'A.wav', 'mimeType': 'audio/wav', 'buffer': wav_bytes(amplitude=0.02)},
+            {'name': 'B.wav', 'mimeType': 'audio/wav', 'buffer': wav_bytes(amplitude=0.02)},
+        ])
+        self.wait_for_results(3)
+        self.add_group('別グループ')
+        self.assign_group('B', '別グループ')
+        expect(self.page.get_by_label('すべてのグループで共通の暗騒音を使用', exact=True)).to_be_checked()
+        original, noise = self.result_levels('A'), self.result_levels('noise')
+        self.background('noise').check()
+        corrected = self.result_levels('A')
+        self.assertEqual(corrected, original)
+        for name in ['A', 'B']:
+            card = self.page.locator('[data-result-id]').filter(has=self.page.get_by_role('heading', name=name, exact=True))
+            expect(card.locator('[data-background-reference=true]')).to_have_count(1)
+            expect(card.locator('[data-series-id]')).to_have_count(2)
+        self.assertEqual(corrected, self.result_levels('B'))
+        self.assertEqual(noise, self.result_levels('noise'))
+        self.assertEqual(self.page.evaluate('window.testAnalysisCalls.length'), 3)
+        exported = self.project_json()
+        self.assertEqual(exported['bgNoiseMode'], 'overlay')
+        self.assertEqual(exported['bgNoiseData'], {})
+        self.assertEqual({item['groupName'] for item in exported['dataItems'] if item['isBackgroundNoiseReference']}, {'Group 1', '別グループ'})
+        self.assertEqual(exported['dataItems'][1]['rawValues'], original)
+        report = self.context.new_page()
+        report.on('pageerror', lambda error: self.errors.append(str(error)))
+        report.goto('https://nc-report.test/')
+        report.locator('input[type=file][accept=".json"][multiple]').set_input_files({
+            'name': 'background.json', 'mimeType': 'application/json', 'buffer': json.dumps(exported).encode(),
+        })
+        expect(report.get_by_role('button', name='WAV解析', exact=True)).to_be_visible()
+        report_values = report.evaluate('''() => Object.values(Chart.instances).flatMap(chart =>
+            chart.data.datasets.filter(dataset => dataset.label.startsWith('A (NC-')).map(dataset => dataset.data))''')
+        self.assertEqual(report_values, [corrected])
+        background_values = report.evaluate('''() => Object.values(Chart.instances).flatMap(chart =>
+            chart.data.datasets.filter(dataset => dataset.label.includes('（暗騒音）')).map(dataset => dataset.data))''')
+        self.assertEqual(background_values, [noise, noise])
+        report.close()
+        _, data = self.download('NCA出力')
+        self.import_nca(data)
+        expect(self.background('noise')).to_be_checked()
+        self.assertEqual(self.result_levels('A'), corrected)  # Restore retains the same uncorrected measurements.
+        self.background('A').check()
+        expect(self.background('noise')).not_to_be_checked()
+        self.assertEqual(sum(self.page.locator('input[aria-label$="を暗騒音に指定"]').evaluate_all('els => els.map(el => el.checked)')), 1)
+
+    def test_per_group_background_unique_move_and_roundtrip_append(self):
+        self.upload('noiseA.wav', 'A.wav', 'noiseB.wav', 'B.wav')
+        self.wait_for_results(4)
+        self.add_group('別')
+        self.assign_group('noiseB', '別')
+        self.assign_group('B', '別')
+        self.background('noiseA').check()
+        self.page.get_by_label('すべてのグループで共通の暗騒音を使用', exact=True).uncheck()
+        self.background('noiseB').check()
+        expect(self.background('noiseA')).to_be_checked()
+        expect(self.background('noiseB')).to_be_checked()
+        self.background('B').check()
+        expect(self.background('noiseB')).not_to_be_checked()
+        expect(self.background('noiseA')).to_be_checked()
+        self.assign_group('B', 'Group 1')
+        expect(self.background('B')).not_to_be_checked()
+        self.assign_group('B', '別')
+        expect(self.background('B')).not_to_be_checked()
+        self.background('noiseB').check()
+        _, nca = self.download('NCA出力')
+        self.import_nca(nca)
+        expect(self.page.get_by_label('すべてのグループで共通の暗騒音を使用', exact=True)).not_to_be_checked()
+        expect(self.background('noiseA')).to_be_checked()
+        expect(self.background('noiseB')).to_be_checked()
+        self.page.get_by_role('radio', name='追加', exact=True).check()
+        self.import_nca(nca)
+        expect(self.page.locator('[data-clip-id]')).to_have_count(8)
+        self.assertEqual(sum(self.page.locator('input[aria-label$="を暗騒音に指定"]').evaluate_all('els => els.map(el => el.checked)')), 4)
+        self.assertEqual(self.page.evaluate('window.testAnalysisCalls.length'), 4)
+
+    def test_background_range_refresh_and_delete_restore_measurements(self):
+        self.upload('noise.wav', 'measurement.wav')
+        self.wait_for_results(2)
+        original = self.result_levels('measurement')
+        self.background('noise').check()
+        self.page.get_by_role('button', name='スペクトログラム', exact=True).click()
+        self.page.get_by_label('noise IN (秒)', exact=True).fill('0.2')
+        self.wait_for_results(2)
+        self.assertEqual(self.page.evaluate('window.testAnalysisCalls.length'), 3)
+        self.background('noise').uncheck()
+        self.assertEqual(self.result_levels('measurement'), original)
+        self.background('noise').check()
+        self.page.get_by_role('button', name='noise を削除', exact=True).click()
+        self.wait_for_results(1)
+        self.assertEqual(self.result_levels('measurement'), original)
+        self.assertEqual(self.page.evaluate('window.testAnalysisCalls.length'), 3)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

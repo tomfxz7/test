@@ -469,9 +469,9 @@ const ResultChart = ({ items, title, visibleNcCurves, lineWidth, pointSize, yAxi
                     <path d={generatePath(NCTable[nc])} fill="none" stroke="#94a3b8" strokeWidth="1" strokeDasharray="5 4" />
                     <text x={getX(7) - 3} y={getY(NCTable[nc][7]) - 5} textAnchor="end" fill="#64748b" fontSize="10">NC-{nc}</text>
                 </g>)}
-                {items.map(item => <g key={item.id} data-series-id={item.id} opacity={item.isUpdating ? 0.4 : 1}>
-                    <path d={generatePath(item.levels)} fill="none" stroke={item.color} strokeWidth={lineWidth} />
-                    {item.levels.map((val, i) => <circle key={i} cx={getX(i)} cy={getY(val)} r={pointSize} fill={item.color}>
+                {items.map(item => <g key={item.id} data-series-id={item.id} data-background-reference={item.isReference || undefined} opacity={item.isUpdating ? 0.4 : 1}>
+                    <path d={generatePath(item.levels)} fill="none" stroke={item.isReference ? '#64748b' : item.color} strokeWidth={lineWidth} strokeDasharray={item.isReference ? '7 4' : undefined} />
+                    {item.levels.map((val, i) => <circle key={i} cx={getX(i)} cy={getY(val)} r={pointSize} fill={item.isReference ? '#64748b' : item.color}>
                         <title>{item.clipName} / {FREQUENCIES[i]} Hz: {val.toFixed(1)} dB</title>
                     </circle>)}
                 </g>)}
@@ -797,11 +797,12 @@ const workspaceStyles = `
  .nc-sheet-table thead th:nth-child(-n+3) { padding:6px 3px; font-size:10px; }
 .nc-sheet-table thead th:nth-child(1) { width:54px; }
 .nc-sheet-table thead th:nth-child(2),.nc-sheet-table thead th:nth-child(3) { width:32px; }
-.nc-sheet-table thead th:nth-child(4) { width:145px; }
-.nc-sheet-table thead th:nth-child(5) { width:125px; }
-.nc-sheet-table thead th:nth-child(6) { width:105px; }
-.nc-sheet-table thead th:nth-child(7) { width:70px; }
-.nc-sheet-table thead th:nth-child(8) { width:65px; }
+.nc-sheet-table thead th:nth-child(4) { width:52px; }
+.nc-sheet-table thead th:nth-child(5) { width:145px; }
+.nc-sheet-table thead th:nth-child(6) { width:125px; }
+.nc-sheet-table thead th:nth-child(7) { width:105px; }
+.nc-sheet-table thead th:nth-child(8) { width:70px; }
+.nc-sheet-table thead th:nth-child(9) { width:65px; }
 .nc-sheet-table .nc-sheet-cell { border:1px solid #cbd5e1; padding:8px 10px; height:37px; overflow:hidden; text-overflow:ellipsis; cursor:cell; user-select:none; touch-action:none; }
 .nc-sheet-table .nc-sheet-cell[data-column=fileName] { overflow:visible; text-overflow:clip; }
 .nc-sheet-cell:hover { background:#f8fafc; }
@@ -901,7 +902,7 @@ const ANALYSIS_COLUMNS = [
 const sheetKey = (id, column) => JSON.stringify([id, column]);
 
 const AnalysisTable = ({ clips, groups, selectedIds, setSelectedIds, resultById, pendingIds, calibrationPending,
-    disabled, onApplyEdits, onRemove, onDuplicate, onSort, dragHandle, rowDragProps }) => {
+    disabled, onApplyEdits, onRemove, onDuplicate, onSort, dragHandle, rowDragProps, isBackground, onBackgroundChange }) => {
     const rootRef = useRef(null);
     const dragRef = useRef(null);
     const anchorRef = useRef(null);
@@ -1109,8 +1110,8 @@ const AnalysisTable = ({ clips, groups, selectedIds, setSelectedIds, resultById,
     };
 
     return <div ref={rootRef} className="nc-sheet" tabIndex={0} aria-label="ファイル表のセル操作" onKeyDown={handleKeyDown} onCopy={handleCopy} onPaste={handlePaste}>
-        <div className="nc-table-scroll"><table className="nc-table nc-sheet-table" role="grid" aria-label="解析ファイル表" aria-multiselectable="true" aria-rowcount={clips.length + 1} aria-colcount={ANALYSIS_COLUMNS.length + 4}>
-            <thead><tr><th>#</th><th>選択</th><th>表示</th>{ANALYSIS_COLUMNS.map(column => <th key={column.key}>{onSort(column.key, column.label)}</th>)}<th>操作</th></tr></thead>
+        <div className="nc-table-scroll"><table className="nc-table nc-sheet-table" role="grid" aria-label="解析ファイル表" aria-multiselectable="true" aria-rowcount={clips.length + 1} aria-colcount={ANALYSIS_COLUMNS.length + 5}>
+            <thead><tr><th>#</th><th>選択</th><th>表示</th><th>暗騒音</th>{ANALYSIS_COLUMNS.map(column => <th key={column.key}>{onSort(column.key, column.label)}</th>)}<th>操作</th></tr></thead>
             <tbody>{clips.map((clip, index) => <tr key={clip.id} data-clip-id={clip.id} aria-rowindex={index + 2} {...rowDragProps(clip.id)}>
                 <th scope="row" data-sheet-row={clip.id} data-column={ANALYSIS_COLUMNS.at(-1).key} className={`nc-sheet-row-header ${selectedIds.includes(clip.id) ? 'nc-selected' : ''}`} onPointerDown={event => selectRow(event, clip)}>
                     <div className="nc-row" style={{ flexWrap: 'nowrap', gap: 2 }}>{dragHandle(clip)}<span>{index + 1}</span></div>
@@ -1119,6 +1120,7 @@ const AnalysisTable = ({ clips, groups, selectedIds, setSelectedIds, resultById,
                 <td className="nc-sheet-utility"><input type="checkbox" aria-label={`${clip.name} のグラフを表示`} checked={clip.isVisible} disabled={disabled} onChange={event => {
                     const ids = selectedIds.includes(clip.id) ? selectedIds : [clip.id]; onApplyEdits(Object.fromEntries(ids.map(id => [id, { isVisible: event.target.checked }])));
                 }} /></td>
+                <td className="nc-sheet-utility"><input type="checkbox" aria-label={`${clip.name} を暗騒音に指定`} checked={isBackground(clip)} disabled={disabled} onChange={event => onBackgroundChange(clip, event.target.checked)} /></td>
                 {ANALYSIS_COLUMNS.map(column => {
                     const selected = selectedCells.has(sheetKey(clip.id, column.key));
                     const isEditing = editing?.id === clip.id && editing.column === column.key;
@@ -1178,6 +1180,9 @@ export default function App() {
     const [groupFilter, setGroupFilter] = useState('');
     const [viewMode, setViewMode] = useState('table');
     const [resultView, setResultView] = useState('individual');
+    const [backgroundMode, setBackgroundMode] = useState('shared');
+    const [sharedBackgroundId, setSharedBackgroundId] = useState(null);
+    const [groupBackgroundIds, setGroupBackgroundIds] = useState({});
     const [sortState, setSortState] = useState(null);
     const [useClipNameOnly, setUseClipNameOnly] = useState(false);
     const [allPlaybackGainPercent, setAllPlaybackGainPercent] = useState(100);
@@ -1203,20 +1208,57 @@ export default function App() {
         else setIsDirty(true);
     }, [clips, rawResults, groups, calibFile, calibLevel, offset, useClipNameOnly, allPlaybackGainPercent,
         allSpectrogramGain, spectrogramZoom, spectrogramHeight, spectrogramFrequencies, lineWidth, pointSize, yAxisMaxAuto,
-        yAxisMaxManual, visibleNcCurves, projectName, viewMode, resultView]);
+        yAxisMaxManual, visibleNcCurves, projectName, viewMode, resultView, backgroundMode, sharedBackgroundId, groupBackgroundIds]);
 
+    useEffect(() => {
+        setSharedBackgroundId(current => clips.some(clip => clip.id === current) ? current : null);
+        setGroupBackgroundIds(current => {
+            const entries = Object.entries(current).filter(([group, id]) => groups.includes(group) && clips.some(clip => clip.id === id && clip.groupName === group));
+            return entries.length === Object.keys(current).length ? current : Object.fromEntries(entries);
+        });
+    }, [clips, groups]);
+
+    const backgroundForGroup = group => {
+        const id = backgroundMode === 'shared' ? sharedBackgroundId : groupBackgroundIds[group];
+        return clips.find(clip => clip.id === id && (backgroundMode === 'shared' || clip.groupName === group)) || null;
+    };
+    const isBackground = clip => backgroundForGroup(clip.groupName)?.id === clip.id;
+    const setBackground = (clip, checked) => {
+        if (backgroundMode === 'shared') setSharedBackgroundId(checked ? clip.id : null);
+        else setGroupBackgroundIds(current => ({ ...current, [clip.groupName]: checked ? clip.id : null }));
+    };
+    const changeBackgroundMode = shared => {
+        if (!shared && sharedBackgroundId) {
+            const clip = clips.find(item => item.id === sharedBackgroundId);
+            if (clip) setGroupBackgroundIds(current => ({ ...current, [clip.groupName]: clip.id }));
+        }
+        setBackgroundMode(shared ? 'shared' : 'group');
+    };
     const results = useMemo(() => {
         const byId = new Map(rawResults.map(result => [result.id, result]));
+        const stale = (result, clip) => !result || calibrationPending || (calibFile && offset === null) ||
+            result.sourceBuffer !== clip.buffer || result.selectedStart !== clip.start || result.selectedEnd !== clip.end || result.offset !== (offset ?? 100);
         return clips.flatMap(clip => {
             const result = byId.get(clip.id);
-            return result ? [{ ...result, sourceFileName: clip.file.name, clipName: clip.name,
+            if (!result) return [];
+            const background = backgroundForGroup(clip.groupName);
+            const reference = background && background.id !== clip.id ? byId.get(background.id) : null;
+            return [{ ...result, unadjustedLevels: result.levels,
+                backgroundId: background?.id || null, backgroundName: reference ? background.name : null,
+                isBackground: background?.id === clip.id, sourceFileName: clip.file.name, clipName: clip.name,
                 groupName: clip.groupName, color: clip.color, playbackGainPercent: clip.playbackGainPercent, isVisible: clip.isVisible, useClipNameOnly,
-                isUpdating: calibrationPending || (calibFile && offset === null) || result.sourceBuffer !== clip.buffer ||
-                    result.selectedStart !== clip.start || result.selectedEnd !== clip.end || result.offset !== (offset ?? 100),
-                nc: evaluateNC(result.levels) }] : [];
+                isUpdating: stale(result, clip),
+                nc: evaluateNC(result.levels) }];
         });
-    }, [clips, rawResults, useClipNameOnly, offset, calibrationPending, calibFile]);
+    }, [clips, rawResults, useClipNameOnly, offset, calibrationPending, calibFile, backgroundMode, sharedBackgroundId, groupBackgroundIds]);
     const resultById = useMemo(() => new Map(results.map(result => [result.id, result])), [results]);
+    const chartItemsForGroup = (items, group) => {
+        const background = backgroundForGroup(group);
+        const reference = background && resultById.get(background.id);
+        const series = items.map(item => ({ ...item, isReference: item.id === background?.id }));
+        if (reference && !items.some(item => item.id === reference.id)) series.push({ ...reference, isReference: true });
+        return series;
+    };
     const filteredClips = clips.filter(clip => (!groupFilter || clip.groupName === groupFilter) &&
         `${clip.name} ${clip.file.name} ${clip.groupName}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
     const validResults = results.filter(result => !result.isUpdating);
@@ -1339,6 +1381,7 @@ export default function App() {
     const renameGroup = (oldName, name) => {
         if (name === oldName) return;
         if (!name || groups.includes(name)) { setErrorMsg('空でない、重複しないグループ名を入力してください。'); return; }
+        setGroupBackgroundIds(current => { const next = { ...current, [name]: current[oldName] }; delete next[oldName]; return next; });
         setGroups(current => current.map(group => group === oldName ? name : group));
         setClips(current => current.map(clip => clip.groupName === oldName ? { ...clip, groupName: name } : clip));
         if (groupFilter === oldName) setGroupFilter(name);
@@ -1458,13 +1501,26 @@ export default function App() {
     };
     const exportIndexProject = () => {
         const name = projectName.trim() || 'WAV解析';
+        // プロジェクト追加読込ではindex.htmlの全体補正モードが維持される。
+        // 暗騒音は比較用のデータとして含め、読込先で差し引きが発生しないようにする。
+        const exportItem = (result, group, reference = false, id = result.id) => ({
+            id, fileName: getCsvFileName(result.sourceFileName, result.clipName, useClipNameOnly),
+            legendName: result.clipName + (reference ? '（暗騒音）' : ''), groupName: group,
+            isVisible: reference || result.isVisible, isOriginalThird: false, isBackgroundNoiseReference: reference,
+            rawFreqs: [...FREQUENCIES], rawValues: result.levels, rawText: createLpeqCsv(result.levels)
+        });
+        const exportItems = validResults.map(result => exportItem(result, result.groupName, result.isBackground));
+        groups.forEach((group, index) => {
+            const clip = backgroundForGroup(group), result = clip && resultById.get(clip.id);
+            if (result && !result.isUpdating && !exportItems.some(item => item.id === result.id && item.groupName === group)) {
+                exportItems.push(exportItem(result, group, true, `${result.id}-background-${index}`));
+            }
+        });
         const data = {
             version: '1.4', projects: [name], selectedProject: name, visibleProjects: [name], groups,
             groupProjects: Object.fromEntries(groups.map(group => [group, name])),
-            dataItems: validResults.map(result => ({ id: result.id, fileName: getCsvFileName(result.sourceFileName, result.clipName, useClipNameOnly),
-                legendName: result.clipName, groupName: result.groupName, isVisible: result.isVisible, isOriginalThird: false,
-                rawFreqs: [...FREQUENCIES], rawValues: result.levels, rawText: createLpeqCsv(result.levels) })),
-            bgNoiseData: {}, addNoiseData: {}, bgNoiseMode: 'none', addNoiseMode: 'none', bgCorrectionMethod: 'energy',
+            dataItems: exportItems,
+            bgNoiseData: {}, addNoiseData: {}, bgNoiseMode: 'overlay', addNoiseMode: 'none', bgCorrectionMethod: 'energy',
             groupOctaveModes: Object.fromEntries(groups.map(group => [group, '1/1'])),
             visibleNcCurves, lineWidth, pointSize, yAxisMaxAuto, yAxisMaxManual
         };
@@ -1482,13 +1538,14 @@ export default function App() {
         };
         const savedClips = clips.map(clip => {
             const result = resultById.get(clip.id);
-            return { name: clip.name, groupName: clip.groupName, color: clip.color, playbackGainPercent: clip.playbackGainPercent, isVisible: clip.isVisible,
+            return { id: clip.id, name: clip.name, groupName: clip.groupName, color: clip.color, isVisible: clip.isVisible,
                 start: clip.start, end: clip.end, audioFile: addAudio(clip.file, 'audio'), sourceFileName: clip.file.name,
                 playbackGainPercent: clip.playbackGainPercent, spectrogramGain: clip.spectrogramGain,
-                result: result && !result.isUpdating ? { levels: result.levels, offset: result.offset } : null };
+                result: result && !result.isUpdating ? { levels: result.unadjustedLevels, offset: result.offset } : null };
         });
         entries.push({ name: 'project.json', data: JSON.stringify({
             format: 'nc-analyzer-project', version: 1, createdAt: new Date().toISOString(), name: projectName, groups,
+            background: { mode: backgroundMode, sharedId: clips.some(clip => clip.id === sharedBackgroundId) ? sharedBackgroundId : null, groupIds: Object.fromEntries(groups.map(group => [group, clips.find(clip => clip.id === groupBackgroundIds[group] && clip.groupName === group)?.id || null])) },
             output: { useClipNameOnly },
             analysis: { octaveBand: '1/1', frequencies: FREQUENCIES, fftSize: 8192, overlap: 4096 },
             calibration: { referenceLevel: Number(calibLevel), offset, audioFile: addAudio(calibFile, 'calibration'), sourceFileName: calibFile?.name || null },
@@ -1561,7 +1618,7 @@ export default function App() {
             const reference = Number(calibration.referenceLevel);
             const restoredOffset = calibration.offset != null && Number.isFinite(Number(calibration.offset)) ? Number(calibration.offset) : null;
             const effectiveOffset = (append ? offset : restoredOffset) ?? 100;
-            const restoredClips = [], restoredResults = [];
+            const restoredClips = [], restoredResults = [], restoredIds = new Map();
             for (const [index, saved] of settings.clips.entries()) {
                 const asset = await loadAsset(saved.audioFile, saved.sourceFileName);
                 const start = Number(saved.start), end = Number(saved.end);
@@ -1571,6 +1628,7 @@ export default function App() {
                     color: /^#[0-9a-f]{6}$/i.test(saved.color) ? saved.color : SERIES_COLORS[((append ? clips.length : 0) + index) % SERIES_COLORS.length],
                     playbackGainPercent: append ? allPlaybackGainPercent : clampSetting(saved.playbackGainPercent ?? display.allPlaybackGainPercent, 0, 10000, 100),
                     spectrogramGain: append ? allSpectrogramGain : clampSetting(saved.spectrogramGain ?? display.allSpectrogramGain, 1, 100, 1) };
+                if (typeof saved.id === 'string') restoredIds.set(saved.id, clip.id);
                 restoredClips.push(clip);
                 if (Array.isArray(saved.result?.levels) && saved.result.levels.length === 8 && saved.result.levels.every(Number.isFinite) && saved.result.offset === effectiveOffset) {
                     restoredResults.push({ id: clip.id, sourceBuffer: clip.buffer, levels: saved.result.levels, offset: effectiveOffset,
@@ -1578,12 +1636,20 @@ export default function App() {
                 }
             }
             const calibrationAsset = !append && calibration.audioFile ? await loadAsset(calibration.audioFile, calibration.sourceFileName) : null;
+            const importedBackgrounds = Object.fromEntries(importedGroups.map(group => {
+                const id = restoredIds.get(settings.background?.groupIds?.[group]);
+                return [groupMap.get(group), restoredClips.find(clip => clip.id === id && clip.groupName === groupMap.get(group))?.id || null];
+            }).filter(([, id]) => id));
             // すべての検証と音声の復号が終わるまで、現在のワークスペースを変更しない。
             if (append) {
+                setGroupBackgroundIds(current => ({ ...current, ...importedBackgrounds }));
                 setClips(current => [...current, ...restoredClips]); setRawResults(current => [...current, ...restoredResults]);
                 setGroups(nextGroups); setSaveStatus(`${file.name} から ${restoredClips.length} 件を追加しました。現在の校正・保存先は維持しています。`);
             } else {
                 skipDirtyRef.current = true;
+                setBackgroundMode(settings.background?.mode === 'group' ? 'group' : 'shared');
+                setSharedBackgroundId(restoredIds.get(settings.background?.sharedId) || null);
+                setGroupBackgroundIds(importedBackgrounds);
                 calibrationRef.current = { file: calibrationAsset?.file || null, level: Number.isFinite(reference) ? reference : 94, offset: restoredOffset };
                 setCalibrationPending(false);
                 setClips(restoredClips); setRawResults(restoredResults); setGroups(nextGroups); setSelectedIds([]);
@@ -1672,6 +1738,11 @@ export default function App() {
                     <p className="nc-muted">グループはここで作成し、表のドラッグ選択・右クリックでファイルを割り当てます。名前はEnterで確定。削除時は先頭のグループへ移動します。</p>
                 </div></section>
                 <section className="nc-card"><div className="nc-card-body nc-stack">
+                    <h2 className="nc-section-label"><Settings2 />暗騒音の参照表示</h2>
+                    <label className="nc-row"><input type="checkbox" checked={backgroundMode === 'shared'} onChange={event => changeBackgroundMode(event.target.checked)} />すべてのグループで共通の暗騒音を使用</label>
+                    <p className="nc-muted">表の「暗騒音」で指定します。共通使用では全体で1件、個別使用では各グループで1件です。別のファイルを選ぶと置き換えます。選択範囲の未増幅の解析値を、各グループと個別結果のグラフに灰色の破線で重ねて表示します。</p>
+                    {groups.map(group => <p key={group} className="nc-muted">{group}: {backgroundForGroup(group)?.name || '未設定'}</p>)}
+                    <p className="nc-muted">測定値・NC値から暗騒音を差し引きません。CSV・WAVも暗騒音による補正は行いません。</p>
                     <h2 className="nc-section-label"><AudioLines />再生・スペクトログラム</h2>
                     <label className="nc-field">音量・感度の適用先<select value={monitoringClip ? monitorTarget : 'all'} onChange={event => setMonitorTarget(event.target.value)}><option value="all">全ファイル（新規読み込みの既定値）</option>{clips.map(clip => <option key={clip.id} value={clip.id}>{clip.name}</option>)}</select></label>
                     <label className="nc-field"><span className="nc-row nc-between">再生音量<output>{monitoringClip?.playbackGainPercent ?? allPlaybackGainPercent}%</output></span><input aria-label="再生音量" type="range" min="0" max="10000" step="10" value={monitoringClip?.playbackGainPercent ?? allPlaybackGainPercent} onChange={event => updateMonitoring('playbackGainPercent', Number(event.target.value))} /></label>
@@ -1716,11 +1787,11 @@ export default function App() {
                 </div>
                 {!filteredClips.length ? <div className="nc-empty"><AudioLines /><strong>{clips.length ? '該当するファイルがありません' : '解析するWAVを追加'}</strong><p className="nc-muted">{clips.length ? '検索やグループの絞り込みを変更してください。' : '左側にWAVをドロップすると、ここに一覧が表示されます。'}</p></div> : viewMode === 'table' ? <AnalysisTable clips={filteredClips} groups={groups} selectedIds={selectedIds} setSelectedIds={setSelectedIds}
                     resultById={resultById} pendingIds={pendingAnalysisIds} calibrationPending={calibrationPending} disabled={isProcessing}
-                    onApplyEdits={applyTableEdits} onRemove={removeClips} onDuplicate={duplicateClip} onSort={sortLabel} dragHandle={dragHandle} rowDragProps={rowDragProps} /> : <div className="nc-editor-list">{filteredClips.map(clip => <article key={clip.id} data-clip-id={clip.id} className={`nc-editor-card ${selectedIds.includes(clip.id) ? 'nc-selected' : ''}`} {...rowDragProps(clip.id)}>
+                    onApplyEdits={applyTableEdits} onRemove={removeClips} onDuplicate={duplicateClip} onSort={sortLabel} dragHandle={dragHandle} rowDragProps={rowDragProps} isBackground={isBackground} onBackgroundChange={setBackground} /> : <div className="nc-editor-list">{filteredClips.map(clip => <article key={clip.id} data-clip-id={clip.id} className={`nc-editor-card ${selectedIds.includes(clip.id) ? 'nc-selected' : ''}`} {...rowDragProps(clip.id)}>
                     <div className="nc-editor-head nc-stack"><div className="nc-row">{dragHandle(clip)}{selectClip(clip)}{nameInput(clip)}
                         <button type="button" className="nc-icon" aria-label={`${clip.name} の範囲を複製`} onClick={() => duplicateClip(clip.id)}><Copy /></button>
                         <button type="button" className="nc-icon nc-danger" aria-label={`${clip.name} を削除`} onClick={() => removeClips([clip.id])}><Trash2 /></button></div>
-                        <div className="nc-row nc-between"><span className="nc-file-label">{clip.file.name}</span>{groupSelect(clip)}<label className="nc-row nc-muted">{visibleClip(clip)}グラフ表示</label></div></div>
+                        <div className="nc-row nc-between"><span className="nc-file-label">{clip.file.name}</span>{groupSelect(clip)}<label className="nc-row nc-muted">{visibleClip(clip)}グラフ表示</label><label className="nc-row nc-muted"><input type="checkbox" aria-label={`${clip.name} を暗騒音に指定`} checked={isBackground(clip)} onChange={event => setBackground(clip, event.target.checked)} />暗騒音</label></div></div>
                     <SpectrogramEditor clip={clip} disabled={isProcessing} zoom={spectrogramZoom} height={spectrogramHeight} frequencyMin={spectrogramFrequencies.min} frequencyMax={spectrogramFrequencies.max} onChange={changes => updateClip(clip.id, changes)} />
                 </article>)}</div>}
                 {clips.length > 0 && <div className="nc-card-body nc-muted">セルをドラッグで範囲選択。グループ列をダブルクリック、または右クリックで選択行に一括割り当て。Shiftで範囲拡張、Ctrl / ⌘で追加選択、Ctrl+C / Vで表のコピー・貼り付け。並び順は結果・出力にも共通です。</div>}
@@ -1732,15 +1803,15 @@ export default function App() {
                     <div className="nc-card-body nc-muted">{offset === null ? '未校正・参考値 / ' : '校正済み / '}1/1オクターブバンド{resultView === 'group' ? '。同じグループの測定値を重ねて比較します。' : '。一覧の順に表示します。'}{results.length < clips.length && ` 更新待ち: ${clips.length - results.length} 件。`}</div>
                 </div>
                 {!shownResults.length ? <div className="nc-card nc-empty"><BarChart3 /><strong>{results.length ? 'グラフ表示がオフになっています' : '解析結果をここに表示'}</strong><p className="nc-muted">{results.length ? '一覧の「表示」をオンにしてください。' : isAnalyzing || calibrationPending ? '解析結果を更新中です…' : 'WAVを読み込むと、自動で解析結果を表示します。'}</p></div> : resultView === 'group' ? resultGroups.map(group => {
-                    const items = shownResults.filter(result => result.groupName === group);
+                    const items = chartItemsForGroup(shownResults.filter(result => result.groupName === group), group);
                     return <article key={group} className="nc-result-card" data-result-group={group}>
                         <div className="nc-result-head"><div><h3>{group}</h3><p className="nc-muted">グループ比較 / {items.length} 件</p></div><span className="nc-badge">重ねて表示</span></div>
                         <ResultChart items={items} title={`${group} のNC比較グラフ`} {...chartSettings} />
-                        <ul className="nc-legend" aria-label={`${group} の凡例`}>{items.map(result => <li key={result.id} data-legend-id={result.id}><span className="nc-swatch" style={{ borderColor: result.color }} /><span>{result.clipName}</span><b>{result.isUpdating ? '更新中…' : `NC-${formatNC(result.nc.overall)}`}</b></li>)}</ul>
+                        <ul className="nc-legend" aria-label={`${group} の凡例`}>{items.map(result => <li key={result.id} data-legend-id={result.id}><span className="nc-swatch" style={{ borderColor: result.isReference ? '#64748b' : result.color, borderTopStyle: result.isReference ? 'dashed' : 'solid' }} /><span>{result.clipName}{result.isReference ? '（暗騒音）' : ''}</span><b>{result.isUpdating ? '更新中…' : `NC-${formatNC(result.nc.overall)}`}</b></li>)}</ul>
                     </article>;
                 }) : shownResults.map(result => <article key={result.id} data-result-id={result.id} data-analysis-state={result.isUpdating ? 'updating' : 'ready'} className="nc-result-card">
-                    <div className="nc-result-head"><div><h3>{result.clipName || '(表示名なし)'}</h3><p className="nc-muted">{result.groupName} / {result.sourceFileName}</p><p className="nc-muted">{formatTime(result.selectedStart)} – {formatTime(result.selectedEnd)}</p></div><span className="nc-nc">{result.isUpdating ? '更新中…' : `NC-${formatNC(result.nc.overall)}`}</span></div>
-                    <ResultChart items={[result]} title={`${result.clipName} のNCグラフ`} {...chartSettings} />
+                    <div className="nc-result-head"><div><h3>{result.clipName || '(表示名なし)'}</h3><p className="nc-muted">{result.groupName} / {result.sourceFileName}</p>{result.isBackground && <p className="nc-muted">暗騒音（参照表示）</p>}{result.backgroundName && <p className="nc-muted">暗騒音: {result.backgroundName} / 破線で参照表示（差し引きなし）</p>}<p className="nc-muted">{formatTime(result.selectedStart)} – {formatTime(result.selectedEnd)}</p></div><span className="nc-nc">{result.isUpdating ? '更新中…' : `NC-${formatNC(result.nc.overall)}`}</span></div>
+                    <ResultChart items={chartItemsForGroup([result], result.groupName)} title={`${result.clipName} のNCグラフ`} {...chartSettings} />
                     <details className="nc-details"><summary>帯域別の測定値とNC値</summary><table><thead><tr><th>周波数 (Hz)</th><th>測定値 (dB)</th><th>NC</th></tr></thead><tbody>{FREQUENCIES.map((frequency, index) => <tr key={frequency}><td>{frequency}</td><td>{result.levels[index].toFixed(1)}</td><td>{formatNC(result.nc.details[index])}</td></tr>)}</tbody></table></details>
                     <div className="nc-result-actions nc-row"><button type="button" disabled={result.isUpdating} onClick={() => downloadResultCsv(result)}><Download />CSV</button><button type="button" disabled={result.isUpdating} onClick={() => downloadResultWav(result)}><Download />切り抜きWAV</button></div>
                 </article>)}
