@@ -158,6 +158,33 @@ class AnalysisWorkspaceTests(unittest.TestCase):
         self.page.get_by_label('新規グループ名', exact=True).fill(name)
         self.page.get_by_role('button', name='グループを追加', exact=True).click()
 
+    def rename_file(self, file_name, name):
+        editor = self.page.get_by_label(file_name + ' の表示名', exact=True).first
+        if not editor.count():
+            self.page.get_by_role('gridcell', name=file_name + ' の表示名セル', exact=True).first.dblclick()
+        editor.fill(name)
+        editor.blur()
+        clear = self.page.get_by_role('button', name='選択解除', exact=True)
+        if clear.count() and clear.is_enabled():
+            clear.click()
+
+    def assign_group(self, name, group):
+        editor = self.page.get_by_label(name + ' のグループ', exact=True)
+        if not editor.count():
+            self.page.get_by_role('gridcell', name=name + ' のグループセル', exact=True).dblclick()
+        editor.select_option(group)
+        clear = self.page.get_by_role('button', name='選択解除', exact=True)
+        if clear.count() and clear.is_enabled():
+            clear.click()
+
+    def drag_cells(self, start, end):
+        start.scroll_into_view_if_needed()
+        a, b = start.bounding_box(), end.bounding_box()
+        self.page.mouse.move(a['x'] + a['width'] / 2, a['y'] + a['height'] / 2)
+        self.page.mouse.down()
+        self.page.mouse.move(b['x'] + b['width'] / 2, b['y'] + b['height'] / 2, steps=8)
+        self.page.mouse.up()
+
     def test_calibration_and_real_wav_drop_analysis(self):
         self.drop_wav('校正音WAVを読み込む', 'calibration.wav', wav_bytes(amplitude=0.1))
         expect(self.page.get_by_text(re.compile('校正済み / .* dB'))).to_be_visible()
@@ -177,7 +204,7 @@ class AnalysisWorkspaceTests(unittest.TestCase):
         self.upload('B.wav', 'A.wav', 'C.wav')
         self.wait_for_results(3)
         self.assertEqual(self.ids(), self.result_ids())
-        self.page.get_by_label('B.wav の表示名', exact=True).fill('Beta')
+        self.rename_file('B.wav', 'Beta')
         self.assertEqual(self.ids(), self.result_ids())
         self.page.get_by_role('button', name='表示名 ↕', exact=True).click()
         expect(self.page.locator('[data-result-id] h3')).to_have_text(['A', 'Beta', 'C'])
@@ -241,7 +268,7 @@ class AnalysisWorkspaceTests(unittest.TestCase):
     def test_nca_roundtrip_append_legacy_and_atomic_import_failure(self):
         self.upload('source.wav')
         self.add_group('比較')
-        self.page.get_by_label('source のグループ', exact=True).select_option('比較')
+        self.assign_group('source', '比較')
         self.page.get_by_role('button', name='source の範囲を複製', exact=True).click()
         self.wait_for_results(2)
         filename, data = self.download('NCA出力')
@@ -251,7 +278,7 @@ class AnalysisWorkspaceTests(unittest.TestCase):
             self.assertEqual(len([name for name in archive.namelist() if name.startswith('audio/')]), 1)
             self.assertEqual([clip['groupName'] for clip in settings['clips']], ['比較', '比較'])
             self.assertEqual(len(settings['clips'][0]['result']['levels']), 8)
-        self.page.get_by_label('source.wav の表示名', exact=True).first.fill('changed')
+        self.rename_file('source.wav', 'changed')
         self.import_nca(data)
         expect(self.page.locator('[data-result-id] h3')).to_have_text(['source', 'source (コピー)'])
         self.page.get_by_role('radio', name='追加', exact=True).check()
@@ -272,13 +299,13 @@ class AnalysisWorkspaceTests(unittest.TestCase):
         self.page.get_by_role('radio', name='上書き', exact=True).check()
         self.import_nca(legacy.getvalue(), 'legacy.nca')
         expect(self.page.locator('[data-clip-id]')).to_have_count(1)
-        expect(self.page.get_by_label('old.wav の表示名', exact=True)).to_have_value('旧形式')
+        expect(self.page.get_by_role('gridcell', name='old.wav の表示名セル', exact=True)).to_have_text('旧形式')
         self.wait_for_results(1)
 
     def test_index_project_import_uses_real_report_ui(self):
         self.upload('low.wav', 'high.wav')
         self.add_group('空調')
-        self.page.get_by_label('high のグループ', exact=True).select_option('空調')
+        self.assign_group('high', '空調')
         self.page.get_by_label('プロジェクト名', exact=True).fill('音響試験')
         self.wait_for_results(2)
         data = self.project_json()
@@ -314,7 +341,7 @@ class AnalysisWorkspaceTests(unittest.TestCase):
         self.page.get_by_role('button', name='上書き保存', exact=True).click()
         expect(self.page.get_by_role('status', name='保存状況', exact=True)).to_contain_text('上書き保存しました')
         self.assertEqual(self.page.evaluate('window.pickerCount'), 1)
-        self.page.get_by_label('save.wav の表示名', exact=True).fill('保存後の変更')
+        self.rename_file('save.wav', '保存後の変更')
         self.page.get_by_role('button', name='上書き保存', exact=True).click()
         expect(self.page.get_by_role('status', name='保存状況', exact=True)).to_contain_text('上書き保存しました')
         self.assertEqual(self.page.evaluate('window.pickerCount'), 1)
@@ -405,7 +432,7 @@ class AnalysisWorkspaceTests(unittest.TestCase):
         field.fill('比較後')
         field.press('Enter')
         expect(self.page.get_by_label('グループ名 比較後', exact=True)).to_be_visible()
-        self.page.get_by_label('range のグループ', exact=True).select_option('比較後')
+        self.assign_group('range', '比較後')
         self.page.get_by_role('button', name='スペクトログラム', exact=True).click()
         canvas = self.page.locator('canvas')
         canvas.scroll_into_view_if_needed()
@@ -444,7 +471,7 @@ class AnalysisWorkspaceTests(unittest.TestCase):
         self.assertEqual(self.page.evaluate('window.testAnalysisCalls.length'), 5)
         last_call = self.page.evaluate('window.testAnalysisCalls.at(-1)')
         self.assertAlmostEqual(last_call['length'] / last_call['sampleRate'], 0.7, delta=2 / last_call['sampleRate'])
-        self.page.get_by_label('first.wav の表示名', exact=True).fill('名前だけ変更')
+        self.rename_file('first.wav', '名前だけ変更')
         self.page.get_by_label('再生音量', exact=True).fill('200')
         self.page.get_by_label('スペクトログラム感度', exact=True).fill('5')
         self.page.get_by_role('button', name='グループ比較', exact=True).click()
@@ -488,6 +515,90 @@ class AnalysisWorkspaceTests(unittest.TestCase):
         self.assertEqual(self.page.evaluate('window.testAnalysisFinishes.length'), 2)
         expect(self.page.locator('[data-result-id]').first.locator('.nc-result-head')).to_contain_text('00:00.500')
         expect(self.page.locator('[data-result-id]').last.locator('h3')).to_have_text('メタデータのみ')
+
+    def test_spreadsheet_drag_bulk_assignment_and_independent_groups(self):
+        self.add_group('空調')
+        self.add_group('比較')
+        self.upload('A.wav', 'B.wav', 'C.wav', 'D.wav')
+        self.wait_for_results(4)
+        self.assertEqual([item['groupName'] for item in self.project_json()['dataItems']], ['Group 1'] * 4)
+        expect(self.page.get_by_label('読み込み先グループ', exact=True)).to_have_count(0)
+        cells = self.page.locator('[role=gridcell][data-column=groupName]')
+        self.drag_cells(cells.nth(0), cells.nth(2))
+        expect(self.page.locator('[role=gridcell][aria-selected=true]')).to_have_count(3)
+        cells.first.dblclick()
+        self.page.get_by_label('A のグループ', exact=True).select_option('空調')
+        self.assertEqual([item['groupName'] for item in self.project_json()['dataItems']], ['空調'] * 3 + ['Group 1'])
+        self.page.get_by_role('button', name='選択解除', exact=True).click()
+        self.drag_cells(cells.nth(2), cells.nth(3))
+        cells.nth(2).click(button='right')
+        self.page.get_by_role('menuitem', name='比較', exact=True).click()
+        self.assertEqual([item['groupName'] for item in self.project_json()['dataItems']], ['空調', '空調', '比較', '比較'])
+        self.assertEqual(self.page.evaluate('window.testAnalysisCalls.length'), 4)
+        self.page.get_by_role('button', name='グループ比較', exact=True).click()
+        expect(self.page.locator('[data-result-group] h3')).to_have_text(['空調', '比較'])
+        self.page.locator('.nc-sidebar').evaluate('element => element.scrollTop = 0')
+        self.page.screenshot(path='/tmp/nc-spreadsheet-groups.png')
+        self.page.get_by_label('解析対象WAVを読み込む', exact=True).set_input_files({
+            'name': 'E.wav', 'mimeType': 'audio/wav', 'buffer': wav_bytes(),
+        })
+        expect(self.page.locator('[data-clip-id]')).to_have_count(5)
+        self.assertEqual(self.project_json()['dataItems'][-1]['groupName'], 'Group 1')
+
+    def test_spreadsheet_rectangle_copy_paste_and_readonly_columns(self):
+        self.context.grant_permissions(['clipboard-read', 'clipboard-write'])
+        self.upload('A.wav', 'B.wav')
+        self.wait_for_results(2)
+        original = self.project_json()['dataItems']
+        self.drag_cells(self.page.get_by_role('gridcell', name='A.wav の表示名セル', exact=True),
+                        self.page.get_by_role('gridcell', name='B のグループセル', exact=True))
+        expect(self.page.locator('[role=gridcell][aria-selected=true]')).to_have_count(4)
+        self.page.keyboard.press('Control+c')
+        self.assertEqual(self.page.evaluate('navigator.clipboard.readText()'), 'A\tGroup 1\nB\tGroup 1')
+        self.page.evaluate("navigator.clipboard.writeText('場所A\\t会議室\\n場所B\\t会議室')")
+        self.page.keyboard.press('Control+v')
+        expect(self.page.get_by_role('gridcell', name='A.wav の表示名セル', exact=True)).to_have_text('場所A')
+        expect(self.page.get_by_role('gridcell', name='場所B のグループセル', exact=True)).to_have_text('会議室')
+        expect(self.page.get_by_label('グループ名 会議室', exact=True)).to_be_attached()
+        self.page.get_by_role('gridcell', name='A.wav の表示名セル', exact=True).dblclick()
+        self.page.get_by_label('A.wav の表示名', exact=True).fill('取り消す')
+        self.page.keyboard.press('Escape')
+        expect(self.page.get_by_role('gridcell', name='A.wav の表示名セル', exact=True)).to_have_text('場所A')
+        self.page.get_by_role('button', name='選択解除', exact=True).click()
+        rows = self.page.locator('[data-clip-id]')
+        self.drag_cells(rows.first.locator('[data-column=fileName]'), rows.last.locator('[role=gridcell][data-column=nc]'))
+        self.page.evaluate("navigator.clipboard.writeText('偽の音源.wav\\t新A\\t新グループ\\tNC-999\\n別.wav\\t新B\\t新グループ\\tNC-888')")
+        self.page.keyboard.press('Control+v')
+        values = self.project_json()['dataItems']
+        self.assertEqual([item['legendName'] for item in values], ['新A', '新B'])
+        self.assertEqual([item['groupName'] for item in values], ['新グループ'] * 2)
+        self.assertEqual([item['rawValues'] for item in values], [item['rawValues'] for item in original])
+        expect(rows.first.locator('[data-column=fileName]')).to_have_text('A.wav')
+        expect(rows.last.locator('[role=gridcell][data-column=nc]')).not_to_have_text('NC-888')
+        self.assertEqual(self.page.evaluate('window.testAnalysisCalls.length'), 2)
+
+    def test_spreadsheet_shift_ctrl_selection_follows_files_after_sort(self):
+        self.upload('B.wav', 'A.wav', 'C.wav', 'D.wav')
+        self.wait_for_results(4)
+        self.add_group('部署')
+        self.page.get_by_role('gridcell', name='B のグループセル', exact=True).click()
+        self.page.get_by_role('gridcell', name='C のグループセル', exact=True).click(modifiers=['Shift'])
+        expect(self.page.locator('[role=gridcell][aria-selected=true]')).to_have_count(3)
+        self.page.get_by_role('gridcell', name='A のグループセル', exact=True).click(modifiers=['Control'])
+        expect(self.page.locator('[role=gridcell][aria-selected=true]')).to_have_count(2)
+        self.page.get_by_role('button', name='表示名 ↕', exact=True).click()
+        self.page.get_by_label('選択ファイルの移動先グループ', exact=True).select_option('部署')
+        self.page.get_by_role('button', name='グループ変更', exact=True).click()
+        self.assertEqual([(item['legendName'], item['groupName']) for item in self.project_json()['dataItems']],
+                         [('A', 'Group 1'), ('B', '部署'), ('C', '部署'), ('D', 'Group 1')])
+        self.page.get_by_role('gridcell', name='D のグループセル', exact=True).click()
+        self.page.keyboard.press('Shift+ArrowUp')
+        self.page.keyboard.press('F2')
+        self.page.get_by_label('C のグループ', exact=True).select_option('Group 1')
+        self.assertEqual([item['groupName'] for item in self.project_json()['dataItems']], ['Group 1', '部署', 'Group 1', 'Group 1'])
+        self.page.get_by_label('プロジェクト名', exact=True).fill('サイドバーの入力')
+        self.assertEqual([item['legendName'] for item in self.project_json()['dataItems']], ['A', 'B', 'C', 'D'])
+        self.assertEqual(self.page.evaluate('window.testAnalysisCalls.length'), 4)
 
 
 if __name__ == '__main__':
