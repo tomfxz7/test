@@ -1,6 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Upload, Download, Settings2, BarChart3, AlertCircle, CheckCircle2, Info, Activity, Copy, Play, Square, Trash2 } from 'lucide-react';
-import JSZip from 'jszip';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Upload, Download, Settings2, BarChart3, AlertCircle, CheckCircle2, Info, Activity, Copy, Play, Square, Trash2, Save, FolderOpen, Plus, ArrowUp, ArrowDown, GripVertical, Search, List, AudioLines } from 'lucide-react';
 
 // --- ユーティリティ: FFT実装 ---
 function fft(re, im) {
@@ -102,21 +101,23 @@ const createSelectedBuffer = (source, startTime, endTime) => {
     return selected;
 };
 
-// 校正: 全体のRMSを計算し、基準レベルとのオフセットを算出
+// 校正音のRMSはファイルごとに保持し、基準レベルの変更では再復号しない。
+const calibrationLevels = new WeakMap();
 const calculateCalibrationOffset = async (file, refLevel) => {
-    const buffer = await decodeFile(file);
-    const data = buffer.getChannelData(0);
-    let sumSquares = 0;
-    for (let i = 0; i < data.length; i++) {
-        sumSquares += data[i] * data[i];
+    if (!calibrationLevels.has(file)) {
+        calibrationLevels.set(file, (async () => {
+            const buffer = await decodeFile(file);
+            const data = buffer.getChannelData(0);
+            let sumSquares = 0;
+            for (let i = 0; i < data.length; i++) sumSquares += data[i] * data[i];
+            return 10 * Math.log10(sumSquares / data.length || 1e-10);
+        })());
     }
-    const rms = Math.sqrt(sumSquares / data.length);
-    const dbfs = 10 * Math.log10(rms * rms || 1e-10);
-    return refLevel - dbfs;
+    return refLevel - await calibrationLevels.get(file);
 };
 
 // 分析: FFTを用いた1/1オクターブバンド分析
-const analyzeAudio = (buffer, offset) => {
+const analyzeAudio = async (buffer, offset, shouldCancel = () => false) => {
     // 従来版と同じく第1チャンネルだけを解析する。buffer自体は選択範囲のみ。
     const data = buffer.getChannelData(0);
     const sampleRate = buffer.sampleRate;
@@ -143,6 +144,11 @@ const analyzeAudio = (buffer, offset) => {
     // ただし選択範囲そのものが8192未満の場合に限り、解析可能にするため1フレームへゼロ詰めする。
     const lastFrameStart = data.length < N ? 0 : data.length - N;
     for (let p = 0; p <= lastFrameStart; p += overlap) {
+        // 長いWAVでも入力を受け付け、変更前の計算を途中で中止できるようにする。
+        if (frameCount % 8 === 0) {
+            await new Promise(resolve => window.setTimeout(resolve, 0));
+            if (shouldCancel()) throw new DOMException('解析条件が更新されました。', 'AbortError');
+        }
         const re = new Float32Array(N);
         const im = new Float32Array(N);
         for (let i = 0; i < N; i++) {
@@ -180,9 +186,10 @@ const analyzeAudio = (buffer, offset) => {
 
 const formatTime = (seconds) => {
     const value = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
-    const minutes = Math.floor(value / 60);
-    const secs = Math.floor(value % 60);
-    const millis = Math.floor((value - Math.floor(value)) * 1000);
+    const totalMillis = Math.round(value * 1000);
+    const minutes = Math.floor(totalMillis / 60000);
+    const secs = Math.floor(totalMillis / 1000) % 60;
+    const millis = totalMillis % 1000;
     return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
 };
 
@@ -417,63 +424,65 @@ const downloadResultCsv = (result) => {
 };
 
 // --- SVGグラフコンポーネント ---
-const ResultChart = ({ measuredLevels, ncOverall }) => {
-    const width = 600, height = 300;
-    const margin = { top: 20, right: 30, bottom: 40, left: 50 };
+const SERIES_COLORS = ['#2563eb', '#db2777', '#059669', '#d97706', '#7c3aed', '#0891b2', '#dc2626', '#475569'];
+const newId = () => window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+const clampSetting = (value, min, max, fallback) => Number.isFinite(Number(value))
+    ? Math.max(min, Math.min(max, Number(value))) : fallback;
+
+const ResultChart = ({ items, title, visibleNcCurves, lineWidth, pointSize, yAxisMax }) => {
+    const width = 600, height = 340;
+    const margin = { top: 25, right: 35, bottom: 50, left: 55 };
     const chartW = width - margin.left - margin.right;
     const chartH = height - margin.top - margin.bottom;
-
+    const maximum = yAxisMax || Math.max(60, Math.ceil(Math.max(
+        ...items.flatMap(item => item.levels), ...visibleNcCurves.flatMap(nc => NCTable[nc])
+    ) / 10) * 10 + 10);
+    const minimum = Math.min(0, Math.floor(Math.min(...items.flatMap(item => item.levels)) / 10) * 10);
     const getX = (idx) => margin.left + (idx / 7) * chartW;
-    const getY = (val) => margin.top + chartH - (Math.max(0, Math.min(100, val)) / 100) * chartH;
-
+    const getY = (val) => margin.top + chartH - ((val - minimum) / (maximum - minimum)) * chartH;
     const generatePath = (data) => data.map((v, i) => `${i === 0 ? 'M' : 'L'} ${getX(i)} ${getY(v)}`).join(' ');
-
-    let ncCurve = null;
-    if (ncOverall >= 15 && ncOverall <= 70) {
-        ncCurve = NCTable[ncOverall];
-    }
+    const ticks = Array.from({ length: 6 }, (_, index) => minimum + (maximum - minimum) * index / 5);
+    const clipId = `chart-${items[0]?.id || 'empty'}`;
 
     return (
-        <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-100 dark:border-gray-700">
-            {/* Grid */}
-            {[0, 20, 40, 60, 80, 100].map(y => (
+        <svg role="img" aria-label={title} viewBox={`0 0 ${width} ${height}`} className="nc-result-chart">
+            <defs><clipPath id={clipId}><rect x={margin.left - pointSize} y={margin.top} width={chartW + pointSize * 2} height={chartH} /></clipPath></defs>
+            <text x={margin.left} y="14" fontSize="11" fill="#64748b">音圧レベル (dB)</text>
+            {ticks.map(y => (
                 <g key={`y-${y}`}>
-                    <line x1={margin.left} y1={getY(y)} x2={width - margin.right} y2={getY(y)} stroke="currentColor" className="text-gray-200 dark:text-gray-700" strokeDasharray="4 4" />
-                    <text x={margin.left - 10} y={getY(y) + 4} textAnchor="end" fontSize="11" fill="currentColor" className="text-gray-500">{y}</text>
+                    <line x1={margin.left} y1={getY(y)} x2={width - margin.right} y2={getY(y)} stroke="#e2e8f0" strokeDasharray="4 4" />
+                    <text x={margin.left - 10} y={getY(y) + 4} textAnchor="end" fontSize="11" fill="#64748b">{Math.round(y)}</text>
                 </g>
             ))}
             {FREQUENCIES.map((f, i) => (
                 <g key={`x-${f}`}>
-                    <line x1={getX(i)} y1={margin.top} x2={getX(i)} y2={height - margin.bottom} stroke="currentColor" className="text-gray-100 dark:text-gray-800" />
-                    <text x={getX(i)} y={height - margin.bottom + 20} textAnchor="middle" fontSize="11" fill="currentColor" className="text-gray-500">
+                    <line x1={getX(i)} y1={margin.top} x2={getX(i)} y2={height - margin.bottom} stroke="#f1f5f9" />
+                    <text x={getX(i)} y={height - margin.bottom + 20} textAnchor="middle" fontSize="11" fill="#64748b">
                         {f >= 1000 ? `${f / 1000}k` : f}
                     </text>
                 </g>
             ))}
 
-            {/* NC Curve Reference */}
-            {ncCurve && (
-                <>
-                    <path d={generatePath(ncCurve)} fill="none" stroke="#9ca3af" strokeWidth="2" strokeDasharray="6 4" opacity="0.6" />
-                    <text x={width - margin.right - 20} y={getY(ncCurve[7]) - 10} fill="#6b7280" fontSize="12" fontWeight="bold">NC-{ncOverall}</text>
-                </>
-            )}
-
-            {/* Measured Levels */}
-            {measuredLevels && (
-                <>
-                    <path d={generatePath(measuredLevels)} fill="none" stroke="#3b82f6" strokeWidth="3" />
-                    {measuredLevels.map((val, i) => (
-                        <circle key={`p-${i}`} cx={getX(i)} cy={getY(val)} r="4" fill="#1d4ed8" className="dark:fill-blue-400" />
-                    ))}
-                </>
-            )}
+            <text x={margin.left + chartW / 2} y={height - 6} textAnchor="middle" fontSize="11" fill="#64748b">中心周波数 (Hz)</text>
+            <g clipPath={`url(#${clipId})`}>
+                {visibleNcCurves.map(nc => <g key={nc}>
+                    <path d={generatePath(NCTable[nc])} fill="none" stroke="#94a3b8" strokeWidth="1" strokeDasharray="5 4" />
+                    <text x={getX(7) - 3} y={getY(NCTable[nc][7]) - 5} textAnchor="end" fill="#64748b" fontSize="10">NC-{nc}</text>
+                </g>)}
+                {items.map(item => <g key={item.id} data-series-id={item.id} opacity={item.isUpdating ? 0.4 : 1}>
+                    <path d={generatePath(item.levels)} fill="none" stroke={item.color} strokeWidth={lineWidth} />
+                    {item.levels.map((val, i) => <circle key={i} cx={getX(i)} cy={getY(val)} r={pointSize} fill={item.color}>
+                        <title>{item.clipName} / {FREQUENCIES[i]} Hz: {val.toFixed(1)} dB</title>
+                    </circle>)}
+                </g>)}
+            </g>
         </svg>
     );
 };
 
-const SpectrogramEditor = ({ clip, disabled, onChange, onMonitoringChange, onDuplicate, onRemove }) => {
+const SpectrogramEditor = ({ clip, disabled, onChange, zoom, height }) => {
     const canvasRef = useRef(null);
+    const rasterRef = useRef(null);
     const sourceRef = useRef(null);
     const gainRef = useRef(null);
     const animationRef = useRef(null);
@@ -518,6 +527,14 @@ const SpectrogramEditor = ({ clip, disabled, onChange, onMonitoringChange, onDup
     }, [clip.start, clip.end, isPlaying]);
 
     useEffect(() => {
+        if (disabled) stopPlayback();
+    }, [disabled]);
+
+    useEffect(() => {
+        if (gainRef.current) gainRef.current.gain.setValueAtTime(playbackGainPercent / 100, getAudioContext().currentTime);
+    }, [playbackGainPercent]);
+
+    useEffect(() => {
         const canvas = canvasRef.current;
         if (!canvas) return undefined;
         const draw = () => {
@@ -531,12 +548,16 @@ const SpectrogramEditor = ({ clip, disabled, onChange, onMonitoringChange, onDup
             const height = rect.height;
             ctx.fillStyle = '#020617'; ctx.fillRect(0, 0, width, height);
 
+            // 範囲のドラッグではFFTを再計算せず、同じスペクトログラムを再利用する。
+            const cached = rasterRef.current;
+            let offscreen = cached?.canvas;
+            if (!cached || cached.buffer !== clip.buffer || cached.gain !== spectrogramGain || cached.width !== width || cached.height !== height) {
             // 100〜1000 Hzを対数軸で描く。各チャンネルのスペクトルパワーを
             // 平均するため、ステレオ再生時も片チャンネルだけに偏らない表示になる。
             const fftSize = 2048;
             const minFrequency = 100;
             const maxFrequency = Math.min(1000, clip.buffer.sampleRate / 2);
-            const columns = Math.max(1, Math.min(600, Math.round(width)));
+            const columns = Math.max(1, Math.min(1800, Math.round(width)));
             const rows = Math.max(1, Math.round(height));
             const image = ctx.createImageData(columns, rows);
             const windowFunc = new Float32Array(fftSize);
@@ -570,9 +591,11 @@ const SpectrogramEditor = ({ clip, disabled, onChange, onMonitoringChange, onDup
                     image.data[pixel + 3] = 255;
                 }
             }
-            const offscreen = document.createElement('canvas');
+            offscreen = document.createElement('canvas');
             offscreen.width = columns; offscreen.height = rows;
             offscreen.getContext('2d').putImageData(image, 0, 0);
+            rasterRef.current = { canvas: offscreen, buffer: clip.buffer, gain: spectrogramGain, width, height };
+            }
             ctx.imageSmoothingEnabled = false;
             ctx.drawImage(offscreen, 0, 0, width, height);
             ctx.font = '10px sans-serif'; ctx.fillStyle = 'rgba(255,255,255,.85)';
@@ -588,7 +611,7 @@ const SpectrogramEditor = ({ clip, disabled, onChange, onMonitoringChange, onDup
         const observer = new ResizeObserver(draw);
         observer.observe(canvas);
         return () => observer.disconnect();
-    }, [clip.buffer, clip.start, clip.end, spectrogramGain]);
+    }, [clip.buffer, clip.start, clip.end, spectrogramGain, zoom, height]);
 
     const pointerTime = (event) => {
         const rect = canvasRef.current.getBoundingClientRect();
@@ -606,13 +629,14 @@ const SpectrogramEditor = ({ clip, disabled, onChange, onMonitoringChange, onDup
         onChange(target === 'start' ? { start: Math.min(time, clip.end - 0.001) } : { end: Math.max(time, clip.start + 0.001) });
     };
     const handlePointerMove = (event) => {
-        if (!dragTarget) return;
+        if (!dragTarget || disabled) return;
         const time = pointerTime(event);
         onChange(dragTarget === 'start' ? { start: Math.min(time, clip.end - 0.001) } : { end: Math.max(time, clip.start + 0.001) });
     };
     const updateNumericBoundary = (key, rawValue) => {
         const value = Number(rawValue);
         if (!Number.isFinite(value)) return;
+        stopPlayback();
         onChange(key === 'start'
             ? { start: Math.max(0, Math.min(value, clip.end - 0.001)) }
             : { end: Math.min(clip.buffer.duration, Math.max(value, clip.start + 0.001)) });
@@ -653,53 +677,29 @@ const SpectrogramEditor = ({ clip, disabled, onChange, onMonitoringChange, onDup
     };
 
     return (
-        <div className="rounded-lg border border-gray-200 dark:border-gray-600 p-3 space-y-3">
-            <div className="flex flex-wrap items-center gap-2">
-                <input value={clip.name} disabled={disabled} onChange={e => onChange({ name: e.target.value })}
-                    aria-label="切り抜き名" className="min-w-0 flex-1 p-2 text-sm font-medium border rounded bg-transparent" />
-                <button type="button" onClick={onDuplicate} disabled={disabled} title="同じWAVから切り抜きを追加" className="p-2 border rounded hover:bg-gray-50 dark:hover:bg-gray-700"><Copy className="w-4 h-4" /></button>
-                <button type="button" onClick={onRemove} disabled={disabled} title="削除" className="p-2 border border-red-200 text-red-600 rounded hover:bg-red-50"><Trash2 className="w-4 h-4" /></button>
-            </div>
-            <div className="relative h-28">
+        <div className="nc-spectrogram-editor">
+            <div className="nc-spectrogram-scroll">
+            <div className="nc-spectrogram-content" style={{ width: `${zoom * 100}%`, height }}>
                 <canvas ref={canvasRef} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove}
                     onPointerUp={() => setDragTarget(null)} onPointerCancel={() => setDragTarget(null)}
-                    className="w-full h-28 rounded border cursor-ew-resize touch-none" aria-label={`${clip.name} の100〜1000 Hzスペクトログラム範囲選択`} />
-                <div className="absolute inset-y-0 w-0.5 bg-red-600 pointer-events-none shadow-sm"
+                    style={{ width: '100%', height: '100%', touchAction: 'none', cursor: 'ew-resize' }} aria-label={`${clip.name} の100〜1000 Hzスペクトログラム範囲選択`} />
+                <div className="nc-playhead"
                     style={{ left: `${(playhead / clip.buffer.duration) * 100}%` }} aria-hidden="true" />
             </div>
-            <div className="grid gap-3 sm:grid-cols-2 text-xs">
-                <label className="rounded border border-gray-200 dark:border-gray-600 p-2">
-                    <span className="flex items-center justify-between gap-2 font-medium">
-                        再生音量
-                        <output className="font-mono text-blue-600 dark:text-blue-400">{playbackGainPercent}%</output>
-                    </span>
-                    <input type="range" min="100" max="1000" step="10" value={playbackGainPercent} disabled={disabled || isPlaying}
-                        onChange={e => onMonitoringChange({ playbackGainPercent: Number(e.target.value) })}
-                        aria-label="再生音量" className="mt-2 w-full accent-blue-600" />
-                </label>
-                <label className="rounded border border-gray-200 dark:border-gray-600 p-2">
-                    <span className="flex items-center justify-between gap-2 font-medium">
-                        スペクトログラム感度
-                        <output className="font-mono text-blue-600 dark:text-blue-400">{spectrogramGain}倍</output>
-                    </span>
-                    <input type="range" min="1" max="100" step="1" value={spectrogramGain} disabled={disabled}
-                        onChange={e => onMonitoringChange({ spectrogramGain: Number(e.target.value) })}
-                        aria-label="スペクトログラム感度" className="mt-2 w-full accent-blue-600" />
-                </label>
-                <p className="sm:col-span-2 text-gray-500 dark:text-gray-400">
-                    スペクトログラムは横軸が時間、縦軸が100〜1000 Hz（対数軸）で、明るい部分ほど成分が強いことを示します。再生音量と表示感度はNC解析と出力WAVには影響しません。音量は徐々に調整してください。
-                </p>
+            <div className="nc-time-ruler" style={{ width: `${zoom * 100}%` }}>
+                {[0, 1, 2, 3, 4].map(tick => <span key={tick}>{formatTime(clip.buffer.duration * tick / 4)}</span>)}
             </div>
-            <div className="grid grid-cols-2 gap-3 text-xs">
-                <label>IN (秒)<input type="number" min="0" max={clip.end} step="0.001" value={clip.start.toFixed(3)} disabled={disabled}
-                    onChange={e => updateNumericBoundary('start', e.target.value)} className="mt-1 w-full p-1.5 border rounded bg-transparent" /></label>
-                <label>OUT (秒)<input type="number" min={clip.start} max={clip.buffer.duration} step="0.001" value={clip.end.toFixed(3)} disabled={disabled}
-                    onChange={e => updateNumericBoundary('end', e.target.value)} className="mt-1 w-full p-1.5 border rounded bg-transparent" /></label>
             </div>
-            <div className="flex items-center justify-between text-xs text-gray-500">
+            <div className="nc-boundaries">
+                <label>IN (秒)<input aria-label={`${clip.name} IN (秒)`} type="number" min="0" max={clip.end} step="0.001" value={Number(clip.start.toFixed(3))} disabled={disabled}
+                    onChange={e => updateNumericBoundary('start', e.target.value)} /></label>
+                <label>OUT (秒)<input aria-label={`${clip.name} OUT (秒)`} type="number" min={clip.start} max={clip.buffer.duration} step="0.001" value={Number(clip.end.toFixed(3))} disabled={disabled}
+                    onChange={e => updateNumericBoundary('end', e.target.value)} /></label>
+            </div>
+            <div className="nc-row nc-between nc-muted">
                 <span><span className="font-mono text-red-600">{formatTime(playhead)}</span> / {formatTime(clip.end)}（選択 {formatTime(clip.end - clip.start)}）</span>
-                <button type="button" onClick={playSelection} className="inline-flex items-center gap-1 px-3 py-1.5 border rounded hover:bg-gray-50 dark:hover:bg-gray-700">
-                    {isPlaying ? <Square className="w-3 h-3" /> : <Play className="w-3 h-3" />}{isPlaying ? '停止' : '範囲を再生'}
+                <button type="button" disabled={disabled} onClick={playSelection}>
+                    {isPlaying ? <Square /> : <Play />}{isPlaying ? '停止' : '範囲を再生'}
                 </button>
             </div>
         </div>
@@ -707,604 +707,744 @@ const SpectrogramEditor = ({ clip, disabled, onChange, onMonitoringChange, onDup
 };
 
 
-// --- メインアプリケーション ---
+// --- ワークスペースUI ---
+const workspaceStyles = `
+.nc-app { color:#1e293b; background:#f1f5f9; min-height:100vh; padding:20px; font-family:ui-sans-serif,system-ui,sans-serif; font-size:13px; }
+.nc-app * { box-sizing:border-box; }
+.nc-app h1,.nc-app h2,.nc-app h3,.nc-app p { margin:0; }
+.nc-app h1 { font-size:23px; font-weight:750; letter-spacing:-.03em; }
+.nc-app h2 { font-size:15px; font-weight:700; }
+.nc-app h3 { font-size:13px; font-weight:700; }
+.nc-app svg:not(.nc-result-chart) { width:16px; height:16px; flex-shrink:0; }
+.nc-app button { display:inline-flex; align-items:center; justify-content:center; gap:5px; border:1px solid #cbd5e1; border-radius:6px; background:white; color:#334155; padding:7px 9px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; }
+.nc-app button:hover { background:#f1f5f9; border-color:#94a3b8; }
+.nc-app button:disabled { opacity:.4; cursor:not-allowed; }
+.nc-app button:focus-visible,.nc-app input:focus-visible,.nc-app select:focus-visible,.nc-drop:focus-within { outline:2px solid #3b82f6; outline-offset:2px; }
+.nc-app input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]),.nc-app select { min-width:0; width:100%; border:1px solid #cbd5e1; border-radius:5px; background:white; padding:7px 8px; font-size:12px; color:#1e293b; }
+.nc-app input[type=checkbox],.nc-app input[type=radio],.nc-app input[type=range] { accent-color:#2563eb; }
+.nc-app input[type=range] { width:100%; margin:6px 0 0; }
+.nc-app .nc-primary { background:#2563eb; color:white; border-color:#2563eb; }
+.nc-app .nc-primary:hover { background:#1d4ed8; }
+.nc-app .nc-danger { color:#dc2626; }
+.nc-app .nc-icon { padding:6px; }
+.nc-app .nc-active { color:#1d4ed8; background:#eff6ff; border-color:#93c5fd; }
+.nc-header { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:0 0 16px; margin-bottom:16px; border-bottom:1px solid #cbd5e1; }
+.nc-header-title { display:flex; align-items:center; gap:12px; }
+.nc-header-logo { background:#2563eb; color:white; padding:11px; border-radius:12px; }
+.nc-header .nc-header-logo svg { width:24px; height:24px; }
+.nc-muted { color:#64748b; font-size:11px; line-height:1.65; }
+.nc-row { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.nc-between { justify-content:space-between; }
+.nc-stack { display:flex; flex-direction:column; gap:12px; }
+.nc-stack > * { flex-shrink:0; }
+.nc-grid { display:grid; grid-template-columns:280px minmax(0,1.06fr) minmax(0,1fr); gap:16px; align-items:start; }
+.nc-sidebar,.nc-center,.nc-results { min-width:0; }
+.nc-card { background:white; border:1px solid #e2e8f0; border-radius:10px; box-shadow:0 1px 2px #0f172a06; }
+.nc-card-head { padding:15px 16px; border-bottom:1px solid #e2e8f0; display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.nc-card-head h2 { display:flex; align-items:center; gap:7px; }
+.nc-card-head h2 svg { color:#64748b; }
+.nc-card-body { padding:14px; }
+.nc-section-label { display:flex; align-items:center; gap:7px; font-size:13px; font-weight:700; margin-bottom:12px; }
+.nc-section-label svg { color:#64748b; }
+.nc-app label.nc-field { display:flex; flex-direction:column; gap:5px; font-size:11px; color:#475569; font-weight:600; }
+.nc-drop { position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; padding:18px 12px; border:1.5px dashed #93c5fd; border-radius:8px; background:#f8fbff; color:#2563eb; text-align:center; cursor:pointer; overflow:hidden; }
+.nc-drop.nc-dragging { background:#dbeafe; border-color:#2563eb; }
+.nc-drop.nc-disabled { opacity:.45; cursor:wait; }
+.nc-drop input { position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:inherit; }
+.nc-drop small { font-size:10px; color:#64748b; }
+.nc-drop strong { font-size:12px; }
+.nc-file-label { color:#475569; overflow-wrap:anywhere; font-size:11px; }
+.nc-note { display:flex; align-items:flex-start; gap:6px; background:#eff6ff; border:1px solid #dbeafe; color:#1e40af; border-radius:7px; padding:10px; font-size:11px; line-height:1.7; }
+.nc-success { color:#047857; background:#ecfdf5; border-color:#a7f3d0; }
+.nc-alert { display:flex; align-items:flex-start; gap:8px; background:#fef2f2; border:1px solid #fecaca; color:#b91c1c; padding:12px; border-radius:8px; margin-bottom:12px; }
+.nc-badge { font-size:11px; padding:2px 7px; background:#f1f5f9; color:#64748b; border-radius:12px; white-space:nowrap; }
+.nc-count { color:#2563eb; background:#eff6ff; }
+.nc-pair { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.nc-full { width:100%; }
+.nc-divider { border-top:1px solid #e2e8f0; padding-top:12px; }
+.nc-group-entry { display:flex; align-items:center; gap:5px; }
+.nc-group-entry input { flex:1; }
+.nc-segment { display:inline-flex; padding:3px; background:#f1f5f9; border-radius:8px; gap:3px; }
+.nc-segment button { background:transparent; border-color:transparent; padding:6px 9px; }
+.nc-segment button[aria-pressed=true] { background:white; color:#1d4ed8; box-shadow:0 1px 3px #0f172a12; border-color:#e2e8f0; }
+.nc-toolbar { display:flex; flex-direction:column; gap:10px; padding:12px; border-bottom:1px solid #e2e8f0; }
+.nc-search { position:relative; flex:1; min-width:100px; }
+.nc-search svg { position:absolute; left:8px; top:8px; color:#94a3b8; }
+.nc-app .nc-search input { padding-left:29px !important; }
+.nc-toolbar select { flex:1; }
+.nc-toolbar .nc-bulk { background:#f8fafc; border:1px solid #e2e8f0; border-radius:7px; padding:7px; }
+.nc-table-scroll { overflow:auto; }
+.nc-table { border-collapse:collapse; width:100%; font-size:11px; }
+.nc-table th { padding:10px 7px; text-align:left; background:#f8fafc; color:#64748b; white-space:nowrap; border-bottom:1px solid #e2e8f0; font-weight:600; }
+.nc-app .nc-table th button { background:transparent; border:0; padding:0; color:inherit; font-size:11px; }
+.nc-table td { padding:9px 6px; border-bottom:1px solid #f1f5f9; vertical-align:middle; }
+.nc-table tr.nc-selected { background:#eff6ff; }
+.nc-table .nc-name-cell { min-width:130px; }
+.nc-table .nc-file-label { font-size:10px; max-width:190px; margin-top:4px; }
+.nc-table .nc-group-cell { min-width:102px; }
+.nc-table .nc-compact { white-space:nowrap; }
+.nc-app .nc-table input[type=text] { padding:5px 6px; }
+.nc-app .nc-table select { padding:5px; }
+.nc-grip { cursor:grab !important; color:#94a3b8 !important; }
+.nc-drag-target { outline:2px dashed #93c5fd; outline-offset:-2px; }
+.nc-empty { padding:48px 24px; text-align:center; display:flex; align-items:center; flex-direction:column; gap:12px; color:#64748b; }
+.nc-empty > svg { width:34px !important; height:34px !important; color:#94a3b8; }
+.nc-empty strong { color:#475569; font-size:14px; }
+.nc-editor-list { padding:12px; display:flex; flex-direction:column; gap:12px; }
+.nc-editor-card { border:1px solid #e2e8f0; border-radius:8px; overflow:hidden; }
+.nc-editor-card.nc-selected { border-color:#93c5fd; }
+.nc-editor-head { padding:10px; background:#f8fafc; border-bottom:1px solid #e2e8f0; }
+.nc-editor-head input[type=text] { flex:1; }
+.nc-editor-head select { max-width:150px; }
+.nc-spectrogram-editor { padding:10px; display:flex; flex-direction:column; gap:10px; }
+.nc-spectrogram-scroll { overflow-x:auto; border-radius:5px; background:#020617; }
+.nc-spectrogram-content { position:relative; min-width:100%; }
+.nc-playhead { position:absolute; top:0; bottom:0; width:2px; pointer-events:none; background:#ef4444; }
+.nc-time-ruler { display:flex; justify-content:space-between; padding:4px 5px; color:#94a3b8; font:9px ui-monospace,monospace; }
+.nc-boundaries { display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:10px; color:#64748b; }
+.nc-boundaries input { display:block; margin-top:4px; }
+.nc-result-card { border:1px solid #e2e8f0; background:white; border-radius:9px; overflow:hidden; }
+.nc-result-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; padding:13px; border-bottom:1px solid #f1f5f9; }
+.nc-result-head h3 { overflow-wrap:anywhere; }
+.nc-result-chart { display:block; width:100%; height:auto; background:white; }
+.nc-nc { color:#1d4ed8; background:#eff6ff; border:1px solid #dbeafe; border-radius:7px; font-size:18px; font-weight:750; padding:5px 9px; white-space:nowrap; }
+.nc-result-actions { padding:10px 13px; border-top:1px solid #f1f5f9; }
+.nc-legend { list-style:none; padding:0 13px 10px; margin:0; display:flex; flex-direction:column; gap:7px; }
+.nc-legend li { display:flex; align-items:center; gap:8px; font-size:11px; }
+.nc-legend li span:nth-child(2) { overflow-wrap:anywhere; flex:1; }
+.nc-swatch { display:inline-block; width:20px; border-top:3px solid; flex-shrink:0; }
+.nc-legend b { color:#334155; font-size:12px; white-space:nowrap; }
+.nc-details { padding:10px 13px; font-size:11px; border-top:1px solid #f1f5f9; }
+.nc-details summary { cursor:pointer; color:#64748b; }
+.nc-details table { width:100%; border-collapse:collapse; margin-top:10px; font-size:11px; }
+.nc-details th,.nc-details td { padding:5px; text-align:right; border-bottom:1px solid #f1f5f9; }
+.nc-details th:first-child,.nc-details td:first-child { text-align:left; }
+.nc-nc-curves { display:grid; grid-template-columns:repeat(4,1fr); gap:5px; font-size:10px; }
+.nc-progress { height:3px; background:#dbeafe; overflow:hidden; }
+.nc-progress span { display:block; height:100%; background:#2563eb; transition:width .1s; }
+@media (min-width:1100px) { .nc-column { max-height:calc(100vh - 115px); overflow-y:auto; scrollbar-width:thin; } .nc-sticky-head { position:sticky; top:0; z-index:2; background:white; } }
+@media (max-width:1240px) and (min-width:1100px) { .nc-app { padding:12px; } .nc-grid { grid-template-columns:250px minmax(0,1fr) minmax(0,1fr); gap:10px; } }
+@media (max-width:1099px) { .nc-grid { grid-template-columns:270px minmax(0,1fr); } .nc-results { grid-column:2; } .nc-sidebar { grid-row:1 / 3; } }
+@media (max-width:700px) { .nc-app { padding:10px; } .nc-header { align-items:flex-start; flex-direction:column; gap:10px; } .nc-app h1 { font-size:20px; } .nc-grid { display:flex; flex-direction:column; } .nc-sidebar,.nc-center,.nc-results { width:100%; } .nc-app .nc-header-status { display:none; } }
+`;
+
+const FileDropZone = ({ label, hint, accept, multiple = false, disabled, onFiles }) => {
+    const [dragging, setDragging] = useState(false);
+    const dragDepth = useRef(0);
+    return <label className={`nc-drop ${dragging ? 'nc-dragging' : ''} ${disabled ? 'nc-disabled' : ''}`}
+        onDragEnter={event => { event.preventDefault(); dragDepth.current++; if (!disabled) setDragging(true); }}
+        onDragOver={event => event.preventDefault()}
+        onDragLeave={event => { event.preventDefault(); if (--dragDepth.current <= 0) setDragging(false); }}
+        onDrop={event => {
+            event.preventDefault(); dragDepth.current = 0; setDragging(false);
+            if (!disabled) onFiles(Array.from(event.dataTransfer.files));
+        }}>
+        <Upload /><strong>{label}</strong><small>{hint}</small>
+        <input type="file" aria-label={label} accept={accept} multiple={multiple} disabled={disabled}
+            onChange={event => { const files = Array.from(event.target.files || []); event.target.value = ''; if (files.length) onFiles(files); }} />
+    </label>;
+};
+
+const GroupNameField = ({ name, disabled, onRename }) => {
+    const [value, setValue] = useState(name);
+    const cancelRef = useRef(false);
+    useEffect(() => setValue(name), [name]);
+    const commit = () => { if (!cancelRef.current) onRename(value.trim()); cancelRef.current = false; setValue(name); };
+    return <input aria-label={`グループ名 ${name}`} value={value} disabled={disabled}
+        onChange={event => setValue(event.target.value)} onBlur={commit}
+        onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); } if (event.key === 'Escape') { cancelRef.current = true; setValue(name); event.currentTarget.blur(); } }} />;
+};
+
+const SelectAllCheckbox = ({ clips, selectedIds, onChange, disabled }) => {
+    const ref = useRef(null);
+    const count = clips.filter(clip => selectedIds.includes(clip.id)).length;
+    useEffect(() => { if (ref.current) ref.current.indeterminate = count > 0 && count < clips.length; }, [count, clips.length]);
+    return <input ref={ref} type="checkbox" aria-label="表示中のファイルをすべて選択" checked={clips.length > 0 && count === clips.length}
+        disabled={disabled || !clips.length} onChange={event => onChange(event.target.checked)} />;
+};
+
 export default function App() {
     const projectInputRef = useRef(null);
+    const dragIdRef = useRef(null);
+    const skipDirtyRef = useRef(true);
+    const calibrationRef = useRef({ file: null, level: 94, offset: null });
+    const analysisJobsRef = useRef(new Map());
     const [calibFile, setCalibFile] = useState(null);
-    const [calibLevel, setCalibLevel] = useState(94.0);
+    const [calibLevel, setCalibLevel] = useState(94);
     const [offset, setOffset] = useState(null);
-    
     const [clips, setClips] = useState([]);
+    const [rawResults, setRawResults] = useState([]);
     const [isProcessing, setIsProcessing] = useState(false);
-    const [processingProgress, setProcessingProgress] = useState(null);
-    const [errorMsg, setErrorMsg] = useState("");
-    
-    const [results, setResults] = useState([]);
+    const [pendingAnalysisIds, setPendingAnalysisIds] = useState([]);
+    const [calibrationPending, setCalibrationPending] = useState(false);
+    const [errorMsg, setErrorMsg] = useState('');
+    const [groups, setGroups] = useState(['Group 1']);
+    const [newGroupName, setNewGroupName] = useState('');
+    const [uploadGroup, setUploadGroup] = useState('Group 1');
+    const [selectedIds, setSelectedIds] = useState([]);
+    const [bulkGroup, setBulkGroup] = useState('Group 1');
+    const [search, setSearch] = useState('');
+    const [groupFilter, setGroupFilter] = useState('');
+    const [viewMode, setViewMode] = useState('table');
+    const [resultView, setResultView] = useState('individual');
+    const [sortState, setSortState] = useState(null);
     const [useClipNameOnly, setUseClipNameOnly] = useState(false);
     const [allPlaybackGainPercent, setAllPlaybackGainPercent] = useState(100);
     const [allSpectrogramGain, setAllSpectrogramGain] = useState(1);
+    const [monitorTarget, setMonitorTarget] = useState('all');
+    const [spectrogramZoom, setSpectrogramZoom] = useState(1);
+    const [spectrogramHeight, setSpectrogramHeight] = useState(140);
+    const [lineWidth, setLineWidth] = useState(2);
+    const [pointSize, setPointSize] = useState(3);
+    const [yAxisMaxAuto, setYAxisMaxAuto] = useState(true);
+    const [yAxisMaxManual, setYAxisMaxManual] = useState(100);
+    const [visibleNcCurves, setVisibleNcCurves] = useState([20, 30, 40, 50, 60]);
     const [projectImportMode, setProjectImportMode] = useState('replace');
+    const [projectName, setProjectName] = useState('WAV解析');
+    const [projectFileHandle, setProjectFileHandle] = useState(null);
+    const [projectFileName, setProjectFileName] = useState('NC解析プロジェクト.nca');
+    const [saveStatus, setSaveStatus] = useState('');
+    const [isDirty, setIsDirty] = useState(false);
 
-    const handleCalibFile = (e) => setCalibFile(e.target.files[0]);
-    const handleProjectFile = async (event) => {
-        const projectFile = event.target.files?.[0];
-        if (!projectFile) return;
-        setIsProcessing(true);
-        setErrorMsg('');
-        try {
-            const zipEntries = await readZipEntries(projectFile);
-            const settingsEntry = zipEntries.get('project.json');
-            if (!settingsEntry) throw new Error('project.json が含まれていないため、プロジェクトを読み込めません。');
+    useEffect(() => {
+        if (skipDirtyRef.current) { skipDirtyRef.current = false; setIsDirty(false); }
+        else setIsDirty(true);
+    }, [clips, rawResults, groups, calibFile, calibLevel, offset, useClipNameOnly, allPlaybackGainPercent,
+        allSpectrogramGain, spectrogramZoom, spectrogramHeight, lineWidth, pointSize, yAxisMaxAuto,
+        yAxisMaxManual, visibleNcCurves, projectName, viewMode, resultView]);
 
-            const settings = JSON.parse(new TextDecoder().decode(settingsEntry));
-            if (settings.format !== 'nc-analyzer-project' || settings.version !== 1 || !Array.isArray(settings.clips)) {
-                throw new Error('対応していないNCAプロジェクト形式です。');
-            }
+    const results = useMemo(() => {
+        const byId = new Map(rawResults.map(result => [result.id, result]));
+        return clips.flatMap(clip => {
+            const result = byId.get(clip.id);
+            return result ? [{ ...result, sourceFileName: clip.file.name, clipName: clip.name,
+                groupName: clip.groupName, color: clip.color, isVisible: clip.isVisible, useClipNameOnly,
+                isUpdating: calibrationPending || (calibFile && offset === null) || result.sourceBuffer !== clip.buffer ||
+                    result.selectedStart !== clip.start || result.selectedEnd !== clip.end || result.offset !== (offset ?? 100),
+                nc: evaluateNC(result.levels) }] : [];
+        });
+    }, [clips, rawResults, useClipNameOnly, offset, calibrationPending, calibFile]);
+    const resultById = useMemo(() => new Map(results.map(result => [result.id, result])), [results]);
+    const filteredClips = clips.filter(clip => (!groupFilter || clip.groupName === groupFilter) &&
+        `${clip.name} ${clip.file.name} ${clip.groupName}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
+    const validResults = results.filter(result => !result.isUpdating);
+    const isAnalyzing = pendingAnalysisIds.length > 0;
+    const canExportResults = validResults.length > 0 && !isAnalyzing && !calibrationPending;
+    const canSaveProject = !isAnalyzing && !calibrationPending && (!calibFile || offset !== null);
+    const shownResults = results.filter(result => result.isVisible);
+    // 比較グループも、ファイル一覧で最初に現れる順に並べる。
+    const resultGroups = [...new Set(shownResults.map(result => result.groupName))];
+    const monitoringClip = clips.find(clip => clip.id === monitorTarget);
+    const selectedCount = selectedIds.filter(id => clips.some(clip => clip.id === id)).length;
+    const chartSettings = { visibleNcCurves, lineWidth, pointSize, yAxisMax: yAxisMaxAuto ? null : yAxisMaxManual };
 
-            // 同じWAVを複数範囲で使う場合も、復号は一度だけ行う。
-            const audioAssets = new Map();
-            const loadAudioAsset = (path) => {
-                if (!path || typeof path !== 'string') throw new Error('WAVファイルの参照が設定されていません。');
-                if (!audioAssets.has(path)) {
-                    audioAssets.set(path, (async () => {
-                        const entry = zipEntries.get(path);
-                        if (!entry) throw new Error(`プロジェクト内にWAVファイルがありません: ${path}`);
-                        const blob = new Blob([entry], { type: 'audio/wav' });
-                        const fileName = path.split('/').pop() || 'audio.wav';
-                        const file = new File([blob], fileName, { type: 'audio/wav' });
-                        return { file, buffer: await decodeFile(file) };
-                    })());
-                }
-                return audioAssets.get(path);
-            };
-
-            const restoredClips = await Promise.all(settings.clips.map(async (savedClip, index) => {
-                const asset = await loadAudioAsset(savedClip.audioFile);
-                const start = Math.max(0, Math.min(asset.buffer.duration, Number(savedClip.start)));
-                const end = Math.max(0, Math.min(asset.buffer.duration, Number(savedClip.end)));
-                if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
-                    throw new Error(`切り抜き${index + 1}の解析範囲が不正です。`);
-                }
-                return {
-                    id: `${Date.now()}-${index}-${Math.random()}`,
-                    file: asset.file,
-                    buffer: asset.buffer,
-                    name: typeof savedClip.name === 'string' ? savedClip.name : `切り抜き${index + 1}`,
-                    start,
-                    end,
-                    playbackGainPercent: allPlaybackGainPercent,
-                    spectrogramGain: allSpectrogramGain
-                };
-            }));
-            if (restoredClips.length === 0) throw new Error('プロジェクトに解析対象のWAVがありません。');
-
-            const savedCalibration = settings.calibration || {};
-            const calibrationAsset = projectImportMode === 'replace' && savedCalibration.audioFile
-                ? await loadAudioAsset(savedCalibration.audioFile)
-                : null;
-            const referenceLevel = Number(savedCalibration.referenceLevel);
-            const savedOffset = Number(savedCalibration.offset);
-            if (projectImportMode === 'append') {
-                // 追加時は現在の校正・出力設定を維持し、解析対象だけを取り込む。
-                setClips(current => [...current, ...restoredClips]);
-            } else {
-                setClips(restoredClips);
-                setCalibFile(calibrationAsset?.file || null);
-                setCalibLevel(Number.isFinite(referenceLevel) ? referenceLevel : 94);
-                setOffset(savedCalibration.offset !== null && Number.isFinite(savedOffset) ? savedOffset : null);
-                setUseClipNameOnly(Boolean(settings.output?.useClipNameOnly));
-            }
-            setResults([]);
-        } catch (err) {
-            console.error(err);
-            setErrorMsg(err instanceof SyntaxError
-                ? 'project.jsonが正しいJSON形式ではありません。'
-                : (err.message || 'NCAプロジェクトの読み込みに失敗しました。'));
-        } finally {
-            setIsProcessing(false);
-            event.target.value = '';
-        }
+    const invalidateCalibration = (hasFile = Boolean(calibFile)) => {
+        setOffset(null); setCalibrationPending(hasFile);
     };
-    const handleMeasFile = async (e) => {
-        const files = Array.from(e.target.files || []);
-        if (!files.length) return;
-        setIsProcessing(true);
-        setErrorMsg('');
+    const handleCalibFiles = files => {
+        if (isProcessing || !files.length) return;
+        if (files.length !== 1 || !/\.wav$/i.test(files[0].name)) { setErrorMsg('校正音はWAVファイルを1つ選択してください。'); return; }
+        setCalibFile(files[0]); invalidateCalibration(true); setErrorMsg('');
+    };
+    const handleMeasFiles = async files => {
+        if (isProcessing || !files.length) return;
+        if (files.some(file => !/\.wav$/i.test(file.name))) { setErrorMsg('解析対象にはWAVファイルを選択してください。'); return; }
+        setIsProcessing(true); setErrorMsg('');
         try {
-            const decoded = await Promise.all(files.map(async (file, index) => {
+            const decoded = [];
+            for (const file of files) {
                 const buffer = await decodeFile(file);
-                return {
-                    id: `${Date.now()}-${index}-${Math.random()}`,
-                    file,
-                    buffer,
-                    name: '切り抜き1',
-                    start: 0,
-                    end: buffer.duration,
-                    playbackGainPercent: allPlaybackGainPercent,
-                    spectrogramGain: allSpectrogramGain
-                };
-            }));
-            setClips(current => [...current, ...decoded]);
-            setResults([]);
-        } catch (err) {
-            console.error(err);
-            setErrorMsg('WAVファイルを読み込めませんでした。ファイル形式を確認してください。');
-        } finally {
-            setIsProcessing(false);
-            e.target.value = '';
-        }
+                decoded.push({ id: newId(), file, buffer, name: file.name.replace(/\.wav$/i, ''),
+                    groupName: uploadGroup, color: SERIES_COLORS[(clips.length + decoded.length) % SERIES_COLORS.length],
+                    isVisible: true, start: 0, end: buffer.duration,
+                    playbackGainPercent: allPlaybackGainPercent, spectrogramGain: allSpectrogramGain });
+            }
+            setClips(current => [...current, ...decoded]); setSortState(null);
+        } catch (err) { setErrorMsg(`WAVファイルを読み込めませんでした: ${err.message}`); }
+        finally { setIsProcessing(false); }
     };
-
     const updateClip = (id, changes) => {
         setClips(current => current.map(clip => clip.id === id ? { ...clip, ...changes } : clip));
-        setResults([]);
+        if ('name' in changes || 'groupName' in changes) setSortState(null);
     };
-    const updateClipMonitoring = (id, changes) => {
-        setClips(current => current.map(clip => clip.id === id ? { ...clip, ...changes } : clip));
+    const updateMonitoring = (key, value) => {
+        if (monitorTarget === 'all') {
+            if (key === 'playbackGainPercent') setAllPlaybackGainPercent(value); else setAllSpectrogramGain(value);
+        }
+        setClips(current => current.map(clip => monitorTarget === 'all' || monitorTarget === clip.id ? { ...clip, [key]: value } : clip));
     };
-    const updateAllPlaybackGain = (value) => {
-        setAllPlaybackGainPercent(value);
-        setClips(current => current.map(clip => ({ ...clip, playbackGainPercent: value })));
+    const duplicateClip = id => {
+        const original = clips.find(clip => clip.id === id);
+        if (!original) return;
+        const copy = { ...original, id: newId(), name: `${original.name} (コピー)`, color: SERIES_COLORS[clips.length % SERIES_COLORS.length] };
+        setClips(current => { const index = current.findIndex(clip => clip.id === id); return [...current.slice(0, index + 1), copy, ...current.slice(index + 1)]; });
+        const result = rawResults.find(item => item.id === id);
+        if (result) setRawResults(current => [...current, { ...result, id: copy.id }]);
+        setSortState(null);
     };
-    const updateAllSpectrogramGain = (value) => {
-        setAllSpectrogramGain(value);
-        setClips(current => current.map(clip => ({ ...clip, spectrogramGain: value })));
+    const removeClips = ids => {
+        setClips(current => current.filter(clip => !ids.includes(clip.id)));
+        setRawResults(current => current.filter(result => !ids.includes(result.id)));
+        setSelectedIds(current => current.filter(id => !ids.includes(id)));
+        if (ids.includes(monitorTarget)) setMonitorTarget('all');
     };
-    const duplicateClip = (id) => {
+    const toggleSelection = (id, checked) => setSelectedIds(current => checked ? [...new Set([...current, id])] : current.filter(item => item !== id));
+    const toggleAll = checked => setSelectedIds(current => checked
+        ? [...new Set([...current, ...filteredClips.map(clip => clip.id)])]
+        : current.filter(id => !filteredClips.some(clip => clip.id === id)));
+    const moveSelected = direction => {
         setClips(current => {
-            const sourceIndex = current.findIndex(clip => clip.id === id);
-            if (sourceIndex < 0) return current;
-            const source = current[sourceIndex];
-            const sameFileCount = current.filter(clip => clip.file === source.file).length;
-            const copy = { ...source, id: `${Date.now()}-${Math.random()}`, name: `切り抜き${sameFileCount + 1}` };
-            return [...current.slice(0, sourceIndex + 1), copy, ...current.slice(sourceIndex + 1)];
+            const next = [...current];
+            if (direction === 'up') {
+                for (let i = 1; i < next.length; i++) if (selectedIds.includes(next[i].id) && !selectedIds.includes(next[i - 1].id)) [next[i - 1], next[i]] = [next[i], next[i - 1]];
+            } else {
+                for (let i = next.length - 2; i >= 0; i--) if (selectedIds.includes(next[i].id) && !selectedIds.includes(next[i + 1].id)) [next[i + 1], next[i]] = [next[i], next[i + 1]];
+            }
+            return next;
         });
-        setResults([]);
+        setSortState(null);
     };
-    const removeClip = (id) => { setClips(current => current.filter(clip => clip.id !== id)); setResults([]); };
-    const clearClips = () => {
-        if (clips.length === 0 || !window.confirm('解析対象のファイルをすべてクリアしますか？\n校正音と校正設定は残ります。')) return;
-        setClips([]);
-        setResults([]);
+    const sortClips = key => {
+        const ascending = sortState?.key === key ? !sortState.ascending : true;
+        setClips(current => [...current].sort((a, b) => {
+            let comparison;
+            if (key === 'nc') {
+                const first = resultById.get(a.id)?.nc.overall, second = resultById.get(b.id)?.nc.overall;
+                if (first === undefined || second === undefined) return first === second ? 0 : first === undefined ? 1 : -1;
+                comparison = first - second;
+            } else if (key === 'duration') comparison = (a.end - a.start) - (b.end - b.start);
+            else comparison = String(key === 'fileName' ? a.file.name : a[key]).localeCompare(String(key === 'fileName' ? b.file.name : b[key]), 'ja', { numeric: true });
+            return ascending ? comparison : -comparison;
+        }));
+        setSortState({ key, ascending });
+    };
+    const rowDragProps = id => ({
+        onDragOver: event => { if (dragIdRef.current) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; } },
+        onDrop: event => {
+            event.preventDefault(); const dragged = dragIdRef.current; dragIdRef.current = null;
+            if (!dragged || dragged === id || isProcessing) return;
+            setClips(current => { const source = current.find(clip => clip.id === dragged); if (!source) return current;
+                const next = current.filter(clip => clip.id !== dragged); next.splice(next.findIndex(clip => clip.id === id), 0, source); return next; });
+            setSortState(null);
+        }
+    });
+    const dragHandle = clip => <button type="button" className="nc-icon nc-grip" aria-label={`${clip.name} をドラッグして並び替え`}
+        draggable={!isProcessing} disabled={isProcessing} onDragStart={event => { dragIdRef.current = clip.id; event.dataTransfer.setData('text/plain', clip.id); event.dataTransfer.effectAllowed = 'move'; }}
+        onDragEnd={() => { dragIdRef.current = null; }}><GripVertical /></button>;
+    const addGroup = event => {
+        event.preventDefault(); const name = newGroupName.trim();
+        if (!name || groups.includes(name)) { setErrorMsg('空でない、重複しないグループ名を入力してください。'); return; }
+        setGroups(current => [...current, name]); setUploadGroup(name); setBulkGroup(name); setNewGroupName(''); setErrorMsg('');
+    };
+    const renameGroup = (oldName, name) => {
+        if (name === oldName) return;
+        if (!name || groups.includes(name)) { setErrorMsg('空でない、重複しないグループ名を入力してください。'); return; }
+        setGroups(current => current.map(group => group === oldName ? name : group));
+        setClips(current => current.map(clip => clip.groupName === oldName ? { ...clip, groupName: name } : clip));
+        if (uploadGroup === oldName) setUploadGroup(name); if (bulkGroup === oldName) setBulkGroup(name); if (groupFilter === oldName) setGroupFilter(name);
         setErrorMsg('');
     };
-
-    const runCalibration = async () => {
-        if (!calibFile) return;
-        setIsProcessing(true);
-        setErrorMsg("");
-        try {
-            const calOffset = await calculateCalibrationOffset(calibFile, parseFloat(calibLevel));
-            setOffset(calOffset);
-        } catch (err) {
-            setErrorMsg("校正に失敗しました。有効なWAVファイルか確認してください。");
-            console.error(err);
-        }
-        setIsProcessing(false);
+    const removeGroup = name => {
+        if (groups.length <= 1) return;
+        const fallback = groups.find(group => group !== name);
+        setGroups(current => current.filter(group => group !== name));
+        setClips(current => current.map(clip => clip.groupName === name ? { ...clip, groupName: fallback } : clip));
+        if (uploadGroup === name) setUploadGroup(fallback); if (bulkGroup === name) setBulkGroup(fallback); if (groupFilter === name) setGroupFilter('');
     };
 
-    const runAnalysis = async () => {
-        if (clips.length === 0) return;
-        setIsProcessing(true);
-        setErrorMsg("");
-        const nextResults = [];
-        const failedFiles = [];
-        // オフセット未設定の場合は仮に100とする（相対評価）
-        const currentOffset = offset !== null ? offset : 100;
-
-        for (let index = 0; index < clips.length; index++) {
-            const clip = clips[index];
-            setProcessingProgress({ current: index + 1, total: clips.length });
+    // 校正音や基準レベルの変更を自動で反映する。古い復号結果は採用しない。
+    useEffect(() => {
+        const level = Number(calibLevel);
+        if (calibrationRef.current.file === calibFile && calibrationRef.current.level === level &&
+            (!calibFile || Number.isFinite(calibrationRef.current.offset))) {
+            setOffset(calibrationRef.current.offset);
+            setCalibrationPending(false);
+            return undefined;
+        }
+        let cancelled = false;
+        if (!calibFile) {
+            calibrationRef.current = { file: null, level, offset: null };
+            setCalibrationPending(false);
+            return undefined;
+        }
+        setCalibrationPending(true);
+        if (calibLevel === '' || !Number.isFinite(level)) {
+            setErrorMsg('校正基準レベルを数値で入力してください。');
+            setCalibrationPending(false);
+            return undefined;
+        }
+        const timer = window.setTimeout(async () => {
             try {
-                // 先に選択範囲だけの独立したAudioBufferを作り、その同じbufferを解析・出力する。
-                const selectedBuffer = createSelectedBuffer(clip.buffer, clip.start, clip.end);
-                const levels = analyzeAudio(selectedBuffer, currentOffset);
-                const ncResult = evaluateNC(levels);
-                nextResults.push({
-                    levels,
-                    nc: ncResult,
-                    sourceFileName: clip.file.name,
-                    clipName: clip.name,
-                    useClipNameOnly,
-                    buffer: selectedBuffer,
-                    selectedStart: clip.start,
-                    selectedEnd: clip.end
-                });
+                const value = await calculateCalibrationOffset(calibFile, level);
+                if (cancelled) return;
+                if (!Number.isFinite(value)) throw new Error('校正値が不正です。');
+                calibrationRef.current = { file: calibFile, level, offset: value };
+                setOffset(value); setCalibrationPending(false); setErrorMsg('');
             } catch (err) {
-                failedFiles.push(`${clip.file.name} / ${clip.name}`);
-                console.error(err);
+                if (!cancelled) { setCalibrationPending(false); setErrorMsg(`校正に失敗しました: ${err.message}`); }
+            }
+        }, 40);
+        return () => { cancelled = true; window.clearTimeout(timer); };
+    }, [calibFile, calibLevel]);
+
+    useEffect(() => () => {
+        analysisJobsRef.current.forEach(job => { job.cancelled = true; window.clearTimeout(job.timer); });
+        analysisJobsRef.current.clear();
+    }, []);
+
+    // 音源・範囲・校正オフセットが一致する結果と実行中の計算は再利用する。
+    // ファイル単位のジョブなので、1件の変更で他のファイルのFFTをやり直さない。
+    useEffect(() => {
+        const jobs = analysisJobsRef.current;
+        const currentOffset = offset ?? 100;
+        const calibrationReady = !calibrationPending && (!calibFile || (offset !== null &&
+            calibrationRef.current.file === calibFile && calibrationRef.current.level === Number(calibLevel)));
+        const matches = (entry, clip) => entry && entry.sourceBuffer === clip.buffer &&
+            entry.selectedStart === clip.start && entry.selectedEnd === clip.end && entry.offset === currentOffset;
+        const clipsById = new Map(clips.map(clip => [clip.id, clip]));
+        for (const [id, job] of jobs) {
+            const clip = clipsById.get(id);
+            if (!calibrationReady || !clip || !matches(job, clip)) {
+                job.cancelled = true; window.clearTimeout(job.timer); jobs.delete(id);
             }
         }
-
-        setResults(nextResults);
-        if (failedFiles.length > 0) {
-            setErrorMsg(`次のWAVファイルを解析できませんでした: ${failedFiles.join(', ')}`);
+        if (calibrationReady) {
+            const byId = new Map(rawResults.map(result => [result.id, result]));
+            for (const clip of clips) {
+                if (matches(byId.get(clip.id), clip) || jobs.has(clip.id)) continue;
+                const job = { sourceBuffer: clip.buffer, selectedStart: clip.start, selectedEnd: clip.end,
+                    offset: currentOffset, cancelled: false, timer: null };
+                // 連続ドラッグを40msずつまとめる。新しい条件が来たらそのジョブだけ置き換える。
+                job.timer = window.setTimeout(async () => {
+                    try {
+                        const buffer = createSelectedBuffer(clip.buffer, clip.start, clip.end);
+                        const levels = await analyzeAudio(buffer, currentOffset, () => job.cancelled);
+                        if (job.cancelled) return;
+                        setRawResults(current => [...current.filter(item => item.id !== clip.id),
+                            { id: clip.id, sourceBuffer: clip.buffer, levels, buffer,
+                                selectedStart: clip.start, selectedEnd: clip.end, offset: currentOffset }]);
+                        setErrorMsg(current => current.startsWith('自動解析に失敗しました:') ? '' : current);
+                    } catch (err) {
+                        if (!job.cancelled) setErrorMsg(`自動解析に失敗しました: ${clip.file.name} / ${clip.name}: ${err.message}`);
+                    } finally {
+                        if (jobs.get(clip.id) === job) {
+                            jobs.delete(clip.id);
+                            setPendingAnalysisIds([...jobs.keys()]);
+                        }
+                    }
+                }, 40);
+                jobs.set(clip.id, job);
+            }
         }
-        setProcessingProgress(null);
-        setIsProcessing(false);
-    };
+        setPendingAnalysisIds([...jobs.keys()]);
+        // rawResults の各完了ではジョブを再作成しない。上の入力が変わった時だけ照合する。
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [clips, offset, calibFile, calibLevel, calibrationPending]);
 
-    const downloadResultWav = (result) => downloadBlob(
-        createTrimmedWav(result.buffer, 0, result.buffer.duration),
-        `${getOutputBaseName(result.sourceFileName, result.clipName, result.useClipNameOnly)}.wav`
-    );
-    const downloadResultFiles = (result) => {
-        downloadResultCsv(result);
-        window.setTimeout(() => downloadResultWav(result), 150);
-    };
+    const downloadResultWav = result => downloadBlob(createTrimmedWav(result.buffer, 0, result.buffer.duration),
+        `${getOutputBaseName(result.sourceFileName, result.clipName, result.useClipNameOnly)}.wav`);
     const downloadAllFiles = async () => {
-        setIsProcessing(true);
-        setErrorMsg('');
+        setIsProcessing(true); setErrorMsg('');
         try {
-            const zipEntries = [];
-            const usedPaths = new Set();
-            results.forEach(result => {
-                const baseName = getOutputBaseName(result.sourceFileName, result.clipName, result.useClipNameOnly);
-                const csvPath = createUniquePath(`${baseName}.csv`, usedPaths);
-                const wavPath = createUniquePath(`${baseName}.wav`, usedPaths);
-                zipEntries.push({ name: csvPath, data: `\uFEFF${createLpeqCsv(result.levels)}` });
-                zipEntries.push({ name: wavPath, data: createTrimmedWav(result.buffer, 0, result.buffer.duration) });
+            const entries = [], paths = new Set();
+            validResults.forEach(result => {
+                const base = getOutputBaseName(result.sourceFileName, result.clipName, useClipNameOnly);
+                entries.push({ name: createUniquePath(`${base}.csv`, paths), data: `\uFEFF${createLpeqCsv(result.levels)}` });
+                entries.push({ name: createUniquePath(`${base}.wav`, paths), data: createTrimmedWav(result.buffer, 0, result.buffer.duration) });
             });
-            downloadBlob(await createZipBlob(zipEntries), 'NC解析結果.zip');
-        } catch (err) {
-            console.error(err);
-            setErrorMsg(err.message || '一括出力に失敗しました。');
-        } finally {
-            setIsProcessing(false);
-        }
+            downloadBlob(await createZipBlob(entries), 'NC解析結果.zip');
+        } catch (err) { setErrorMsg(`一括出力に失敗しました: ${err.message}`); }
+        finally { setIsProcessing(false); }
+    };
+    const exportIndexProject = () => {
+        const name = projectName.trim() || 'WAV解析';
+        const data = {
+            version: '1.4', projects: [name], selectedProject: name, visibleProjects: [name], groups,
+            groupProjects: Object.fromEntries(groups.map(group => [group, name])),
+            dataItems: validResults.map(result => ({ id: result.id, fileName: getCsvFileName(result.sourceFileName, result.clipName, useClipNameOnly),
+                legendName: result.clipName, groupName: result.groupName, isVisible: result.isVisible, isOriginalThird: false,
+                rawFreqs: [...FREQUENCIES], rawValues: result.levels, rawText: createLpeqCsv(result.levels) })),
+            bgNoiseData: {}, addNoiseData: {}, bgNoiseMode: 'none', addNoiseMode: 'none', bgCorrectionMethod: 'energy',
+            groupOctaveModes: Object.fromEntries(groups.map(group => [group, '1/1'])),
+            visibleNcCurves, lineWidth, pointSize, yAxisMaxAuto, yAxisMaxManual
+        };
+        downloadBlob(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), `NC_Project_${sanitizeFileName(name)}.json`);
+        setSaveStatus(`index.html 用に解析済みの ${validResults.length} 件を書き出しました。`);
     };
 
-    const exportProject = async () => {
-        if (clips.length === 0) return;
-        setIsProcessing(true);
+    const buildProjectBlob = async () => {
+        const entries = [], paths = new Set(), filePaths = new Map();
+        const addAudio = (file, folder) => {
+            if (!file) return null;
+            if (filePaths.has(file)) return filePaths.get(file);
+            const path = createUniquePath(`${folder}/${sanitizeFileName(file.name, 'audio.wav')}`, paths);
+            entries.push({ name: path, data: file }); filePaths.set(file, path); return path;
+        };
+        const savedClips = clips.map(clip => {
+            const result = resultById.get(clip.id);
+            return { name: clip.name, groupName: clip.groupName, color: clip.color, isVisible: clip.isVisible,
+                start: clip.start, end: clip.end, audioFile: addAudio(clip.file, 'audio'), sourceFileName: clip.file.name,
+                playbackGainPercent: clip.playbackGainPercent, spectrogramGain: clip.spectrogramGain,
+                result: result && !result.isUpdating ? { levels: result.levels, offset: result.offset } : null };
+        });
+        entries.push({ name: 'project.json', data: JSON.stringify({
+            format: 'nc-analyzer-project', version: 1, createdAt: new Date().toISOString(), name: projectName, groups,
+            output: { useClipNameOnly },
+            analysis: { octaveBand: '1/1', frequencies: FREQUENCIES, fftSize: 8192, overlap: 4096 },
+            calibration: { referenceLevel: Number(calibLevel), offset, audioFile: addAudio(calibFile, 'calibration'), sourceFileName: calibFile?.name || null },
+            display: { allPlaybackGainPercent, allSpectrogramGain, spectrogramZoom, spectrogramHeight,
+                lineWidth, pointSize, yAxisMaxAuto, yAxisMaxManual, visibleNcCurves, viewMode, resultView },
+            clips: savedClips
+        }, null, 2) });
+        return createZipBlob(entries);
+    };
+    const saveProject = async mode => {
+        if (isProcessing || !canSaveProject) return;
+        let handle = mode === 'overwrite' ? projectFileHandle : null;
         setErrorMsg('');
         try {
-            const zipEntries = [];
-            const usedPaths = new Set();
-            const filePaths = new Map();
-            const addAudioFile = (file, folder) => {
-                if (!file) return null;
-                if (filePaths.has(file)) return filePaths.get(file);
-                const path = createUniquePath(`${folder}/${sanitizeFileName(file.name, 'audio.wav')}`, usedPaths);
-                zipEntries.push({ name: path, data: file });
-                filePaths.set(file, path);
-                return path;
-            };
-            const clipSettings = clips.map(clip => ({
-                name: clip.name,
-                start: clip.start,
-                end: clip.end,
-                audioFile: addAudioFile(clip.file, 'audio')
-            }));
-            const calibrationFile = addAudioFile(calibFile, 'calibration');
-            zipEntries.push({ name: 'project.json', data: JSON.stringify({
-                format: 'nc-analyzer-project',
-                version: 1,
-                createdAt: new Date().toISOString(),
-                output: { useClipNameOnly },
-                analysis: {
-                    octaveBand: '1/1',
-                    frequencies: FREQUENCIES,
-                    fftSize: 8192,
-                    overlap: 4096
-                },
-                calibration: {
-                    referenceLevel: Number(calibLevel),
-                    offset,
-                    audioFile: calibrationFile,
-                    sourceFileName: calibFile?.name || null
-                },
-                clips: clipSettings
-            }, null, 2) });
-            const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-            downloadBlob(await createZipBlob(zipEntries), `NC解析プロジェクト_${date}.nca`);
+            // ファイル選択・権限要求はユーザー操作から直接呼び出す。
+            if (mode !== 'download' && window.showSaveFilePicker) {
+                if (!handle) handle = await window.showSaveFilePicker({ suggestedName: projectFileName,
+                    types: [{ description: 'NC解析プロジェクト', accept: { 'application/zip': ['.nca'] } }] });
+                if (handle.queryPermission && await handle.queryPermission({ mode: 'readwrite' }) !== 'granted') {
+                    if (!handle.requestPermission || await handle.requestPermission({ mode: 'readwrite' }) !== 'granted') throw new Error('保存先ファイルへの書き込み権限がありません。');
+                }
+            }
+            setIsProcessing(true);
+            const blob = await buildProjectBlob();
+            if (handle) {
+                const writable = await handle.createWritable();
+                try { await writable.write(blob); await writable.close(); }
+                catch (err) { try { await writable.abort(); } catch (_) { /* already closed */ } throw err; }
+                setProjectFileHandle(handle); setProjectFileName(handle.name); setIsDirty(false);
+                setSaveStatus(`${mode === 'overwrite' ? '上書き保存しました' : '保存先を設定して保存しました'}: ${handle.name}（${new Date().toLocaleTimeString()}）`);
+            } else {
+                downloadBlob(blob, projectFileName);
+                if (!projectFileHandle) setIsDirty(false);
+                setSaveStatus(mode === 'download' ? 'NCAをダウンロードしました。' : 'このブラウザーは直接の上書き保存に非対応です。NCAをダウンロードしました。');
+            }
         } catch (err) {
-            console.error(err);
-            setErrorMsg(err.message || 'プロジェクトの出力に失敗しました。');
-        } finally {
-            setIsProcessing(false);
-        }
+            if (err.name !== 'AbortError') { setErrorMsg(`NCAの保存に失敗しました: ${err.message}`); setSaveStatus('保存できませんでした。内容は画面に残っています。'); }
+        } finally { setIsProcessing(false); }
+    };
+    const loadProject = async (file, handle = null) => {
+        if (!file || isProcessing) return;
+        setIsProcessing(true); setErrorMsg('');
+        try {
+            const entries = await readZipEntries(file), json = entries.get('project.json');
+            if (!json) throw new Error('project.json が含まれていません。');
+            const settings = JSON.parse(new TextDecoder().decode(json));
+            if (settings.format !== 'nc-analyzer-project' || settings.version !== 1 || !Array.isArray(settings.clips)) throw new Error('対応していないNCA形式です。');
+            const assets = new Map();
+            const loadAsset = async (path, sourceFileName) => {
+                if (!path || typeof path !== 'string' || !entries.has(path)) throw new Error(`WAVファイルが見つかりません: ${path || '(未設定)'}`);
+                if (!assets.has(path)) {
+                    assets.set(path, (async () => { const audioFile = new File([entries.get(path)], sourceFileName || path.split('/').pop(), { type: 'audio/wav' });
+                        return { file: audioFile, buffer: await decodeFile(audioFile) }; })());
+                }
+                return assets.get(path);
+            };
+            const importedGroups = [...new Set([
+                ...(Array.isArray(settings.groups) ? settings.groups : []),
+                ...settings.clips.map(clip => clip.groupName || 'Group 1')
+            ])];
+            if (!importedGroups.length) importedGroups.push('Group 1');
+            if (importedGroups.some(name => typeof name !== 'string' || !name.trim())) throw new Error('グループ名が不正です。');
+            const append = projectImportMode === 'append', nextGroups = append ? [...groups] : [], groupMap = new Map();
+            for (const name of importedGroups) {
+                let unique = name, index = 2;
+                while (nextGroups.includes(unique)) unique = `${name} (${index++})`;
+                nextGroups.push(unique); groupMap.set(name, unique);
+            }
+            const calibration = settings.calibration || {}, display = settings.display || {};
+            const reference = Number(calibration.referenceLevel);
+            const restoredOffset = calibration.offset != null && Number.isFinite(Number(calibration.offset)) ? Number(calibration.offset) : null;
+            const effectiveOffset = (append ? offset : restoredOffset) ?? 100;
+            const restoredClips = [], restoredResults = [];
+            for (const [index, saved] of settings.clips.entries()) {
+                const asset = await loadAsset(saved.audioFile, saved.sourceFileName);
+                const start = Number(saved.start), end = Number(saved.end);
+                if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || end > asset.buffer.duration + 0.001) throw new Error(`解析範囲 ${index + 1} が不正です。`);
+                const clip = { id: newId(), ...asset, name: typeof saved.name === 'string' ? saved.name : `切り抜き${index + 1}`,
+                    groupName: groupMap.get(saved.groupName || 'Group 1'), start, end: Math.min(end, asset.buffer.duration), isVisible: saved.isVisible !== false,
+                    color: /^#[0-9a-f]{6}$/i.test(saved.color) ? saved.color : SERIES_COLORS[((append ? clips.length : 0) + index) % SERIES_COLORS.length],
+                    playbackGainPercent: append ? allPlaybackGainPercent : clampSetting(saved.playbackGainPercent ?? display.allPlaybackGainPercent, 0, 1000, 100),
+                    spectrogramGain: append ? allSpectrogramGain : clampSetting(saved.spectrogramGain ?? display.allSpectrogramGain, 1, 100, 1) };
+                restoredClips.push(clip);
+                if (Array.isArray(saved.result?.levels) && saved.result.levels.length === 8 && saved.result.levels.every(Number.isFinite) && saved.result.offset === effectiveOffset) {
+                    restoredResults.push({ id: clip.id, sourceBuffer: clip.buffer, levels: saved.result.levels, offset: effectiveOffset,
+                        buffer: createSelectedBuffer(clip.buffer, clip.start, clip.end), selectedStart: clip.start, selectedEnd: clip.end });
+                }
+            }
+            const calibrationAsset = !append && calibration.audioFile ? await loadAsset(calibration.audioFile, calibration.sourceFileName) : null;
+            // すべての検証と音声の復号が終わるまで、現在のワークスペースを変更しない。
+            if (append) {
+                setClips(current => [...current, ...restoredClips]); setRawResults(current => [...current, ...restoredResults]);
+                setGroups(nextGroups); setSaveStatus(`${file.name} から ${restoredClips.length} 件を追加しました。現在の校正・保存先は維持しています。`);
+            } else {
+                skipDirtyRef.current = true;
+                calibrationRef.current = { file: calibrationAsset?.file || null, level: Number.isFinite(reference) ? reference : 94, offset: restoredOffset };
+                setCalibrationPending(false);
+                setClips(restoredClips); setRawResults(restoredResults); setGroups(nextGroups); setSelectedIds([]);
+                setCalibFile(calibrationAsset?.file || null); setCalibLevel(Number.isFinite(reference) ? reference : 94); setOffset(restoredOffset);
+                setUseClipNameOnly(Boolean(settings.output?.useClipNameOnly));
+                setProjectName(typeof settings.name === 'string' ? settings.name : file.name.replace(/\.nca$/i, ''));
+                setAllPlaybackGainPercent(clampSetting(display.allPlaybackGainPercent, 0, 1000, 100));
+                setAllSpectrogramGain(clampSetting(display.allSpectrogramGain, 1, 100, 1));
+                setSpectrogramZoom(clampSetting(display.spectrogramZoom, 1, 8, 1)); setSpectrogramHeight(clampSetting(display.spectrogramHeight, 100, 360, 140));
+                setLineWidth(clampSetting(display.lineWidth, 1, 8, 2)); setPointSize(clampSetting(display.pointSize, 0, 8, 3));
+                setYAxisMaxAuto(display.yAxisMaxAuto !== false); setYAxisMaxManual(clampSetting(display.yAxisMaxManual, 10, 200, 100));
+                setVisibleNcCurves(Array.isArray(display.visibleNcCurves) ? [...new Set(display.visibleNcCurves.filter(nc => Number.isInteger(nc) && nc >= 15 && nc <= 70))] : [20, 30, 40, 50, 60]);
+                setViewMode(display.viewMode === 'spectrogram' ? 'spectrogram' : 'table'); setResultView(display.resultView === 'group' ? 'group' : 'individual');
+                setUploadGroup(nextGroups[0]); setBulkGroup(nextGroups[0]); setGroupFilter(''); setSearch(''); setMonitorTarget('all');
+                setProjectFileHandle(handle); setProjectFileName(file.name); setIsDirty(false);
+                setSaveStatus(handle ? `${file.name} を読み込み、上書き保存先に設定しました。` : `${file.name} を読み込みました。上書きする場合は保存先を指定してください。`);
+            }
+            setSortState(null);
+        } catch (err) { setErrorMsg(`NCAを読み込めませんでした: ${err instanceof SyntaxError ? 'project.json の形式が不正です。' : err.message}`); }
+        finally { setIsProcessing(false); }
+    };
+    const openProject = async () => {
+        if (!window.showOpenFilePicker) { projectInputRef.current?.click(); return; }
+        try {
+            const [handle] = await window.showOpenFilePicker({ types: [{ description: 'NC解析プロジェクト', accept: { 'application/zip': ['.nca'] } }], multiple: false });
+            if (handle) await loadProject(await handle.getFile(), projectImportMode === 'replace' ? handle : null);
+        } catch (err) { if (err.name !== 'AbortError') setErrorMsg(`NCAを開けませんでした: ${err.message}`); }
     };
 
-    return (
-        <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-100 p-4 md:p-8 font-sans">
-            <div className="max-w-5xl mx-auto space-y-6">
-                
-                {/* Header */}
-                <header className="flex items-center space-x-3 pb-4 border-b border-gray-200 dark:border-gray-700">
-                    <Activity className="w-8 h-8 text-blue-600 dark:text-blue-400" />
-                    <div>
-                        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">NC値 アナライザー</h1>
-                        <p className="text-sm text-gray-500 dark:text-gray-400">1/1オクターブバンド分析によるNC(Noise Criteria)値の算出</p>
-                    </div>
-                </header>
+    const sortLabel = (key, label) => <button type="button" disabled={isProcessing} onClick={() => sortClips(key)}>{label}{sortState?.key === key ? sortState.ascending ? ' ↑' : ' ↓' : ' ↕'}</button>;
+    const groupSelect = clip => <select aria-label={`${clip.name} のグループ`} value={clip.groupName} disabled={isProcessing} onChange={event => updateClip(clip.id, { groupName: event.target.value })}>
+        {groups.map(group => <option key={group}>{group}</option>)}</select>;
+    const nameInput = clip => <input type="text" aria-label={`${clip.file.name} の表示名`} value={clip.name} disabled={isProcessing} onChange={event => updateClip(clip.id, { name: event.target.value })} />;
+    const selectClip = clip => <input type="checkbox" aria-label={`${clip.name} を選択`} checked={selectedIds.includes(clip.id)} disabled={isProcessing} onChange={event => toggleSelection(clip.id, event.target.checked)} />;
+    const visibleClip = clip => <input type="checkbox" aria-label={`${clip.name} のグラフを表示`} checked={clip.isVisible} disabled={isProcessing} onChange={event => updateClip(clip.id, { isVisible: event.target.checked })} />;
 
-                {errorMsg && (
-                    <div className="bg-red-50 dark:bg-red-900/30 border-l-4 border-red-500 p-4 flex items-start">
-                        <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 mr-2 flex-shrink-0 mt-0.5" />
-                        <span className="text-red-700 dark:text-red-300 text-sm">{errorMsg}</span>
-                    </div>
-                )}
+    return <div className="nc-app">
+        <style>{workspaceStyles}</style>
+        <header className="nc-header">
+            <div className="nc-header-title"><div className="nc-header-logo"><Activity /></div><div>
+                <h1>NC値 アナライザー</h1><p className="nc-muted">WAVを読み込み、範囲を選んで、音の特性を比較。</p>
+            </div></div>
+            <div className="nc-row nc-header-status"><span className="nc-badge">{clips.length} ファイル / 範囲</span><span className="nc-badge nc-count" role="status" aria-label="解析状況">{calibrationPending ? '校正中…' : isAnalyzing ? `${pendingAnalysisIds.length} 件を更新中…` : `${validResults.length} 解析済み`}</span>
+                <span className="nc-muted">{isDirty ? '● 未保存の変更' : '変更はありません'}</span></div>
+        </header>
+        {errorMsg && <div role="alert" className="nc-alert"><AlertCircle /><span style={{ flex: 1 }}>{errorMsg}</span><button type="button" className="nc-icon" aria-label="エラーを閉じる" onClick={() => setErrorMsg('')}>×</button></div>}
+        <fieldset disabled={isProcessing} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+        <div className="nc-grid" aria-busy={isProcessing || isAnalyzing || calibrationPending}>
+            <aside className="nc-sidebar nc-column nc-stack" aria-label="読み込み・設定">
+                <section className="nc-card"><div className="nc-card-body nc-stack">
+                    <h2 className="nc-section-label"><FolderOpen />プロジェクト</h2>
+                    <label className="nc-field">プロジェクト名<input value={projectName} onChange={event => setProjectName(event.target.value)} /></label>
+                    <fieldset style={{ border: 0, margin: 0, padding: 0 }}><legend className="nc-muted" style={{ marginBottom: 5 }}>NCAの読み込み方法</legend>
+                        <div className="nc-row"><label><input type="radio" name="projectImportMode" checked={projectImportMode === 'replace'} onChange={() => setProjectImportMode('replace')} /> 上書き</label>
+                            <label><input type="radio" name="projectImportMode" checked={projectImportMode === 'append'} onChange={() => setProjectImportMode('append')} /> 追加</label></div>
+                    </fieldset>
+                    <button type="button" className="nc-full" onClick={openProject}><FolderOpen />NCAを読み込む</button>
+                    <input ref={projectInputRef} type="file" aria-label="NCAファイル" accept=".nca" hidden onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) loadProject(file); }} />
+                    <p className="nc-muted">{projectImportMode === 'replace' ? '現在のファイル・校正・設定を置き換えます。' : 'ファイルを追加します。現在の校正・保存先は維持します。同名グループは別グループとして追加します。'}</p>
+                    <div className="nc-pair"><button type="button" onClick={() => saveProject('download')} disabled={(!clips.length && !calibFile) || !canSaveProject}><Download />NCA出力</button>
+                        <button type="button" onClick={() => saveProject('as')} disabled={(!clips.length && !calibFile) || !canSaveProject}>別名で保存</button></div>
+                    <button type="button" className="nc-primary nc-full" onClick={() => saveProject('overwrite')} disabled={(!clips.length && !calibFile) || !canSaveProject}><Save />上書き保存</button>
+                    <div className="nc-muted" aria-live="polite"><p style={{ overflowWrap: 'anywhere' }}>{projectFileHandle ? `上書き先: ${projectFileName}` : '上書き先: 未設定'}</p>{saveStatus && <p role="status" aria-label="保存状況">{saveStatus}</p>}</div>
+                    <p className="nc-muted">NCAには元のWAV・校正音・範囲・解析結果・グループ・表示設定を保存します。</p>
+                </div></section>
+                <section className="nc-card"><div className="nc-card-body nc-stack">
+                    <h2 className="nc-section-label"><Settings2 />1. 校正音の設定</h2>
+                    <FileDropZone label="校正音WAVを読み込む" hint="ドロップ / クリックして選択" accept=".wav,audio/wav" disabled={isProcessing} onFiles={handleCalibFiles} />
+                    {calibFile && <div className="nc-row nc-between"><span className="nc-file-label">{calibFile.name}</span><button type="button" className="nc-icon" aria-label="校正音を削除" onClick={() => { setCalibFile(null); invalidateCalibration(false); setErrorMsg(''); }}><Trash2 /></button></div>}
+                    <label className="nc-field">校正基準レベル (dB)<input type="number" step="0.1" value={calibLevel} onChange={event => { setCalibLevel(event.target.value); invalidateCalibration(); }} /></label>
+                    {calibrationPending ? <div className="nc-note"><Activity /><span>校正音を解析中…</span></div> : offset !== null ? <div className="nc-note nc-success"><CheckCircle2 /><span>校正済み / {offset.toFixed(2)} dB</span></div> : <div className="nc-note"><Info /><span>未校正の結果は相対的な参考値です。正確な音圧レベルには校正が必要です。</span></div>}
+                </div></section>
+                <section className="nc-card"><div className="nc-card-body nc-stack">
+                    <h2 className="nc-section-label"><Upload />2. 解析対象の読み込み</h2>
+                    <label className="nc-field">読み込み先グループ<select value={uploadGroup} onChange={event => setUploadGroup(event.target.value)}>{groups.map(group => <option key={group}>{group}</option>)}</select></label>
+                    <FileDropZone label="解析対象WAVを読み込む" hint="複数ファイルをドロップ / クリックして選択" accept=".wav,audio/wav" multiple disabled={isProcessing} onFiles={handleMeasFiles} />
+                    <div className="nc-note" role="status" aria-label="自動解析の状態"><Activity /><span>{isProcessing ? 'ファイルを処理中…' : calibrationPending ? '校正が終わると自動で再解析します。' : isAnalyzing ? `${pendingAnalysisIds.length} 件の解析結果を更新中…` : '自動解析オン / 変更した範囲だけ更新します。'}</span></div>
+                    <p className="nc-muted">読み込みと同時に解析します。範囲の変更はそのファイルだけ、校正条件の変更は全ファイルに自動で反映します。</p>
+                </div></section>
+                <section className="nc-card"><div className="nc-card-body nc-stack">
+                    <h2 className="nc-section-label"><List />グループ設定</h2>
+                    <form onSubmit={addGroup} className="nc-row"><input aria-label="新規グループ名" placeholder="新規グループ名" value={newGroupName} onChange={event => setNewGroupName(event.target.value)} style={{ flex: 1 }} /><button type="submit" className="nc-icon" aria-label="グループを追加"><Plus /></button></form>
+                    {groups.map(group => <div key={group} className="nc-group-entry"><GroupNameField name={group} disabled={isProcessing} onRename={name => renameGroup(group, name)} />
+                        <span className="nc-badge">{clips.filter(clip => clip.groupName === group).length}</span><button type="button" className="nc-icon nc-danger" aria-label={`${group} グループを削除`} disabled={groups.length <= 1} onClick={() => removeGroup(group)}><Trash2 /></button></div>)}
+                    <p className="nc-muted">名前はEnterで確定。グループを削除すると、所属ファイルは先頭のグループへ移動します。</p>
+                </div></section>
+                <section className="nc-card"><div className="nc-card-body nc-stack">
+                    <h2 className="nc-section-label"><AudioLines />再生・スペクトログラム</h2>
+                    <label className="nc-field">音量・感度の適用先<select value={monitoringClip ? monitorTarget : 'all'} onChange={event => setMonitorTarget(event.target.value)}><option value="all">全ファイル（新規読み込みの既定値）</option>{clips.map(clip => <option key={clip.id} value={clip.id}>{clip.name}</option>)}</select></label>
+                    <label className="nc-field"><span className="nc-row nc-between">再生音量<output>{monitoringClip?.playbackGainPercent ?? allPlaybackGainPercent}%</output></span><input aria-label="再生音量" type="range" min="0" max="1000" step="10" value={monitoringClip?.playbackGainPercent ?? allPlaybackGainPercent} onChange={event => updateMonitoring('playbackGainPercent', Number(event.target.value))} /></label>
+                    <label className="nc-field"><span className="nc-row nc-between">スペクトログラム感度<output>{monitoringClip?.spectrogramGain ?? allSpectrogramGain}倍</output></span><input aria-label="スペクトログラム感度" type="range" min="1" max="100" value={monitoringClip?.spectrogramGain ?? allSpectrogramGain} onChange={event => updateMonitoring('spectrogramGain', Number(event.target.value))} /></label>
+                    <label className="nc-field"><span className="nc-row nc-between">時間軸の拡大<output>{spectrogramZoom}倍</output></span><input aria-label="時間軸の拡大" type="range" min="1" max="8" step="0.5" value={spectrogramZoom} onChange={event => setSpectrogramZoom(Number(event.target.value))} /></label>
+                    <label className="nc-field"><span className="nc-row nc-between">スペクトログラムの高さ<output>{spectrogramHeight}px</output></span><input aria-label="スペクトログラムの高さ" type="range" min="100" max="360" step="10" value={spectrogramHeight} onChange={event => setSpectrogramHeight(Number(event.target.value))} /></label>
+                    <p className="nc-muted">黄色の端をドラッグして範囲を選択。拡大時は横にスクロールできます。縦軸は100〜1000 Hzの対数軸です。音量・表示の調整は解析値や出力WAVには影響しません。音量は徐々に上げてください。</p>
+                </div></section>
+                <section className="nc-card"><div className="nc-card-body nc-stack">
+                    <h2 className="nc-section-label"><BarChart3 />グラフ・出力設定</h2>
+                    <label className="nc-field"><span className="nc-row nc-between">線の太さ<output>{lineWidth}</output></span><input aria-label="線の太さ" type="range" min="1" max="8" value={lineWidth} onChange={event => setLineWidth(Number(event.target.value))} /></label>
+                    <label className="nc-field"><span className="nc-row nc-between">プロットの大きさ<output>{pointSize}</output></span><input aria-label="プロットの大きさ" type="range" min="0" max="8" value={pointSize} onChange={event => setPointSize(Number(event.target.value))} /></label>
+                    <label className="nc-row nc-muted"><input type="checkbox" checked={yAxisMaxAuto} onChange={event => setYAxisMaxAuto(event.target.checked)} />Y軸の最大値を自動設定</label>
+                    {!yAxisMaxAuto && <label className="nc-field">Y軸の最大値 (dB)<input type="number" min="10" max="200" value={yAxisMaxManual} onChange={event => setYAxisMaxManual(clampSetting(event.target.value, 10, 200, 100))} /></label>}
+                    <div><p className="nc-muted" style={{ marginBottom: 6 }}>表示するNC曲線</p><div className="nc-nc-curves">{ncBase.map(({ nc }) => <label key={nc}><input type="checkbox" checked={visibleNcCurves.includes(nc)} onChange={event => setVisibleNcCurves(current => event.target.checked ? [...current, nc].sort((a, b) => a - b) : current.filter(value => value !== nc))} />{nc}</label>)}</div></div>
+                    <label className="nc-row nc-muted"><input type="checkbox" checked={useClipNameOnly} onChange={event => setUseClipNameOnly(event.target.checked)} />出力名に表示名だけを使う</label>
+                    <button type="button" onClick={exportIndexProject} disabled={!canExportResults}><Download />index.html 用プロジェクト出力</button>
+                    <p className="nc-muted">JSONを index.html の「プロジェクト読込」で読み込めます。解析済み {validResults.length} 件が対象です。{clips.length > validResults.length && `更新待ちの ${clips.length - validResults.length} 件は含まれません。`}</p>
+                    <button type="button" onClick={downloadAllFiles} disabled={!canExportResults}><Download />CSV＋切り抜きWAVをZIP出力</button>
+                </div></section>
+            </aside>
 
-                <div className="grid md:grid-cols-2 gap-6">
-                    {/* Calibration Card */}
-                    <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
-                        <div className="flex items-center mb-4">
-                            <Settings2 className="w-5 h-5 text-gray-500 mr-2" />
-                            <h2 className="text-lg font-semibold">Step 1: 機器校正 (オプション)</h2>
-                        </div>
-                        <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
-                            正確な音圧レベル(dB SPL)を測定するために、基準となる校正音(例: 1kHz, 94dB)を読み込ませます。
-                        </p>
-                        
-                        <div className="space-y-4">
-                            <div>
-                                <label className="block text-sm font-medium mb-1">校正基準レベル (dB)</label>
-                                <input 
-                                    type="number" 
-                                    value={calibLevel} 
-                                    onChange={(e) => setCalibLevel(e.target.value)}
-                                    className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded bg-transparent focus:ring-2 focus:ring-blue-500 outline-none"
-                                />
-                            </div>
-                            <div>
-                                <label className="block text-sm font-medium mb-1">校正音WAVファイル</label>
-                                <input 
-                                    type="file" 
-                                    accept=".wav,audio/wav" 
-                                    onChange={handleCalibFile}
-                                    className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 dark:file:bg-gray-700 dark:file:text-gray-300"
-                                />
-                                {calibFile && <p className="mt-2 text-xs text-gray-500 break-all">プロジェクトに保存する校正音: {calibFile.name}</p>}
-                            </div>
-                            <button 
-                                onClick={runCalibration}
-                                disabled={!calibFile || isProcessing}
-                                className="w-full py-2 bg-gray-800 dark:bg-gray-700 hover:bg-gray-700 dark:hover:bg-gray-600 text-white rounded transition-colors disabled:opacity-50"
-                            >
-                                校正を実行
-                            </button>
-
-                            {offset !== null && (
-                                <div className="mt-4 p-3 bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-300 rounded text-sm flex items-center">
-                                    <CheckCircle2 className="w-4 h-4 mr-2" />
-                                    校正完了 (オフセット: {offset.toFixed(2)} dB)
-                                </div>
-                            )}
-                        </div>
-                    </div>
-
-                    {/* Measurement Card */}
-                    <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
-                        <div className="flex items-center mb-4">
-                            <Upload className="w-5 h-5 text-gray-500 mr-2" />
-                            <h2 className="text-lg font-semibold">Step 2: 測定・分析</h2>
-                        </div>
-                        {offset === null && (
-                            <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-300 rounded text-xs flex items-start">
-                                <Info className="w-4 h-4 mr-1.5 flex-shrink-0 mt-0.5" />
-                                校正が未実施です。分析は可能ですが、算出されるdB値は相対的な参考値となります。
-                            </div>
-                        )}
-
-                        <div className="space-y-4">
-                            <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-900/10 p-3">
-                                <input ref={projectInputRef} type="file" accept=".nca,application/zip"
-                                    onChange={handleProjectFile} disabled={isProcessing} className="hidden" />
-                                <fieldset className="mb-3">
-                                    <legend className="mb-1 text-sm font-medium">プロジェクトの読み込み方法</legend>
-                                    <div className="grid gap-2 sm:grid-cols-2 text-sm">
-                                        <label className={`flex cursor-pointer items-start gap-2 rounded border p-2 ${projectImportMode === 'replace' ? 'border-blue-500 bg-white dark:bg-gray-800' : 'border-gray-200 dark:border-gray-700'}`}>
-                                            <input type="radio" name="projectImportMode" value="replace" checked={projectImportMode === 'replace'}
-                                                onChange={e => setProjectImportMode(e.target.value)} disabled={isProcessing} className="mt-0.5" />
-                                            <span><span className="block font-medium">現在の内容を置き換え</span><span className="block text-xs text-gray-500">解析対象・校正・出力設定を復元します。</span></span>
-                                        </label>
-                                        <label className={`flex cursor-pointer items-start gap-2 rounded border p-2 ${projectImportMode === 'append' ? 'border-blue-500 bg-white dark:bg-gray-800' : 'border-gray-200 dark:border-gray-700'}`}>
-                                            <input type="radio" name="projectImportMode" value="append" checked={projectImportMode === 'append'}
-                                                onChange={e => setProjectImportMode(e.target.value)} disabled={isProcessing} className="mt-0.5" />
-                                            <span><span className="block font-medium">現在の内容に追加</span><span className="block text-xs text-gray-500">解析対象だけを追加し、現在の校正・出力設定を維持します。</span></span>
-                                        </label>
-                                    </div>
-                                </fieldset>
-                                <button type="button" onClick={() => projectInputRef.current?.click()} disabled={isProcessing}
-                                    className="w-full inline-flex justify-center items-center px-3 py-2 border border-blue-600 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/30 text-sm font-medium rounded disabled:opacity-50">
-                                    <Upload className="w-4 h-4 mr-2" />
-                                    プロジェクト（.nca）を読み込む
-                                </button>
-                                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">選択した方法で、設定JSONとWAVを含むNCAプロジェクトを読み込みます。</p>
-                            </div>
-                            <div>
-                                <label className="block text-sm font-medium mb-1">対象WAVファイル（複数選択可）</label>
-                                <input 
-                                    type="file" 
-                                    accept=".wav,audio/wav" 
-                                    multiple
-                                    disabled={isProcessing}
-                                    onChange={handleMeasFile}
-                                    className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 dark:file:bg-gray-700 dark:file:text-gray-300"
-                                />
-                                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                                    選択したWAVは現在の解析対象に追加されます。読み込み後、スペクトログラムの黄色いハンドルをドラッグして解析範囲を指定できます。
-                                </p>
-                            </div>
-
-                            {clips.length > 0 && (
-                                <div className="space-y-4">
-                                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-200 dark:border-gray-600 p-3">
-                                        <label className="inline-flex items-center gap-2 text-sm cursor-pointer">
-                                            <input type="checkbox" checked={useClipNameOnly} disabled={isProcessing}
-                                                onChange={e => { setUseClipNameOnly(e.target.checked); setResults([]); }}
-                                                className="w-4 h-4 rounded border-gray-300 text-blue-600" />
-                                            出力ファイル名を変更名だけにする
-                                        </label>
-                                        <div className="flex flex-wrap gap-2">
-                                            <button type="button" onClick={clearClips} disabled={isProcessing}
-                                                className="inline-flex items-center px-3 py-1.5 border border-red-300 text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 text-sm font-medium rounded disabled:opacity-50"
-                                                title="校正音を残して解析対象をすべて削除">
-                                                <Trash2 className="w-4 h-4 mr-2" />
-                                                解析対象をすべてクリア
-                                            </button>
-                                            <button type="button" onClick={exportProject} disabled={isProcessing}
-                                                className="inline-flex items-center px-3 py-1.5 border border-blue-600 text-blue-700 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 text-sm font-medium rounded disabled:opacity-50">
-                                                <Download className="w-4 h-4 mr-2" />
-                                                プロジェクト（.nca）を出力
-                                            </button>
-                                        </div>
-                                        <p className="w-full text-xs text-gray-500">オンの場合、「元ファイル名_変更名」ではなく「変更名」をCSV・WAVのファイル名にします。.ncaには解析・校正設定、対象WAV、選択済みの校正音WAVが保存されます。</p>
-                                    </div>
-                                    <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-900/10 p-3 space-y-3">
-                                        <div>
-                                            <h3 className="text-sm font-semibold">全ファイルの確認表示を一括調整</h3>
-                                            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">ここで変更すると、読み込んだすべての切り抜きに同じ設定を適用します。各切り抜き側で個別に再調整することもできます。</p>
-                                        </div>
-                                        <div className="grid gap-3 sm:grid-cols-2 text-xs">
-                                            <label className="rounded border border-blue-200 dark:border-blue-700 bg-white/70 dark:bg-gray-800/70 p-2">
-                                                <span className="flex items-center justify-between gap-2 font-medium">
-                                                    全ファイルの再生音量
-                                                    <output className="font-mono text-blue-600 dark:text-blue-400">{allPlaybackGainPercent}%</output>
-                                                </span>
-                                                <input type="range" min="100" max="1000" step="10" value={allPlaybackGainPercent} disabled={isProcessing}
-                                                    onChange={e => updateAllPlaybackGain(Number(e.target.value))}
-                                                    aria-label="全ファイルの再生音量" className="mt-2 w-full accent-blue-600" />
-                                            </label>
-                                            <label className="rounded border border-blue-200 dark:border-blue-700 bg-white/70 dark:bg-gray-800/70 p-2">
-                                                <span className="flex items-center justify-between gap-2 font-medium">
-                                                    全ファイルのスペクトログラム感度
-                                                    <output className="font-mono text-blue-600 dark:text-blue-400">{allSpectrogramGain}倍</output>
-                                                </span>
-                                                <input type="range" min="1" max="100" step="1" value={allSpectrogramGain} disabled={isProcessing}
-                                                    onChange={e => updateAllSpectrogramGain(Number(e.target.value))}
-                                                    aria-label="全ファイルのスペクトログラム感度" className="mt-2 w-full accent-blue-600" />
-                                            </label>
-                                        </div>
-                                    </div>
-                                    {clips.map(clip => (
-                                        <div key={clip.id}>
-                                            <p className="mb-1 text-xs font-semibold text-gray-500 break-all">{clip.file.name}</p>
-                                            <SpectrogramEditor clip={clip} disabled={isProcessing}
-                                                onChange={changes => updateClip(clip.id, changes)}
-                                                onMonitoringChange={changes => updateClipMonitoring(clip.id, changes)}
-                                                onDuplicate={() => duplicateClip(clip.id)}
-                                                onRemove={() => removeClip(clip.id)} />
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-
-                            <button 
-                                onClick={runAnalysis}
-                                disabled={clips.length === 0 || isProcessing}
-                                className="w-full py-2 mt-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded shadow-sm transition-colors disabled:opacity-50 flex justify-center items-center"
-                            >
-                                {isProcessing ? (
-                                    <>
-                                        <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                        </svg>
-                                        処理中... {processingProgress && `(${processingProgress.current}/${processingProgress.total})`}
-                                    </>
-                                ) : (clips.length > 1 ? `${clips.length}範囲を一括分析` : "選択範囲を分析")}
-                            </button>
-                        </div>
+            <section className="nc-center nc-column nc-card" aria-label="解析ファイル一覧">
+                <div className="nc-sticky-head"><div className="nc-card-head"><h2><List />解析ファイル一覧 <span className="nc-badge nc-count">{clips.length}</span></h2></div>
+                    <div className="nc-toolbar">
+                        <div className="nc-row nc-between"><div className="nc-segment" role="group" aria-label="ファイル一覧の表示方法"><button type="button" aria-pressed={viewMode === 'table'} onClick={() => setViewMode('table')}><List />表形式</button><button type="button" aria-pressed={viewMode === 'spectrogram'} onClick={() => setViewMode('spectrogram')}><AudioLines />スペクトログラム</button></div></div>
+                        <div className="nc-row"><div className="nc-search"><Search /><input aria-label="ファイルを検索" placeholder="ファイル名・表示名で検索" value={search} onChange={event => setSearch(event.target.value)} /></div>
+                            <select aria-label="グループで絞り込み" style={{ flex: '0 1 130px' }} value={groupFilter} onChange={event => setGroupFilter(event.target.value)}><option value="">全グループ</option>{groups.map(group => <option key={group}>{group}</option>)}</select></div>
+                        <div className="nc-row nc-between"><label className="nc-row nc-muted"><SelectAllCheckbox clips={filteredClips} selectedIds={selectedIds} disabled={isProcessing} onChange={toggleAll} />全選択 <b>{selectedCount}件選択中</b></label>
+                            <div className="nc-row"><button type="button" aria-label="選択ファイルを上へ" className="nc-icon" disabled={!selectedCount} onClick={() => moveSelected('up')}><ArrowUp /></button><button type="button" aria-label="選択ファイルを下へ" className="nc-icon" disabled={!selectedCount} onClick={() => moveSelected('down')}><ArrowDown /></button>
+                                <button type="button" className="nc-danger" disabled={!selectedCount} onClick={() => { if (window.confirm(`選択した ${selectedCount} 件の解析範囲を削除しますか？`)) removeClips(selectedIds); }}><Trash2 />削除</button></div></div>
+                        {selectedCount > 0 && <div className="nc-row nc-bulk"><select aria-label="選択ファイルの移動先グループ" value={bulkGroup} onChange={event => setBulkGroup(event.target.value)}>{groups.map(group => <option key={group}>{group}</option>)}</select>
+                            <button type="button" onClick={() => setClips(current => current.map(clip => selectedIds.includes(clip.id) ? { ...clip, groupName: bulkGroup } : clip))}>グループ変更</button>
+</div>}
+                        {viewMode === 'spectrogram' && <div className="nc-row nc-muted"><span>並び替え:</span>{sortLabel('name', '表示名')}{sortLabel('groupName', 'グループ')}{sortLabel('duration', '範囲長')}{sortLabel('nc', 'NC')}</div>}
                     </div>
                 </div>
+                {!filteredClips.length ? <div className="nc-empty"><AudioLines /><strong>{clips.length ? '該当するファイルがありません' : '解析するWAVを追加'}</strong><p className="nc-muted">{clips.length ? '検索やグループの絞り込みを変更してください。' : '左側にWAVをドロップすると、ここに一覧が表示されます。'}</p></div> : viewMode === 'table' ? <div className="nc-table-scroll"><table className="nc-table" aria-label="解析ファイル表">
+                    <thead><tr><th></th><th>選択</th><th>{sortLabel('name', '表示名')} / {sortLabel('fileName', '元ファイル')}</th><th>{sortLabel('groupName', 'グループ')}</th><th>{sortLabel('nc', 'NC')}</th><th>表示</th><th></th></tr></thead>
+                    <tbody>{filteredClips.map(clip => <tr key={clip.id} data-clip-id={clip.id} className={selectedIds.includes(clip.id) ? 'nc-selected' : ''} {...rowDragProps(clip.id)}>
+                        <td>{dragHandle(clip)}</td><td>{selectClip(clip)}</td><td className="nc-name-cell">{nameInput(clip)}<p className="nc-file-label">{clip.file.name}</p><span className="nc-muted">{formatTime(clip.start)} – {formatTime(clip.end)}</span></td>
+                        <td className="nc-group-cell">{groupSelect(clip)}</td><td className="nc-compact">{resultById.has(clip.id) && !resultById.get(clip.id).isUpdating ? `NC-${formatNC(resultById.get(clip.id).nc.overall)}` : <span className="nc-muted">{pendingAnalysisIds.includes(clip.id) || calibrationPending ? '更新中…' : '解析待ち'}</span>}</td><td>{visibleClip(clip)}</td>
+                        <td><button type="button" className="nc-icon" aria-label={`${clip.name} の範囲を複製`} onClick={() => duplicateClip(clip.id)}><Copy /></button></td>
+                    </tr>)}</tbody>
+                </table></div> : <div className="nc-editor-list">{filteredClips.map(clip => <article key={clip.id} data-clip-id={clip.id} className={`nc-editor-card ${selectedIds.includes(clip.id) ? 'nc-selected' : ''}`} {...rowDragProps(clip.id)}>
+                    <div className="nc-editor-head nc-stack"><div className="nc-row">{dragHandle(clip)}{selectClip(clip)}{nameInput(clip)}
+                        <button type="button" className="nc-icon" aria-label={`${clip.name} の範囲を複製`} onClick={() => duplicateClip(clip.id)}><Copy /></button>
+                        <button type="button" className="nc-icon nc-danger" aria-label={`${clip.name} を削除`} onClick={() => removeClips([clip.id])}><Trash2 /></button></div>
+                        <div className="nc-row nc-between"><span className="nc-file-label">{clip.file.name}</span>{groupSelect(clip)}<label className="nc-row nc-muted">{visibleClip(clip)}グラフ表示</label></div></div>
+                    <SpectrogramEditor clip={clip} disabled={isProcessing} zoom={spectrogramZoom} height={spectrogramHeight} onChange={changes => updateClip(clip.id, changes)} />
+                </article>)}</div>}
+                {clips.length > 0 && <div className="nc-card-body nc-muted">ドラッグハンドルまたは選択後の矢印で並び替え。表の見出しからソートできます。表示順はスペクトログラム・結果・出力に共通です。</div>}
+            </section>
 
-                {/* Results Area */}
-                {results.length > 0 && (
-                    <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                        <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
-                            <div className="flex items-center">
-                                <BarChart3 className="w-6 h-6 text-blue-600 dark:text-blue-400 mr-2" />
-                                <h2 className="text-xl font-bold">分析結果（{results.length}件）</h2>
-                            </div>
-                            <div className="flex flex-wrap items-center gap-3">
-                                <button
-                                    onClick={downloadAllFiles}
-                                    disabled={isProcessing}
-                                    className="inline-flex items-center px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded shadow-sm transition-colors"
-                                    title="すべての解析結果と切り抜きWAVをZIPで保存"
-                                >
-                                    <Download className="w-4 h-4 mr-2" />
-                                    CSV＋切り抜きWAVをZIP出力
-                                </button>
-                            </div>
-                        </div>
-
-                        <div className="space-y-8">
-                            {results.map((result, resultIndex) => (
-                            <section key={`${result.sourceFileName}-${resultIndex}`} className="border-t border-gray-200 dark:border-gray-700 pt-6 first:border-t-0 first:pt-0">
-                                <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
-                                    <div>
-                                        <h3 className="font-semibold break-all">{result.sourceFileName} / {result.clipName}</h3>
-                                        <p className="mt-1 text-xs text-gray-500">
-                                            解析範囲: {formatTime(result.selectedStart)} — {formatTime(result.selectedEnd)}
-                                            （{formatTime(result.buffer.duration)}）
-                                        </p>
-                                    </div>
-                                    <div className="flex flex-wrap items-center gap-3">
-                                        <button
-                                            onClick={() => downloadResultFiles(result)}
-                                            className="inline-flex items-center px-3 py-1.5 border border-green-600 text-green-700 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20 text-sm font-medium rounded transition-colors"
-                                            title="解析CSVと選択範囲のWAVを保存"
-                                        >
-                                            <Download className="w-4 h-4 mr-2" />
-                                            CSV＋WAVを出力
-                                        </button>
-                                        <div className="bg-blue-50 dark:bg-blue-900/30 px-6 py-2 rounded-full border border-blue-100 dark:border-blue-800">
-                                            <span className="text-sm text-blue-800 dark:text-blue-300 mr-2">判定NC値:</span>
-                                            <span className="text-2xl font-bold text-blue-600 dark:text-blue-400">NC-{formatNC(result.nc.overall)}</span>
-                                        </div>
-                                    </div>
-                                </div>
-                        <div className="grid lg:grid-cols-3 gap-8">
-                            <div className="lg:col-span-2">
-                                <h3 className="text-sm font-semibold text-gray-500 mb-3">周波数特性とNC曲線</h3>
-                                <ResultChart measuredLevels={result.levels} ncOverall={result.nc.overall} />
-                            </div>
-
-                            <div>
-                                <h3 className="text-sm font-semibold text-gray-500 mb-3">帯域別詳細</h3>
-                                <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
-                                    <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700 text-sm">
-                                        <thead className="bg-gray-50 dark:bg-gray-900/50">
-                                            <tr>
-                                                <th className="px-4 py-2 text-left font-medium text-gray-500">周波数</th>
-                                                <th className="px-4 py-2 text-right font-medium text-gray-500">測定値 (dB)</th>
-                                                <th className="px-4 py-2 text-right font-medium text-gray-500">該当 NC</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-gray-200 dark:divide-gray-700 bg-white dark:bg-gray-800">
-                                            {FREQUENCIES.map((f, i) => {
-                                                const isMax = result.nc.details[i] === result.nc.overall;
-                                                return (
-                                                    <tr key={f} className={isMax ? "bg-blue-50/50 dark:bg-blue-900/10" : ""}>
-                                                        <td className="px-4 py-2 text-gray-900 dark:text-gray-300">
-                                                            {f >= 1000 ? `${f/1000}k` : f} Hz
-                                                        </td>
-                                                        <td className="px-4 py-2 text-right font-mono">
-                                                            {result.levels[i].toFixed(1)}
-                                                        </td>
-                                                        <td className={`px-4 py-2 text-right font-medium ${isMax ? 'text-blue-600 dark:text-blue-400' : 'text-gray-500'}`}>
-                                                            {formatNC(result.nc.details[i])}
-                                                        </td>
-                                                    </tr>
-                                                );
-                                            })}
-                                        </tbody>
-                                    </table>
-                                </div>
-                                <p className="text-xs text-gray-400 mt-3 leading-relaxed">
-                                    ※ NC値は、各帯域の測定値が下回る最小のNC曲線から判定され、全帯域の中で最も高い値が総合NC値となります。
-                                </p>
-                            </div>
-                        </div>
-                            </section>
-                            ))}
-                        </div>
-                    </div>
-                )}
-            </div>
+            <section className="nc-results nc-column nc-stack" aria-label="解析結果">
+                <div className="nc-card"><div className="nc-card-head"><h2><BarChart3 />解析結果 <span className="nc-badge nc-count">{shownResults.length}</span></h2>
+                    <div className="nc-segment" role="group" aria-label="解析結果の表示方法"><button type="button" aria-pressed={resultView === 'individual'} onClick={() => setResultView('individual')}>個別</button><button type="button" aria-pressed={resultView === 'group'} onClick={() => setResultView('group')}>グループ比較</button></div></div>
+                    <div className="nc-card-body nc-muted">{offset === null ? '未校正・参考値 / ' : '校正済み / '}1/1オクターブバンド{resultView === 'group' ? '。同じグループの測定値を重ねて比較します。' : '。一覧の順に表示します。'}{results.length < clips.length && ` 更新待ち: ${clips.length - results.length} 件。`}</div>
+                </div>
+                {!shownResults.length ? <div className="nc-card nc-empty"><BarChart3 /><strong>{results.length ? 'グラフ表示がオフになっています' : '解析結果をここに表示'}</strong><p className="nc-muted">{results.length ? '一覧の「表示」をオンにしてください。' : isAnalyzing || calibrationPending ? '解析結果を更新中です…' : 'WAVを読み込むと、自動で解析結果を表示します。'}</p></div> : resultView === 'group' ? resultGroups.map(group => {
+                    const items = shownResults.filter(result => result.groupName === group);
+                    return <article key={group} className="nc-result-card" data-result-group={group}>
+                        <div className="nc-result-head"><div><h3>{group}</h3><p className="nc-muted">グループ比較 / {items.length} 件</p></div><span className="nc-badge">重ねて表示</span></div>
+                        <ResultChart items={items} title={`${group} のNC比較グラフ`} {...chartSettings} />
+                        <ul className="nc-legend" aria-label={`${group} の凡例`}>{items.map(result => <li key={result.id} data-legend-id={result.id}><span className="nc-swatch" style={{ borderColor: result.color }} /><span>{result.clipName}</span><b>{result.isUpdating ? '更新中…' : `NC-${formatNC(result.nc.overall)}`}</b></li>)}</ul>
+                    </article>;
+                }) : shownResults.map(result => <article key={result.id} data-result-id={result.id} data-analysis-state={result.isUpdating ? 'updating' : 'ready'} className="nc-result-card">
+                    <div className="nc-result-head"><div><h3>{result.clipName || '(表示名なし)'}</h3><p className="nc-muted">{result.groupName} / {result.sourceFileName}</p><p className="nc-muted">{formatTime(result.selectedStart)} – {formatTime(result.selectedEnd)}</p></div><span className="nc-nc">{result.isUpdating ? '更新中…' : `NC-${formatNC(result.nc.overall)}`}</span></div>
+                    <ResultChart items={[result]} title={`${result.clipName} のNCグラフ`} {...chartSettings} />
+                    <details className="nc-details"><summary>帯域別の測定値とNC値</summary><table><thead><tr><th>周波数 (Hz)</th><th>測定値 (dB)</th><th>NC</th></tr></thead><tbody>{FREQUENCIES.map((frequency, index) => <tr key={frequency}><td>{frequency}</td><td>{result.levels[index].toFixed(1)}</td><td>{formatNC(result.nc.details[index])}</td></tr>)}</tbody></table></details>
+                    <div className="nc-result-actions nc-row"><button type="button" disabled={result.isUpdating} onClick={() => downloadResultCsv(result)}><Download />CSV</button><button type="button" disabled={result.isUpdating} onClick={() => downloadResultWav(result)}><Download />切り抜きWAV</button></div>
+                </article>)}
+            </section>
         </div>
-    );
+        </fieldset>
+    </div>;
 }
