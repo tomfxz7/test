@@ -115,6 +115,39 @@ class WeightConversionTests(unittest.TestCase):
                 expect(self.page.get_by_text(expected, exact=True)).to_be_visible()
                 expect(self.page.get_by_text('重量としての計算結果', exact=False)).to_have_count(0)
 
+    def test_force_results_convert_back_to_weight_units(self):
+        for expression, expected in [
+            ('9.80665N', '1 kg'),
+            ('9.80665N + 9.80665N', '2 kg'),
+            ('9.80665N・m', '1 kg·m'),
+            ('9.80665N・m + 9.80665N·m', '2 kg·m'),
+            ('9.80665N * 2m', '2 kg·m'),
+            ('1kgf * 2m', '2 kg·m'),
+            ('9.80665N / 1m^2', '1 kg / m^2'),
+            ('9.80665Pa', '1 kg / m^2'),
+            ('1kg * 9.80665m / 1s / 1s', '1 kg'),
+            ('9.80665N * 1s', '1 kg·s'),
+            ('1 / 9.80665N', '1 1 / kg'),
+            ('(9.80665N) * (9.80665N)', '1 kg^2'),
+            ('-9.80665N * 1m', '-1 kg·m'),
+            ('0N * 1m', '0 kg·m'),
+        ]:
+            with self.subTest(expression=expression):
+                self.input.fill(expression)
+                group = self.page.get_by_text('重量系への換算', exact=False).locator('..').locator('..')
+                expect(group.get_by_text(expected, exact=True)).to_be_visible()
+
+    def test_weight_scales_and_no_conversion_after_force_cancellation(self):
+        self.input.fill('9.80665N * 1m')
+        expect(self.page.get_by_text('9.80665 N·m', exact=True)).to_be_visible()
+        expect(self.page.get_by_text('1 kg·m', exact=True)).to_be_visible()
+        expect(self.page.get_by_text('1000 g·m', exact=True)).to_be_visible()
+        expect(self.page.get_by_text('0.001 t·m', exact=True)).to_be_visible()
+        for expression in ['1N / 1N', '1kg * 1m', '1m + 1m', '1V + 1V']:
+            with self.subTest(expression=expression):
+                self.input.fill(expression)
+                expect(self.page.get_by_text('重量系への換算', exact=False)).to_have_count(0)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

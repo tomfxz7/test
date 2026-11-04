@@ -187,9 +187,31 @@ const formatDims = (dims) => {
 };
 
 const STANDARD_GRAVITY = 9.80665;
+const WEIGHT_CATEGORIES = ['force', 'torque', 'pressure', 'energy', 'power'];
+
+// 力のSI次元から重力加速度の寄与を取り除き、対応する質量系表記にする。
+const weightEquivalentItems = (value, dims) => {
+  const exponent = dims.kg || 0;
+  if (!exponent || !Number.isFinite(value)) return [];
+  const weightDims = { ...dims, m: (dims.m || 0) - exponent, s: (dims.s || 0) + 2 * exponent };
+  return ['kg', 'g', 't'].map(unit => {
+    const convertedDims = { [unit]: exponent, ...Object.fromEntries(
+      Object.entries(weightDims).filter(([key]) => key !== 'kg')
+    ) };
+    const convertedValue = value / (STANDARD_GRAVITY * unitDictionary.mass.conversions[unit]) ** exponent;
+    return `${formatNumber(convertedValue)} ${formatDims(convertedDims)}`;
+  });
+};
+
+const weightEquivalentResult = (value, dims) => ({
+  title: '重量系への換算 (地球重力下・9.80665 N = 1 kg)',
+  icon: <Scale className="w-5 h-5 text-orange-500" />,
+  items: weightEquivalentItems(value, dims),
+});
 
 const evaluateExpression = (exprStr, { massAsWeight = false } = {}) => {
   let hasMassUnit = false;
+  let hasForceUnit = false;
   let hasDateStr = false;
   let expr = exprStr.replace(/\b\d{4}\/\d{1,2}\/\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\b/g, match => {
     hasDateStr = true; return `( ${new Date(match).getTime()} ms )`;
@@ -268,6 +290,7 @@ const evaluateExpression = (exprStr, { massAsWeight = false } = {}) => {
           v: conv * (massAsWeight && isMass ? STANDARD_GRAVITY : 1),
           d: CATEGORY_DIMS[massAsWeight && isMass ? 'force' : category],
           isMass,
+          isForce: WEIGHT_CATEGORIES.includes(category),
         };
       }
     });
@@ -279,6 +302,7 @@ const evaluateExpression = (exprStr, { massAsWeight = false } = {}) => {
       const norm = normalizeUnit(token.value);
       if (UNIT_DEFS[norm] !== undefined) {
         hasMassUnit ||= Boolean(UNIT_DEFS[norm].isMass);
+        hasForceUnit ||= Boolean(UNIT_DEFS[norm].isForce);
         evalStack.push({ v: UNIT_DEFS[norm].v, d: { ...UNIT_DEFS[norm].d } });
       } else {
         let found = null;
@@ -289,6 +313,7 @@ const evaluateExpression = (exprStr, { massAsWeight = false } = {}) => {
         }
         if (found) {
           hasMassUnit ||= Boolean(UNIT_DEFS[found].isMass);
+          hasForceUnit ||= Boolean(UNIT_DEFS[found].isForce);
           evalStack.push({ v: UNIT_DEFS[found].v, d: { ...UNIT_DEFS[found].d } });
         } else {
           evalStack.push({ v: 1, d: { [norm]: 1 } });
@@ -326,7 +351,7 @@ const evaluateExpression = (exprStr, { massAsWeight = false } = {}) => {
   }
 
   if (evalStack.length !== 1) throw new Error("評価失敗");
-  return { value: evalStack[0].v, dims: evalStack[0].d, hasDateStr, hasMassUnit };
+  return { value: evalStack[0].v, dims: evalStack[0].d, hasDateStr, hasMassUnit, hasForceUnit };
 };
 
 // ==========================================
@@ -463,13 +488,16 @@ const parseInput = (text) => {
       }
 
       results.push({ title: catData.name, icon: catData.icon, items: convertedItems });
+      if (WEIGHT_CATEGORIES.includes(foundCategory)) {
+        results.push(weightEquivalentResult(baseVal, CATEGORY_DIMS[foundCategory]));
+      }
       return results;
     }
   }
 
   // 【B】計算エンジン
   try {
-    const { value, dims, hasDateStr } = evaluateExpression(text);
+    const { value, dims, hasDateStr, hasForceUnit } = evaluateExpression(text);
     
     if (hasDateStr && matchDims(dims, CATEGORY_DIMS.time)) {
       const d = new Date(value * 1000);
@@ -500,6 +528,10 @@ const parseInput = (text) => {
       } else {
         results.push({ title: '計算結果', icon: <Calculator className="w-5 h-5 text-slate-500" />, items: [`${formatNumber(value)}`] });
       }
+    }
+    if ((hasForceUnit || WEIGHT_CATEGORIES.some(cat => matchDims(dims, CATEGORY_DIMS[cat])))
+        && dims.kg && Number.isFinite(value)) {
+      results.push(weightEquivalentResult(value, dims));
     }
   } catch (err) {}
 
