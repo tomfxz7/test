@@ -185,7 +185,10 @@ const formatDims = (dims) => {
   return res;
 };
 
-const evaluateExpression = (exprStr) => {
+const STANDARD_GRAVITY = 9.80665;
+
+const evaluateExpression = (exprStr, { massAsWeight = false } = {}) => {
+  let hasMassUnit = false;
   let hasDateStr = false;
   let expr = exprStr.replace(/\b\d{4}\/\d{1,2}\/\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\b/g, match => {
     hasDateStr = true; return `( ${new Date(match).getTime()} ms )`;
@@ -257,7 +260,15 @@ const evaluateExpression = (exprStr) => {
   const UNIT_DEFS = { 'pi': { v: Math.PI, d: {} } };
   Object.values(unitDictionary).forEach(cat => {
     Object.entries(cat.conversions).forEach(([u, conv]) => {
-      if (typeof conv !== 'object') UNIT_DEFS[u] = { v: conv, d: CATEGORY_DIMS[Object.keys(unitDictionary).find(k => unitDictionary[k] === cat)] };
+      if (typeof conv !== 'object') {
+        const category = Object.keys(unitDictionary).find(k => unitDictionary[k] === cat);
+        const isMass = category === 'mass';
+        UNIT_DEFS[u] = {
+          v: conv * (massAsWeight && isMass ? STANDARD_GRAVITY : 1),
+          d: CATEGORY_DIMS[massAsWeight && isMass ? 'force' : category],
+          isMass,
+        };
+      }
     });
   });
 
@@ -266,6 +277,7 @@ const evaluateExpression = (exprStr) => {
     else if (token.type === 'unit') {
       const norm = normalizeUnit(token.value);
       if (UNIT_DEFS[norm] !== undefined) {
+        hasMassUnit ||= Boolean(UNIT_DEFS[norm].isMass);
         evalStack.push({ v: UNIT_DEFS[norm].v, d: { ...UNIT_DEFS[norm].d } });
       } else {
         let found = null;
@@ -275,6 +287,7 @@ const evaluateExpression = (exprStr) => {
           }
         }
         if (found) {
+          hasMassUnit ||= Boolean(UNIT_DEFS[found].isMass);
           evalStack.push({ v: UNIT_DEFS[found].v, d: { ...UNIT_DEFS[found].d } });
         } else {
           evalStack.push({ v: 1, d: { [norm]: 1 } });
@@ -312,7 +325,7 @@ const evaluateExpression = (exprStr) => {
   }
 
   if (evalStack.length !== 1) throw new Error("評価失敗");
-  return { value: evalStack[0].v, dims: evalStack[0].d, hasDateStr };
+  return { value: evalStack[0].v, dims: evalStack[0].d, hasDateStr, hasMassUnit };
 };
 
 // ==========================================
@@ -440,7 +453,7 @@ const parseInput = (text) => {
         convertedItems.push(`${formatNumber(converted)} ${u}`);
       }
 
-      const G = 9.80665;
+      const G = STANDARD_GRAVITY;
       if (foundCategory === 'mass') {
         convertedItems.push(`${formatNumber(baseVal * G)} N (地球重力下)`);
         convertedItems.push(`${formatNumber(baseVal)} kgf`);
@@ -481,6 +494,39 @@ const parseInput = (text) => {
         results.push({ title: '計算結果 (組み立て単位)', icon: <Calculator className="w-5 h-5 text-slate-500" />, items: [`${formatNumber(value)} ${dimStr}`] });
       } else {
         results.push({ title: '計算結果', icon: <Calculator className="w-5 h-5 text-slate-500" />, items: [`${formatNumber(value)}`] });
+      }
+    }
+  } catch (err) {}
+
+  // 質量としての通常計算とは別に、入力中の質量単位を重量として評価する。
+  // N・kgfなど、既に力である単位の換算率は変えない。
+  try {
+    const weighted = evaluateExpression(text, { massAsWeight: true });
+    if (weighted.hasMassUnit && Number.isFinite(weighted.value)) {
+      let normal = null;
+      try { normal = evaluateExpression(text); } catch (err) {}
+      if (!normal || !matchDims(normal.dims, weighted.dims)) {
+        // エネルギーとトルクは同次元だが、重量×腕の長さはN·mを優先する。
+        const category = ['torque', ...Object.keys(CATEGORY_DIMS).filter(cat => cat !== 'torque')]
+          .find(cat => matchDims(weighted.dims, CATEGORY_DIMS[cat]));
+        const forceDims = { ...weighted.dims };
+        if (forceDims.kg) {
+          const exponent = forceDims.kg;
+          delete forceDims.kg;
+          forceDims.N = (forceDims.N || 0) + exponent;
+          forceDims.m = (forceDims.m || 0) - exponent;
+          forceDims.s = (forceDims.s || 0) + 2 * exponent;
+        }
+        const items = category
+          ? Object.entries(unitDictionary[category].conversions)
+            .filter(([, conversion]) => typeof conversion === 'number')
+            .map(([unit, conversion]) => `${formatNumber(weighted.value / conversion)} ${unit}`)
+          : [`${formatNumber(weighted.value)} ${formatDims(forceDims)}`.trim()];
+        results.push({
+          title: '重量としての計算結果 (地球重力下・1 kg = 9.80665 N)',
+          icon: <Hammer className="w-5 h-5 text-stone-500" />,
+          items,
+        });
       }
     }
   } catch (err) {}
