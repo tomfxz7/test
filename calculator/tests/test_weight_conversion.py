@@ -99,6 +99,22 @@ class WeightConversionTests(unittest.TestCase):
                 expect(self.page.get_by_text(expected, exact=True)).to_be_visible()
                 expect(self.page.get_by_text('重量としての計算結果', exact=False)).to_have_count(0)
 
+    def test_torque_middle_dots_and_arithmetic(self):
+        for expression, expected in [
+            ('1N・m', '0.001 kN·m'),
+            ('1N·m', '0.001 kN·m'),
+            ('1N・m + 2N・m', '3 N·m'),
+            ('1N·m + 2N·m', '3 N·m'),
+            ('2 * (3N・m)', '6 N·m'),
+            ('6N・m / 2m', '3 N'),
+            ('1kN・m + 2N·m', '1002 N·m'),
+            ('1kgf・m + 1N・m', '10.80665 N·m'),
+        ]:
+            with self.subTest(expression=expression):
+                self.input.fill(expression)
+                expect(self.page.get_by_text(expected, exact=True)).to_be_visible()
+                expect(self.page.get_by_text('重量としての計算結果', exact=False)).to_have_count(0)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

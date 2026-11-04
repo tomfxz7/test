@@ -137,6 +137,7 @@ const getFractionPi = (rad) => {
 };
 
 const normalizeUnit = (u) => {
+  u = u.replace(/・/g, '·');
   const map = {
     'ワット': 'W', 'キロワット': 'kW', 'メガワット': 'MW',
     'ジュール': 'J', 'カロリー': 'cal', 'キロカロリー': 'kcal',
@@ -195,7 +196,7 @@ const evaluateExpression = (exprStr, { massAsWeight = false } = {}) => {
   });
 
   expr = expr.replace(/(sin|cos|tan|arcsin|arccos|arctan|asin|acos|atan)\s*([-+]?\d+\.?\d*(?:e[-+]?\d+)?\s*[a-zA-Z°]+(?:\^[+-]?\d+)?)/gi, '$1($2)');
-  expr = expr.replace(/·/g, '*');
+  expr = expr.replace(/[·・]/g, '*');
 
   const tokenRegex = /(sin|cos|tan|arcsin|arccos|arctan|asin|acos|atan|\d+\.\d+(?:e[+-]?\d+)?|\d+(?:e[+-]?\d+)?|[a-zA-Z°µΩ\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]+(?:\^[+-]?\d+)?|[\+\-\*\/\(\)])/gi;
   const rawTokens = [...expr.matchAll(tokenRegex)].map(m => m[0]);
@@ -483,7 +484,11 @@ const parseInput = (text) => {
 
     if (matchedCategory) {
       const catData = unitDictionary[matchedCategory];
-      const items = Object.entries(catData.conversions).map(([u, conv]) => {
+      // JとN·mは同次元なので、計算後も両方の表記に換算できるようにする。
+      const conversions = matchedCategory === 'energy'
+        ? { ...catData.conversions, ...unitDictionary.torque.conversions }
+        : catData.conversions;
+      const items = Object.entries(conversions).map(([u, conv]) => {
          if (typeof conv !== 'object') return `${formatNumber(value / conv)} ${u}`;
          return null;
       }).filter(Boolean);
