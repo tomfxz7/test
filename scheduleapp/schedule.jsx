@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Clock,
   Plus,
@@ -359,6 +359,10 @@ const progressEntryClasses = (entry, task) => {
   return `${backgrounds[tone]} ${progressToneBorders[tone]}`;
 };
 
+// Older backups can contain null (or incomplete) optional attachment fields.
+const progressMediaItems = value => Array.isArray(value)
+  ? value.filter(item => item && typeof item === 'object' && !Array.isArray(item)) : [];
+
 const createProgressQuote = (entry) => ({
   id: entry.id, text: entry.text, createdAt: entry.createdAt, status: entry.status,
   ...(entry.plainComment ? { plainComment: true } : {}),
@@ -366,8 +370,8 @@ const createProgressQuote = (entry) => ({
   smallTaskId: entry.smallTaskId, smallTaskTitle: entry.smallTaskTitle,
   ...(entry.addedSmallTask ? { addedSmallTask: true } : {}),
   ...(entry.sourceType ? { sourceType: entry.sourceType } : {}),
-  ...(entry.images?.length ? { images: entry.images.map(image => ({ ...image })) } : {}),
-  ...(entry.links?.length ? { links: entry.links.map(link => ({ ...link })) } : {}),
+  ...(progressMediaItems(entry.images).length ? { images: progressMediaItems(entry.images).map(image => ({ ...image })) } : {}),
+  ...(progressMediaItems(entry.links).length ? { links: progressMediaItems(entry.links).map(link => ({ ...link })) } : {}),
   ...(entry.quote ? { quote: entry.quote } : {})
 });
 const findProgressReplySource = (task, quote) => {
@@ -377,7 +381,7 @@ const findProgressReplySource = (task, quote) => {
   return small ? { ...quote, text: small.title, smallTaskTitle: small.title } : null;
 };
 const progressQuoteSearchText = quote => quote
-  ? [quote.text, ...(quote.subtaskTitles || []), quote.smallTaskTitle, ...(quote.images || []).map(image => image.name), ...(quote.links || []).flatMap(link => [link.label, link.url]), progressQuoteSearchText(quote.quote)].filter(Boolean).join(' ')
+  ? [quote.text, ...(quote.subtaskTitles || []), quote.smallTaskTitle, ...progressMediaItems(quote.images).map(image => image.name), ...progressMediaItems(quote.links).flatMap(link => [link.label, link.url]), progressQuoteSearchText(quote.quote)].filter(Boolean).join(' ')
   : '';
 
 const progressSafeUrl = value => {
@@ -395,13 +399,14 @@ const ProgressAttachments = ({ images = [], links = [], onRemoveImage, onRemoveL
     document.addEventListener('keydown', close);
     return () => { document.removeEventListener('keydown', close); previous?.focus(); };
   }, [expanded]);
-  const visibleImages = images.filter(image => typeof image.src === 'string' && /^data:image\/(?:png|jpeg|gif|webp|avif);base64,/i.test(image.src));
+  const visibleImages = progressMediaItems(images).filter(image => typeof image.src === 'string' && /^data:image\/(?:png|jpeg|gif|webp|avif);base64,/i.test(image.src));
+  const visibleLinks = progressMediaItems(links).filter(link => progressSafeUrl(link.url));
   return <>
     {!!visibleImages.length && <div className="flex flex-wrap gap-2 mt-2">{visibleImages.map(image => <div key={image.id} className="relative rounded-lg border bg-white p-1 max-w-full">
       <button type="button" aria-label={`画像を拡大: ${image.name}`} onClick={() => setExpanded(image)}><img src={image.src} alt={image.name} className="max-h-40 max-w-full rounded object-contain"/></button>
       {onRemoveImage && <button type="button" aria-label={`添付画像を削除: ${image.name}`} onClick={() => onRemoveImage(image.id)} className="block text-xs text-red-700 underline">削除</button>}
     </div>)}</div>}
-    {!!links.length && <ul className="space-y-1 mt-2 text-sm">{links.filter(link => progressSafeUrl(link.url)).map(link => <li key={link.id} className="flex gap-2 items-start min-w-0">
+    {!!visibleLinks.length && <ul className="space-y-1 mt-2 text-sm">{visibleLinks.map(link => <li key={link.id} className="flex gap-2 items-start min-w-0">
       <a href={progressSafeUrl(link.url)} target="_blank" rel="noopener noreferrer" className="underline break-all">{link.label || link.url}</a>
       {onRemoveLink && <button type="button" aria-label={`添付リンクを削除: ${link.label || link.url}`} onClick={() => onRemoveLink(link.id)} className="text-xs text-red-700 shrink-0 underline">削除</button>}
     </li>)}</ul>}
@@ -2017,7 +2022,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
   const smallOptions = new Map();
   subtasks.filter(st => !filterId || st.id === filterId).forEach(st => getProgressSmallTasks(st).forEach(small => smallOptions.set(small.id, small.title)));
   history.filter(entry => !filterId || entry.subtaskIds?.includes(filterId)).forEach(entry => { if (entry.smallTaskId && !smallOptions.has(entry.smallTaskId)) smallOptions.set(entry.smallTaskId, `${entry.smallTaskTitle || '小さいタスク'}（${getCompletedProgressSmallIds(task).has(entry.smallTaskId) ? '完了' : '削除済み'}）`); });
-  const visibleHistory = history.filter(entry => (!filterSmallId || entry.smallTaskId === filterSmallId) && (!filterId || entry.subtaskIds?.includes(filterId)) && (!query.trim() || [entry.text, ...(entry.subtaskTitles || []), entry.smallTaskTitle, ...(entry.images || []).map(image => image.name), ...(entry.links || []).flatMap(link => [link.label, link.url]), entry.createdAt, entry.dueDate, progressQuoteSearchText(entry.quote)].filter(Boolean).join(' ').toLowerCase().includes(query.trim().toLowerCase())));
+  const visibleHistory = history.filter(entry => (!filterSmallId || entry.smallTaskId === filterSmallId) && (!filterId || entry.subtaskIds?.includes(filterId)) && (!query.trim() || [entry.text, ...(entry.subtaskTitles || []), entry.smallTaskTitle, ...progressMediaItems(entry.images).map(image => image.name), ...progressMediaItems(entry.links).flatMap(link => [link.label, link.url]), entry.createdAt, entry.dueDate, progressQuoteSearchText(entry.quote)].filter(Boolean).join(' ').toLowerCase().includes(query.trim().toLowerCase())));
   useEffect(() => { if (historyRef.current) historyRef.current.scrollTop = historyRef.current.scrollHeight; }, [history.length, history[history.length - 1]?.id, task.id]);
   useEffect(() => { if (editingId) composerRef.current?.focus(); }, [editingId]);
   useEffect(() => {
@@ -2056,7 +2061,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
   };
   const missingDraftSource = !!((editingId && !editingEntry) || (replyTo && !findProgressReplySource(task, replyTo)));
   useEffect(() => { if (missingDraftSource) resetComposer(); }, [missingDraftSource]);
-  useLayoutEffect(() => {
+  React.useLayoutEffect(() => {
     if (!smallTaskTarget || smallTaskTarget.taskId !== task.id) { resetComposer(); setFilterId(''); setFilterSmallId(''); return; }
     if (smallTaskTarget.filterOnly) {
       if (smallTaskTarget.clearComposer) resetComposer();
@@ -2068,7 +2073,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
   }, [smallTarget?.smallTaskId, !!targetSmall, editingId, replyTo?.id]);
   const editComment = entry => {
     mediaVersion.current += 1; setMediaBusy(false); setMediaError(''); setLinkUrl(''); setLinkLabel('');
-    setImages((entry.images || []).map(image => ({ ...image }))); setLinks((entry.links || []).map(link => ({ ...link })));
+    setImages(progressMediaItems(entry.images).map(image => ({ ...image }))); setLinks(progressMediaItems(entry.links).map(link => ({ ...link })));
     setReplyTo(null);
     setEditingId(entry.id); setText(entry.text); setPlainComment(!!entry.plainComment);
     setSelectedIds(entry.subtaskIds || []);
@@ -2277,6 +2282,24 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
   </div>;
 };
 
+class ProgressThreadBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) { console.error('Progress thread could not be displayed', error, info.componentStack); }
+  componentDidUpdate(previous) {
+    if (this.state.error && previous.resetKey !== this.props.resetKey) this.setState({ error: null });
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return <div role="alert" className="p-4 space-y-3 text-sm">
+      <p className="font-bold text-red-700">このトークを表示できませんでした。</p>
+      <p>別のカードを選択できます。保存済みのデータは変更していません。</p>
+      <details><summary className="cursor-pointer underline">エラーの詳細</summary><pre className="mt-2 whitespace-pre-wrap break-words rounded border bg-gray-50 p-2 select-text">{String(this.state.error?.message || this.state.error)}</pre></details>
+      <button type="button" onClick={() => this.setState({ error: null })} className="rounded-lg border px-3 py-2">もう一度表示する</button>
+    </div>;
+  }
+}
+
 const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
   const [selectedId, setSelectedId] = useState(null);
   const [smallTaskTarget, setSmallTaskTarget] = useState(null);
@@ -2334,7 +2357,7 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
         })}
         <section aria-label="進捗リストボード" className="rounded-2xl border border-gray-200 bg-white flex flex-col min-h-0 overflow-hidden">
           <header className="px-4 py-3 border-b shrink-0"><h2 className="text-sm font-black">進捗リストボード</h2></header>
-          {selectedTask ? <ProgressThread key={selectedTask.id} task={selectedTask} onUpdateTask={onUpdateTask} smallTaskTarget={smallTaskTarget}/> : <div className="flex-1 flex flex-col items-center justify-center gap-3 text-gray-400 p-6 text-sm text-center"><List size={32}/><p>カードをクリックすると、<br/>進捗と変更履歴が表示されます。</p></div>}
+          {selectedTask ? <ProgressThreadBoundary key={selectedTask.id} resetKey={smallTaskTarget?.requestId}><ProgressThread task={selectedTask} onUpdateTask={onUpdateTask} smallTaskTarget={smallTaskTarget}/></ProgressThreadBoundary> : <div className="flex-1 flex flex-col items-center justify-center gap-3 text-gray-400 p-6 text-sm text-center"><List size={32}/><p>カードをクリックすると、<br/>進捗と変更履歴が表示されます。</p></div>}
         </section>
       </div>
     </div>
@@ -2435,8 +2458,8 @@ const buildWeeklyReport = ({ tasks, startDate, endDate, now = new Date() }) => {
     : item.progressStage === 'doing' ? '着手中' : item.progressStage === 'todo' ? '未着手' : '未完了（着手状況の記録なし）';
   const stateWithDue = item => `${state(item)}${!item.completed && item.dueDate && item.dueDate < formatDate(now) ? ' / 期限超過（出力時点）' : ''}`;
   const media = (entry, indent = '') => {
-    if (entry.images?.length) text('添付画像（画像データは含みません）', entry.images.map(image => image.name).join(' / '), indent);
-    text('添付リンク', (entry.links || []).filter(link => progressSafeUrl(link.url)).map(link => `${link.label || link.url}: ${link.url}`).join('\n'), indent);
+    if (progressMediaItems(entry.images).length) text('添付画像（画像データは含みません）', progressMediaItems(entry.images).map(image => image.name).join(' / '), indent);
+    text('添付リンク', progressMediaItems(entry.links).filter(link => progressSafeUrl(link.url)).map(link => `${link.label || link.url}: ${link.url}`).join('\n'), indent);
   };
   const quote = (source, indent = '    ') => {
     lines.push(`${indent}引用（背景資料・新規実績には数えない）:`, `${indent}  元の日時: ${reportTimestamp(source.createdAt)}`);

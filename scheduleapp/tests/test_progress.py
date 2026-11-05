@@ -50,7 +50,10 @@ class ProgressTests(unittest.TestCase):
             with urlopen('https://cdn.jsdelivr.net/npm/' + package, timeout=30) as response:
                 Path(cls.assets.name, name).write_bytes(response.read())
         source = Path(__file__).resolve().parents[1].joinpath('schedule.jsx').read_text()
-        source = re.sub(r"import React, \{([^}]+)\} from 'react';", r'const {\1} = React;', source)
+        # Match the deployed Babel host. Automatically exposing every new
+        # imported hook hid the missing useLayoutEffect binding in production.
+        source = re.sub(r"import React, \{([^}]+)\} from 'react';",
+                        'const { useState, useEffect, useMemo, useRef } = React;', source)
         source = re.sub(r"import \{([^}]+)\} from 'lucide-react';", lambda match: 'const {' + match[1].replace(' as ', ': ') + '} = window.LucideReact;', source)
         source = source.replace('export default function App()', 'function App()')
         cls.source = source + "\nReactDOM.createRoot(document.getElementById('root')).render(<App/>);"
@@ -666,6 +669,92 @@ class ProgressTests(unittest.TestCase):
         expect(viewer).to_have_count(0);expect(dialog).to_be_visible()
         dialog.get_by_role('button',name='閉じる',exact=True).click()
         self.assertEqual(self.stored(),before)
+
+    def test_task_card_click_handles_null_media_in_saved_talks_and_quotes(self):
+        record=dict(id='null-media',kind='comment',text='以前に保存したトーク',status='active',createdAt=TODAY.isoformat()+'T01:00:00Z',subtaskIds=[],subtaskTitles=[],images=None,links=None)
+        quoted=dict(record,id='quote-null',text='添付欄がnullの引用',quote=record)
+        original=task(progressEnabled=True,progressStage='doing',progressHistory=[record,quoted])
+        self.seed([original]);self.progress()
+        before=self.stored()
+        self.card().click(position={'x':5,'y':5})
+        expect(self.page.get_by_role('heading',name='TaskMatrix Pro',exact=True)).to_be_visible()
+        expect(self.page.get_by_role('log',name='進捗履歴')).to_be_visible()
+        expect(self.entry('null-media')).to_be_visible()
+        expect(self.entry('quote-null').get_by_role('blockquote')).to_contain_text(record['text'])
+        self.assertEqual(self.stored(),before)
+        self.reply('null-media');self.send('引用返信も保存')
+        reply=self.stored()[0]['progressHistory'][-1]
+        self.assertEqual(reply['quote']['text'],record['text'])
+        self.entry('null-media').get_by_role('button',name='コメントを編集',exact=True).click()
+        self.page.get_by_label('コメントの編集',exact=True).fill('取り消す編集')
+        self.page.get_by_role('button',name='編集をキャンセル',exact=True).click()
+        self.assertIsNone(self.stored()[0]['progressHistory'][0]['images'])
+        dialog=self.open_report(start=TODAY.isoformat(),end=TODAY.isoformat())
+        _,body=self.download_report(dialog)
+        self.assertIn(record['text'],body)
+        self.assertEqual(self.errors,[])
+
+    def test_task_card_click_handles_incomplete_optional_media_fields(self):
+        image=dict(id='valid-image',name='残す画像.png',src='data:image/png;base64,'+__import__('base64').b64encode(self.progress_png()).decode())
+        link=dict(id='valid-link',label='残すリンク',url='https://example.com/keep')
+        variants=[(None,None),('',{}),([None,image],[None,link])]
+        for images,links in variants:
+            with self.subTest(images=type(images).__name__,links=type(links).__name__):
+                record=dict(id='legacy-media',kind='comment',text='古いデータのトーク',status='active',createdAt=TODAY.isoformat()+'T01:00:00Z',subtaskIds=[],subtaskTitles=[],images=images,links=links)
+                self.seed([task(progressEnabled=True,progressStage='doing',progressHistory=[record])]);self.progress()
+                before=self.stored()
+                self.card().click(position={'x':5,'y':5})
+                expect(self.page.get_by_role('log',name='進捗履歴')).to_be_visible()
+                expect(self.entry('legacy-media')).to_contain_text(record['text'])
+                self.select_chat()
+                expect(self.entry('legacy-media')).to_be_visible()
+                if isinstance(images,list):
+                    expect(self.entry('legacy-media').get_by_role('img',name='残す画像.png',exact=True)).to_be_visible()
+                    expect(self.entry('legacy-media').get_by_role('link',name='残すリンク',exact=True)).to_have_attribute('href',link['url'])
+                self.assertEqual(self.stored(),before)
+                self.assertEqual(self.errors,[])
+
+    def test_thread_render_error_keeps_cards_and_recovers_on_another_selection(self):
+        broken=task(progressEnabled=True,progressStage='doing',progressHistory=[dict(id='bad',kind='comment',text={'invalid':'saved-object'},status='active',subtaskIds=[],subtaskTitles=[])])
+        healthy=task('healthy',progressEnabled=True,progressStage='doing',progressHistory=[dict(id='good',kind='comment',text='正常なトーク',status='active',subtaskIds=[],subtaskTitles=[])])
+        self.seed([broken,healthy]);self.progress()
+        before=self.stored()
+        self.card().click(position={'x':5,'y':5})
+        expect(self.page.get_by_role('alert')).to_contain_text('このトークを表示できませんでした。')
+        expect(self.page.get_by_role('heading',name='TaskMatrix Pro',exact=True)).to_be_visible()
+        expect(self.card('healthy')).to_be_visible()
+        self.page.get_by_text('エラーの詳細',exact=True).click()
+        expect(self.page.get_by_role('alert')).to_contain_text('Objects are not valid as a React child')
+        self.card('healthy').click(position={'x':5,'y':5})
+        expect(self.page.get_by_role('log',name='進捗履歴')).to_contain_text('正常なトーク')
+        expect(self.page.get_by_role('alert')).to_have_count(0)
+        self.assertEqual(self.stored(),before)
+        # React development builds may report the intentionally caught error.
+        self.assertTrue(all('Objects are not valid as a React child' in error for error in self.errors))
+        self.errors.clear()
+
+    def test_card_click_with_legacy_host_hook_bindings(self):
+        # The deployed Babel host exposes the four original bare hooks only.
+        # Do not auto-add every named import as the normal test harness does.
+        self.source=re.sub(r'const \{[^}]+\} = React;', 'const { useState, useEffect, useMemo, useRef } = React;',self.source,count=1)
+        self.page.reload()
+        expect(self.page.get_by_role('heading',name='TaskMatrix Pro',exact=True)).to_be_visible(timeout=15000)
+        self.assertEqual(self.page.evaluate('typeof useLayoutEffect'),'undefined')
+        original=task(progressEnabled=True,progressStage='doing',progressHistory=[
+            dict(id='root-note',kind='comment',text='タスク全体のトーク',status='active',subtaskIds=[],subtaskTitles=[]),
+            dict(id='small-note',kind='comment',text='小さいタスクのトーク',status='active',subtaskIds=['s1'],subtaskTitles=['既存の調査'],smallTaskId='a')])
+        original['subtasks'][0]['smallTasks']=[dict(id='a',title='確認作業')]
+        self.seed([original]);self.progress()
+        self.card().click(position={'x':5,'y':5})
+        expect(self.page.get_by_role('log',name='進捗履歴')).to_contain_text('タスク全体のトーク')
+        expect(self.page.get_by_role('alert')).to_have_count(0)
+        self.page.get_by_role('button',name='既存の調査のトークを表示',exact=True).click()
+        expect(self.page.get_by_role('log',name='進捗履歴')).to_contain_text('小さいタスクのトーク')
+        self.page.get_by_role('button',name='確認作業のトークを表示',exact=True).click()
+        expect(self.page.get_by_role('log',name='進捗履歴')).to_contain_text('小さいタスクのトーク')
+        expect(self.page.get_by_role('log',name='進捗履歴')).not_to_contain_text('タスク全体のトーク')
+        expect(self.page.get_by_role('heading',name='TaskMatrix Pro',exact=True)).to_be_visible()
+        self.assertEqual(self.errors,[])
 
     def test_report_default_range_is_seven_days_ago_through_today(self):
         self.seed([task(progressEnabled=True)])
