@@ -846,6 +846,8 @@ class ProgressTests(unittest.TestCase):
         self.assertFalse(result['completed']);self.assertNotIn('completedAt',result)
         self.assertFalse(result['subtasks'][0]['completed']);self.assertFalse(result['subtasks'][0]['smallTasks'][0]['completed'])
         self.assertEqual(next(item for item in result['progressHistory'] if item['id']=='old1')['status'],'completed')
+        expect(self.entry('old1').locator(':scope > div')).to_have_class(re.compile(r'\bbg-purple-50\b'))
+        expect(self.entry('latest').locator(':scope > div')).to_have_class(re.compile(r'\bbg-purple-50\b'))
         self.page.reload();self.progress();self.select_chat()
         self.assertFalse(self.stored()[0]['subtasks'][0]['smallTasks'][0]['completed'])
         expect(self.page.locator('[data-progress-small-task-id="a"]')).to_have_class(re.compile(r'\bbg-purple-50\b'))

@@ -419,11 +419,15 @@ const isVisibleProgressEntry = (entry) => {
 const progressEntryTone = (entry, task) => {
   if (entry.plainComment) return 'gray';
   const parents = task ? getProgressSubtasks(task).filter(st => entry.subtaskIds?.includes(st.id)) : [];
+  const small = parents.flatMap(getProgressSmallTasks).find(item => item.id === entry.smallTaskId);
+  // A deliberate reopen overrides completed/resolved snapshots in older talks.
+  if (small?.completionManaged && !small.completed && !task.completed && !parents.some(st => st.completed)) {
+    return ({ blocked: 'yellow', overdue: 'red', waiting: 'green', active: 'purple' })[progressItemStatus(small, task)];
+  }
   if (task?.completed || (parents.length && parents.every(st => st.completed))
     || (task && getCompletedProgressSmallIds(task).has(entry.smallTaskId || entry.id))
     || entry.resolvedByReplyId || (task?.progressHistory || []).some(item => item.id === entry.id && item.resolvedByReplyId)
     || entry.status === 'completed') return 'blue';
-  const small = parents.flatMap(getProgressSmallTasks).find(item => item.id === entry.smallTaskId);
   const targets = small ? [small] : parents.length ? parents : task ? [task] : [];
   if (targets.some(item => isProgressBlocked(task, item))) return 'yellow';
   if (targets.some(item => progressItemStatus(item, task) === 'overdue')) return 'red';
