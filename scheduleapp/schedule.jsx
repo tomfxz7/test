@@ -300,9 +300,9 @@ const normalizeProgressTask = task => {
   // Repair older saved data where a completion comment was undone/deleted but
   // its canonical flag and ledger were left behind. Preserve manual legacy flags.
   getProgressSubtasks(normalized).forEach(st => {
-    if (st.completed && st.completionManaged && missingCompletion(st)) normalized = retractProgressCompletion(normalized, { completedSubtaskIds: [st.id] });
+    if (st.completed && st.completionManaged && st.completionSource !== 'manual' && missingCompletion(st)) normalized = retractProgressCompletion(normalized, { completedSubtaskIds: [st.id] });
     getProgressSmallTasks(st).forEach(small => {
-      if (small.completed && small.completionManaged && (missingCompletion(small)
+      if (small.completed && small.completionManaged && small.completionSource !== 'manual' && (missingCompletion(small)
         || (!latestProgressCompletion(normalized, small.id) && liveHistory.some(entry => entry.smallTaskId === small.id || entry.completedSmallTaskId === small.id)))) {
         normalized = reopenProgressSmallTask(normalized, small.id);
       }
@@ -326,7 +326,7 @@ const normalizeProgressTask = task => {
   });
   getCompletedProgressSmallIds(normalized).forEach(id => {
     const small = getProgressSubtasks(normalized).flatMap(getProgressSmallTasks).find(item => item.id === id);
-    const conclusion = (normalized.progressHistory || []).find(entry => entry.id === small?.completionEntryId)
+    const conclusion = small?.completionSource === 'manual' ? undefined : (normalized.progressHistory || []).find(entry => entry.id === small?.completionEntryId)
       || small?.completionConclusion || latestProgressCompletion(normalized, id);
     normalized = completeProgressSmallTask(normalized, id, conclusion);
   });
@@ -348,12 +348,13 @@ const progressCompletionSubtaskIds = (task, entry) => {
 // Editing or deleting a completion retracts the same canonical targets it finished.
 const retractProgressCompletion = (task, entry, waiting = false) => {
   const smallId = progressCompletionSmallId(task, entry);
+  if (smallId && getProgressSubtasks(task).flatMap(getProgressSmallTasks).find(small => small.id === smallId)?.completionSource === 'manual') return task;
   if (smallId) return getProgressSubtasks(task).some(st => getProgressSmallTasks(st).some(small => small.id === smallId))
     ? reopenProgressSmallTask(task, smallId, waiting) : task;
-  const ids = new Set(progressCompletionSubtaskIds(task, entry));
+  const ids = new Set(progressCompletionSubtaskIds(task, entry).filter(id => getProgressSubtasks(task).find(st => st.id === id)?.completionSource !== 'manual'));
   if (!getProgressSubtasks(task).some(st => ids.has(st.id))) return task;
   const updated = { ...task, completed: false, subtasks: getProgressSubtasks(task).map(st => {
-    if (!ids.has(st.id)) return st;
+    if (!ids.has(st.id) || st.completionSource === 'manual') return st;
     const reopened = { ...st, completed: false, waiting, completionManaged: true };
     delete reopened.completedAt; delete reopened.completionEntryId; delete reopened.completionConclusion;
     return reopened;
@@ -2236,7 +2237,9 @@ const ProgressWaitingModal = ({ task, scope, onClose }) => {
   </div>;
 };
 
-const ProgressTaskCard = ({ task, selected, onSelect, onSettings, onStart, onDragStart, onDeleteSmallTask, onFilter, onCompleteSubtask, onDependency, onWaiting }) => {
+const ProgressTaskCard = ({ task, selected, onSelect, onSettings, onStart, onDragStart, onDeleteSmallTask, onFilter, onCompleteSubtask, onDependency, onWaiting, onReorderSubtask }) => {
+  const [dropHint, setDropHint] = useState(null);
+  const todoDragType = 'application/x-taskmatrix-progress-todo';
   const status = progressItemStatus(task);
   const waitingItems = getProgressWaitingItems(task);
   return <article data-progress-task-id={task.id} data-status={status} draggable onDragStart={e => onDragStart(e, task.id)} onClick={onSelect} className={`border rounded-xl p-3 shadow-sm ${progressStatusClasses(status)} ${selected ? 'ring-2 ring-purple-500' : ''}`}>
@@ -2249,10 +2252,17 @@ const ProgressTaskCard = ({ task, selected, onSelect, onSettings, onStart, onDra
       {getProgressSubtasks(task).map(st => {
         const smallTasks = getProgressSmallTasks(st);
         const canComplete = !st.completed && !progressCompletionBlocked(task, st);
-        return <li key={st.id} data-progress-subtask-id={st.id} data-status={st.completed || task.completed ? 'completed' : progressItemStatus(st, task)} className={`border rounded-lg text-xs overflow-hidden ${progressStatusClasses(task.completed ? 'completed' : progressItemStatus(st, task))}`} onClick={e => { e.stopPropagation(); onFilter(st.id); }}>
+        return <li key={st.id} draggable data-progress-subtask-id={st.id} data-status={st.completed || task.completed ? 'completed' : progressItemStatus(st, task)}
+          onDragStart={e => { e.stopPropagation(); e.dataTransfer.setData(todoDragType, JSON.stringify({ taskId: task.id, id: st.id })); e.dataTransfer.effectAllowed = 'move'; }}
+          onDragEnd={e => { e.stopPropagation(); setDropHint(null); }}
+          onDragOver={e => { if (!e.dataTransfer.types.includes(todoDragType)) return; e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'move'; setDropHint({ id: st.id, after: e.clientY > e.currentTarget.getBoundingClientRect().top + e.currentTarget.getBoundingClientRect().height / 2 }); }}
+          onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDropHint(null); }}
+          onDrop={e => { if (!e.dataTransfer.types.includes(todoDragType)) return; e.preventDefault(); e.stopPropagation(); setDropHint(null); try { const source = JSON.parse(e.dataTransfer.getData(todoDragType)); if (source.taskId === task.id) onReorderSubtask(source.id, st.id, e.clientY > e.currentTarget.getBoundingClientRect().top + e.currentTarget.getBoundingClientRect().height / 2); } catch { /* Ignore unrelated drag payloads. */ } }}
+          className={`border rounded-lg text-xs overflow-hidden ${progressStatusClasses(task.completed ? 'completed' : progressItemStatus(st, task))} ${dropHint?.id === st.id ? dropHint.after ? 'border-b-4 border-b-purple-600' : 'border-t-4 border-t-purple-600' : ''}`} onClick={e => { e.stopPropagation(); onFilter(st.id); }}>
           <button type="button" aria-label={`${st.title}のトークを表示`} onClick={e => { e.stopPropagation(); onFilter(st.id); }}
-            className="w-full px-2 py-2 text-left hover:bg-white/40" draggable={false}>
+            className="w-full px-2 py-2 text-left hover:bg-white/40 cursor-grab active:cursor-grabbing" draggable>
             <div className="flex gap-1.5 items-start">
+              <GripVertical size={13} className="shrink-0 opacity-50 cursor-grab" aria-label="ドラッグで並べ替え"/>
               <span className={`break-words font-medium flex-1 min-w-0 ${st.completed ? 'line-through' : ''}`}>{st.title}</span>
               <span className="text-[10px] shrink-0 opacity-70">小さいタスク {smallTasks.length}</span>
             </div>
@@ -2517,13 +2527,15 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
       const parent = getProgressSubtasks(previous).find(st => st.id === filterId || (!filterId && getProgressSmallTasks(st).some(small => small.id === filterSmallId)));
       const small = getProgressSmallTasks(parent).find(item => item.id === filterSmallId);
       if (!small || progressCompletionBlocked(previous, small)) return previous;
-      const entry = { id: createProgressId(), kind: 'comment', createdAt: new Date().toISOString(),
-        text: `小さいタスク「${small.title}」${small.completed ? 'の完了を取り消しました。' : 'を完了しました。'}`,
-        status: small.completed ? 'active' : 'completed', smallTaskId: small.id, smallTaskTitle: small.title,
-        subtaskIds: [parent.id], subtaskTitles: [parent.title],
-        ...(!small.completed ? { completedSmallTaskId: small.id } : {}) };
-      const updated = { ...previous, progressHistory: [...(previous.progressHistory || []), entry] };
-      return small.completed ? reopenProgressSmallTask(updated, small.id) : completeProgressSmallTask(updated, small.id, entry);
+      if (small.completed) return reopenProgressSmallTask(previous, small.id);
+      const finished = completeProgressSmallTask(previous, small.id);
+      return { ...finished, subtasks: getProgressSubtasks(finished).map(st => st.id === parent.id
+        ? { ...st, smallTasks: getProgressSmallTasks(st).map(item => {
+          if (item.id !== small.id) return item;
+          const next = { ...item, completedAt: new Date().toISOString(), completionManaged: true, completionSource: 'manual' };
+          delete next.completionEntryId; delete next.completionConclusion;
+          return next;
+        }) } : st) };
     });
   };
   const send = (e) => {
@@ -2849,10 +2861,24 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
       const parent = getProgressSubtasks(previous).find(st => st.id === id);
       if (!parent || parent.completed || progressCompletionBlocked(previous, parent)) return previous;
       const now = new Date().toISOString();
-      const entryId = createProgressId();
-      return { ...previous, subtasks: getProgressSubtasks(previous).map(st => st.id === id ? { ...st, completed: true, waiting: false, completedAt: now, completionManaged: true, completionEntryId: entryId } : st),
-        progressHistory: [...(previous.progressHistory || []), { id: entryId, kind: 'comment', createdAt: now,
-          text: `やるべきこと「${parent.title}」を完了しました。`, status: 'completed', completedSubtaskIds: [id], subtaskIds: [id], subtaskTitles: [parent.title] }] };
+      return { ...previous, subtasks: getProgressSubtasks(previous).map(st => {
+        if (st.id !== id) return st;
+        const next = { ...st, completed: true, waiting: false, completedAt: now, completionManaged: true, completionSource: 'manual' };
+        delete next.completionEntryId; delete next.completionConclusion;
+        return next;
+      }) };
+    });
+  };
+  const reorderSubtask = (taskId, sourceId, targetId, after) => {
+    if (sourceId === targetId) return;
+    onUpdateTask(taskId, previous => {
+      const items = getProgressSubtasks(previous), source = items.find(st => st.id === sourceId);
+      if (!source || !items.some(st => st.id === targetId)) return previous;
+      const next = items.filter(st => st.id !== sourceId);
+      next.splice(next.findIndex(st => st.id === targetId) + (after ? 1 : 0), 0, source);
+      const orders = items.map(st => st.order).filter(Number.isFinite);
+      const base = orders.length ? Math.min(...orders) : Date.now();
+      return { ...previous, subtasks: next.map((st, index) => ({ ...st, order: base + index })) };
     });
   };
   const dropTask = (e, stage) => {
@@ -2881,7 +2907,7 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
           return <section key={stage} aria-label={title} data-progress-stage={stage} onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }} onDrop={e => dropTask(e, stage)} className={`rounded-2xl border flex flex-col min-h-0 overflow-hidden ${draggingId ? 'border-blue-400 bg-blue-50' : 'border-gray-200 bg-gray-50'}`}>
             <header className="p-4 border-b flex items-center justify-between bg-white shrink-0"><h2 className="text-sm font-black flex items-center gap-2">{title}<span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">{items.length}</span></h2>{stage === 'todo' && <button onClick={onAddTask} aria-label="未着手タスクを追加" className="p-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100"><Plus size={18}/></button>}</header>
             <div className="overflow-y-auto p-3 space-y-3 flex-1 min-h-0">
-              {items.map(task => <ProgressTaskCard key={task.id} task={task} selected={selectedId === task.id} onSelect={() => selectTask(task)} onSettings={() => setSettings({ id: task.id, starting: false })} onStart={() => startTask(task)} onDeleteSmallTask={id => deleteSmallTask(task, id)} onFilter={(subtaskId, smallTaskId) => filterThread(task, subtaskId, smallTaskId)} onCompleteSubtask={id => completeSubtask(task, id)} onDependency={target => setDependencyTarget({ taskId: task.id, ...target })} onWaiting={scope => setWaitingTarget({ taskId: task.id, scope })} onDragStart={(e, id) => { setDraggingId(id); e.dataTransfer.setData('application/x-taskmatrix-progress', id); e.dataTransfer.effectAllowed = 'move'; e.currentTarget.addEventListener('dragend', () => setDraggingId(null), { once: true }); }}/>) }
+              {items.map(task => <ProgressTaskCard key={task.id} task={task} selected={selectedId === task.id} onSelect={() => selectTask(task)} onSettings={() => setSettings({ id: task.id, starting: false })} onStart={() => startTask(task)} onDeleteSmallTask={id => deleteSmallTask(task, id)} onFilter={(subtaskId, smallTaskId) => filterThread(task, subtaskId, smallTaskId)} onReorderSubtask={(source, target, after) => reorderSubtask(task.id, source, target, after)} onCompleteSubtask={id => completeSubtask(task, id)} onDependency={target => setDependencyTarget({ taskId: task.id, ...target })} onWaiting={scope => setWaitingTarget({ taskId: task.id, scope })} onDragStart={(e, id) => { setDraggingId(id); e.dataTransfer.setData('application/x-taskmatrix-progress', id); e.dataTransfer.effectAllowed = 'move'; e.currentTarget.addEventListener('dragend', () => setDraggingId(null), { once: true }); }}/>) }
               {!items.length && <p className="border-2 border-dashed border-gray-200 rounded-xl p-5 text-xs text-gray-400 text-center leading-relaxed">{stage === 'todo' ? 'ボードの「進捗ページに表示」にチェックするか、＋からタスクを追加してください。' : '未着手のカードをここへドラッグするか、「着手する」を押してください。'}</p>}
             </div>
           </section>;
@@ -2949,7 +2975,7 @@ const reportRichText = html => {
   template.content.querySelectorAll('p,div,li,h1,h2,h3,h4,tr').forEach(el => el.append('\n'));
   return template.content.textContent.replace(/\u00a0/g, ' ').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 };
-const buildWeeklyReport = ({ tasks, startDate, endDate, now = new Date() }) => {
+const buildWeeklyReport = ({ tasks, startDate, endDate, now = new Date(), onImage }) => {
   const reportTasks = tasks.filter(task => reportTaskIsEligible(task, startDate, endDate));
   const entriesByTask = reportTasks.map(task => ({ task, entries: reportPeriodEntries(task, startDate, endDate) }));
   const entries = entriesByTask.flatMap(item => item.entries);
@@ -2989,7 +3015,8 @@ const buildWeeklyReport = ({ tasks, startDate, endDate, now = new Date() }) => {
     : item.progressStage === 'doing' ? '着手中' : item.progressStage === 'todo' ? '未着手' : '未完了（着手状況の記録なし）';
   const stateWithDue = item => `${state(item)}${!item.completed && item.dueDate && item.dueDate < formatDate(now) ? ' / 期限超過（出力時点）' : ''}`;
   const media = (entry, indent = '') => {
-    if (progressMediaItems(entry.images).length) text('添付画像（画像データは含みません）', progressMediaItems(entry.images).map(image => image.name).join(' / '), indent);
+    if (onImage) progressMediaItems(entry.images).forEach(image => lines.push(onImage(image)));
+    else if (progressMediaItems(entry.images).length) text('添付画像（画像データは含みません）', progressMediaItems(entry.images).map(image => image.name).join(' / '), indent);
     progressTextLinks(entry.text || '', entry.textLinks).forEach(link => text('本文のリンク', `${entry.text.slice(link.start, link.end)}: ${link.url}`, indent));
     text('添付リンク', progressMediaItems(entry.links).filter(link => progressSafeUrl(link.url)).map(link => `${link.label || link.url}: ${link.url}`).join('\n'), indent);
   };
@@ -3014,7 +3041,12 @@ const buildWeeklyReport = ({ tasks, startDate, endDate, now = new Date() }) => {
     text('関連URL', (task.urls || []).join('\n'));
     text('結果メモ（日時未記録・現在の保存内容）', [task.completionNote, reportRichText(task.richResult)].filter(Boolean).join('\n'));
     text('成果物URL（現在の保存内容）', (task.resultUrls || []).join('\n'));
-    if (task.resultImages?.length) lines.push(`添付画像: ${task.resultImages.length}件（画像データはこのテキストに含まれません）`);
+    if (onImage) {
+      (task.resultImages || []).forEach((src, index) => lines.push(onImage(typeof src === 'string' ? { src, name: `成果画像 ${index + 1}` } : src)));
+      const template = document.createElement('template'); template.innerHTML = task.richResult || '';
+      template.content.querySelectorAll('img').forEach(el => { if (el.getAttribute('src')) lines.push(onImage({ src: el.getAttribute('src'), name: el.alt || '成果画像' })); });
+    }
+    if (!onImage && task.resultImages?.length) lines.push(`添付画像: ${task.resultImages.length}件（画像データはこのテキストに含まれません）`);
     lines.push('', '#### 現在のやるべきこと・小さいタスク（出力時点の参考）');
     const subtasks = getProgressSubtasks(task);
     if (!subtasks.length) lines.push('やるべきことの登録なし。');
@@ -3022,6 +3054,12 @@ const buildWeeklyReport = ({ tasks, startDate, endDate, now = new Date() }) => {
       lines.push(`- ${st.title} [${st.id}] / 期限: ${st.dueDate || '未設定'} / ${stateWithDue(st)}`);
       getProgressSmallTasks(st).forEach(small => lines.push(`  - ${small.title} [${small.id}] / 期限なし / ${state(small)}`));
     });
+    const completedItems = subtasks.flatMap(st => [st, ...getProgressSmallTasks(st)]).filter(item => item.completed && item.completionSource === 'manual' && item.completedAt
+      && reportEntryDate(item.completedAt) >= getLocalDate(startDate) && reportEntryDate(item.completedAt) < addDays(getLocalDate(endDate), 1));
+    if (completedItems.length) {
+      lines.push('', '#### 期間内の項目の完了（保存された完了日時に基づく）');
+      completedItems.forEach(item => lines.push(`- ${reportTimestamp(item.completedAt)} / ${item.title} [${item.id}] / 完了`));
+    }
     lines.push('', `#### 期間内の記録（${taskEntries.length}件）`);
     if (!taskEntries.length) lines.push('指定期間内の進捗記録はありません。タスク全体の完了日／日時が別記されている場合は、その記録を参照してください。それ以外は現在の状態から期間内の実績を推測しないでください。');
     taskEntries.forEach(entry => {
@@ -3041,7 +3079,92 @@ const buildWeeklyReport = ({ tasks, startDate, endDate, now = new Date() }) => {
   return `${lines.join('\n')}\n`;
 };
 
+// A real OOXML package, written locally without network dependencies.
+const reportXml = value => String(value ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+const reportZip = files => {
+  const encoder = new TextEncoder(), parts = [], directory = [];
+  let offset = 0;
+  const header = size => new Uint8Array(size);
+  const crc32 = bytes => {
+    let crc = -1;
+    for (const byte of bytes) { crc ^= byte; for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1)); }
+    return (crc ^ -1) >>> 0;
+  };
+  files.forEach(({ name, data }) => {
+    const path = encoder.encode(name), bytes = typeof data === 'string' ? encoder.encode(data) : data;
+    const crc = crc32(bytes), local = header(30), lv = new DataView(local.buffer);
+    lv.setUint32(0, 0x04034b50, true); lv.setUint16(4, 20, true); lv.setUint16(6, 0x800, true); lv.setUint16(12, 33, true);
+    lv.setUint32(14, crc, true); lv.setUint32(18, bytes.length, true); lv.setUint32(22, bytes.length, true); lv.setUint16(26, path.length, true);
+    parts.push(local, path, bytes);
+    const central = header(46), cv = new DataView(central.buffer);
+    cv.setUint32(0, 0x02014b50, true); cv.setUint16(4, 20, true); cv.setUint16(6, 20, true); cv.setUint16(8, 0x800, true); cv.setUint16(14, 33, true);
+    cv.setUint32(16, crc, true); cv.setUint32(20, bytes.length, true); cv.setUint32(24, bytes.length, true); cv.setUint16(28, path.length, true); cv.setUint32(42, offset, true);
+    directory.push(central, path); offset += local.length + path.length + bytes.length;
+  });
+  const end = header(22), ev = new DataView(end.buffer), directorySize = directory.reduce((sum, part) => sum + part.length, 0);
+  ev.setUint32(0, 0x06054b50, true); ev.setUint16(8, files.length, true); ev.setUint16(10, files.length, true); ev.setUint32(12, directorySize, true); ev.setUint32(16, offset, true);
+  return new Blob([...parts, ...directory, end], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+};
+const buildWeeklyWordReport = async options => {
+  const images = [], prefix = `REPORT_IMAGE_${createProgressId()}_`;
+  const body = buildWeeklyReport({ ...options, onImage: image => { images.push(image); return prefix + (images.length - 1); } });
+  const files = [], relationships = [], paragraphs = [];
+  let imageId = 0;
+  const run = text => `<w:r><w:t xml:space="preserve">${reportXml(text)}</w:t></w:r>`;
+  const linkedText = text => {
+    const named = text.match(/^(\s+)(.+?): (https?:\/\/\S+)$/i);
+    if (named && progressSafeUrl(named[3])) {
+      const id = `rId${relationships.length + 1}`;
+      relationships.push(`<Relationship Id="${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${reportXml(named[3])}" TargetMode="External"/>`);
+      return run(named[1]) + `<w:hyperlink r:id="${id}"><w:r><w:rPr><w:color w:val="0563C1"/><w:u w:val="single"/></w:rPr><w:t>${reportXml(named[2])}</w:t></w:r></w:hyperlink>` + run(` (${named[3]})`);
+    }
+    const links = progressAllTextLinks(text, []);
+    let cursor = 0, xml = '';
+    links.forEach(link => {
+      xml += run(text.slice(cursor, link.start));
+      const id = `rId${relationships.length + 1}`;
+      relationships.push(`<Relationship Id="${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${reportXml(link.url)}" TargetMode="External"/>`);
+      xml += `<w:hyperlink r:id="${id}"><w:r><w:rPr><w:color w:val="0563C1"/><w:u w:val="single"/></w:rPr><w:t xml:space="preserve">${reportXml(text.slice(link.start, link.end))}</w:t></w:r></w:hyperlink>`;
+      cursor = link.end;
+    });
+    return xml + run(text.slice(cursor));
+  };
+  for (const line of body.split('\n')) {
+    if (line.startsWith(prefix)) {
+      const image = images[Number(line.slice(prefix.length))];
+      if (!image) continue;
+      if (!/^data:image\/(?:png|jpeg|gif|webp|avif);base64,/i.test(image.src || '')) {
+        paragraphs.push(`<w:p>${linkedText(`画像: ${image.name || '添付画像'}${progressSafeUrl(image.src) ? ` (${image.src})` : '（画像データなし）'}`)}</w:p>`); continue;
+      }
+      const loaded = await new Promise((resolve, reject) => {
+        const element = new Image(); element.onload = () => resolve(element); element.onerror = () => reject(new Error(`画像「${image.name || '添付画像'}」を読み込めません。`)); element.src = image.src;
+      });
+      const scale = Math.min(1, 600 / loaded.naturalWidth, 700 / loaded.naturalHeight);
+      const width = Math.max(1, Math.round(loaded.naturalWidth * scale)), height = Math.max(1, Math.round(loaded.naturalHeight * scale));
+      const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+      canvas.getContext('2d').drawImage(loaded, 0, 0, width, height);
+      const bytes = Uint8Array.from(atob(canvas.toDataURL('image/png').split(',')[1]), char => char.charCodeAt(0));
+      const name = `image${++imageId}.png`, id = `rId${relationships.length + 1}`;
+      files.push({ name: `word/media/${name}`, data: bytes });
+      relationships.push(`<Relationship Id="${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${name}"/>`);
+      paragraphs.push(`<w:p>${run(image.name || '添付画像')}</w:p><w:p><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${width * 9525}" cy="${height * 9525}"/><wp:docPr id="${imageId}" name="${reportXml(image.name || name)}"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="${reportXml(name)}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${id}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${width * 9525}" cy="${height * 9525}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`);
+    } else {
+      const heading = line.match(/^(#{1,4})\s+(.*)/);
+      paragraphs.push(`<w:p>${heading ? `<w:pPr><w:spacing w:before="200" w:after="100"/><w:outlineLvl w:val="${heading[1].length - 1}"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="${32 - heading[1].length * 2}"/></w:rPr><w:t>${reportXml(heading[2])}</w:t></w:r>` : linkedText(line)}</w:p>`);
+    }
+  }
+  const xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+  files.push({ name: '[Content_Types].xml', data: xml + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>' },
+    { name: '_rels/.rels', data: xml + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>' },
+    { name: 'word/_rels/document.xml.rels', data: xml + `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${relationships.join('')}</Relationships>` },
+    { name: 'word/document.xml', data: xml + `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body>${paragraphs.join('')}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134"/></w:sectPr></w:body></w:document>` });
+  return reportZip(files);
+};
+
 const WeeklyReportModal = ({ tasks, onClose, onCreated }) => {
+  const [format, setFormat] = useState('docx');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
   const [startDate, setStartDate] = useState(() => formatDate(addDays(new Date(), -7)));
   const [endDate, setEndDate] = useState(() => formatDate(new Date()));
   const [query, setQuery] = useState('');
@@ -3064,7 +3187,7 @@ const WeeklyReportModal = ({ tasks, onClose, onCreated }) => {
     const handleKey = e => {
       if (e.key === 'Escape' && !e.isComposing) { e.preventDefault(); onClose(); }
       if (e.key === 'Tab') {
-        const elements = [...formRef.current.querySelectorAll('button:not([disabled]),input:not([disabled])')];
+        const elements = [...formRef.current.querySelectorAll('button:not([disabled]),input:not([disabled]),select:not([disabled])')];
         const first = elements[0], last = elements[elements.length - 1];
         if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
         if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
@@ -3073,27 +3196,34 @@ const WeeklyReportModal = ({ tasks, onClose, onCreated }) => {
     document.addEventListener('keydown', handleKey);
     return () => { document.removeEventListener('keydown', handleKey); previous?.focus(); };
   }, [onClose]);
-  const download = e => {
+  const download = async e => {
     e.preventDefault();
-    if (!validRange || !selected.length) return;
-    const body = buildWeeklyReport({ tasks: selected, startDate, endDate });
-    const blob = new Blob(['\uFEFF', body], { type: 'text/plain;charset=utf-8' });
+    if (!validRange || !selected.length || busy) return;
+    setBusy(true); setError('');
+    try {
+    const options = { tasks: selected, startDate, endDate };
+    const blob = format === 'docx' ? await buildWeeklyWordReport(options)
+      : new Blob(['\uFEFF', buildWeeklyReport(options)], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.href = url; link.download = `週報素材_${startDate}_${endDate}.txt`;
+    link.href = url; link.download = `週報素材_${startDate}_${endDate}.${format}`;
     document.body.appendChild(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     onCreated(); onClose();
+    } catch (issue) { setError(`出力できませんでした。${issue.message || 'もう一度お試しください。'}`); }
+    finally { setBusy(false); }
   };
   return <div className="fixed inset-0 bg-black/60 z-50 p-4 flex items-center justify-center backdrop-blur-sm">
     <form ref={formRef} role="dialog" aria-modal="true" aria-label="週報用レポート作成" onSubmit={download}
       onKeyDown={e => { if (e.key === 'Enter' && e.target.tagName === 'INPUT' && !e.nativeEvent.isComposing) e.preventDefault(); }}
       className="w-full max-w-2xl max-h-[90vh] bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden">
       <header className="p-5 border-b flex items-start justify-between gap-3">
-        <div><h2 className="text-lg font-black">週報用レポート作成</h2><p className="text-xs text-gray-500 mt-1">Copilotに読み込ませる週報の素材を、テキストファイルで出力します。</p></div>
+        <div><h2 className="text-lg font-black">週報用レポート作成</h2><p className="text-xs text-gray-500 mt-1">週報の素材を、画像・リンク付きのWordファイルで出力します。</p></div>
         <button type="button" aria-label="レポート作成を閉じる" onClick={onClose} className="p-2 rounded-lg hover:bg-gray-100"><X size={20}/></button>
       </header>
       <div className="p-5 overflow-y-auto space-y-4">
+        <label className="block text-sm font-bold">出力形式<select aria-label="レポート出力形式" value={format} disabled={busy} onChange={e => setFormat(e.target.value)} className="ml-2 border rounded-lg p-2 font-normal"><option value="docx">Word（.docx・画像付き）</option><option value="txt">テキスト（.txt・画像名のみ）</option></select></label>
+        {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
         <div className="flex flex-wrap gap-4">
           <label className="text-sm font-bold">開始日<input aria-label="レポート開始日" type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="block mt-1 border rounded-lg px-3 py-2 font-normal"/></label>
           <label className="text-sm font-bold">終了日<input aria-label="レポート終了日" type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="block mt-1 border rounded-lg px-3 py-2 font-normal"/></label>
@@ -3120,7 +3250,7 @@ const WeeklyReportModal = ({ tasks, onClose, onCreated }) => {
       </div>
       <footer className="border-t p-4 flex justify-end gap-2 shrink-0">
         <button type="button" onClick={onClose} className="border rounded-lg px-4 py-2 text-sm">キャンセル</button>
-        <button type="submit" disabled={!validRange || !selected.length} className="bg-blue-600 text-white disabled:opacity-40 rounded-lg px-4 py-2 text-sm font-bold">テキストをダウンロード</button>
+        <button type="submit" disabled={busy || !validRange || !selected.length} className="bg-blue-600 text-white disabled:opacity-40 rounded-lg px-4 py-2 text-sm font-bold">{busy ? '作成中…' : format === 'docx' ? 'Wordをダウンロード' : 'テキストをダウンロード'}</button>
       </footer>
     </form>
   </div>;
@@ -3952,7 +4082,7 @@ export default function App() {
             <button
               onClick={() => setIsReportModalOpen(true)}
               className="flex items-center gap-1.5 text-blue-700 hover:bg-blue-100 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200 transition-colors text-xs font-bold shadow-sm"
-              title="週報用レポートをテキストファイルで作成"
+              title="週報用レポートをWordファイルで作成"
             >
               <FileText size={14} /> <span>レポート作成</span>
             </button>
