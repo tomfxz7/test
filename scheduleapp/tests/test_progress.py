@@ -120,7 +120,7 @@ class ProgressTests(unittest.TestCase):
     def send(self,text):
         box=self.page.get_by_label('進捗コメント',exact=True)
         box.fill(text);box.press('Control+Enter')
-        expect(box).to_have_value('')
+        expect(box).to_have_text('')
 
     def entry(self,entry_id):
         return self.page.locator('[data-progress-entry-id="'+entry_id+'"]')
@@ -283,7 +283,7 @@ class ProgressTests(unittest.TestCase):
         self.page.get_by_role('button',name='確認作業のトークを表示',exact=True).click()
         expect(self.page.get_by_role('region',name='返信先',exact=True)).to_have_count(0)
         for original_entry in [addition,active,waiting,plain,reply]:
-            self.assertIn(original_entry,result['progressHistory'])
+            self.assertIn(dict(original_entry,resolvedByReplyId='補足') if original_entry['id']=='回答待ち' else original_entry,result['progressHistory'])
             color = 'gray' if original_entry.get('plainComment') else 'blue'
             expect(self.entry(original_entry['id']).locator(':scope > div')).to_have_class(re.compile(r'\bbg-'+color+r'-50\b'))
         expect(self.entry('補足').get_by_role('blockquote')).to_have_class(re.compile(r'\bborder-blue-500\b'))
@@ -514,15 +514,11 @@ class ProgressTests(unittest.TestCase):
         return b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',1,1,8,6,0,0,0))+chunk(b'IDAT',zlib.compress(b'\x00\xff\x00\x00\xff'))+chunk(b'IEND',b'')
 
     def test_talk_images_links_edit_quote_and_backup_roundtrip(self):
-        self.seed([task(progressEnabled=True,progressStage='doing')]);self.progress();self.select_chat()
-        self.page.get_by_label('トークに画像を添付',exact=True).set_input_files(dict(name='確認.png',mimeType='image/png',buffer=self.progress_png()))
-        expect(self.page.get_by_role('img',name='確認.png',exact=True)).to_be_visible()
-        self.page.get_by_label('トークに添付するリンク',exact=True).fill('https://example.com/spec')
-        self.page.get_by_label('リンクの表示名',exact=True).fill('仕様書')
-        self.page.get_by_role('button',name='リンクを添付',exact=True).click()
-        self.send('画像と仕様を確認')
-        source=self.stored()[0]['progressHistory'][-1]
-        self.assertEqual(len(source['images']),1);self.assertEqual(source['links'][0]['url'],'https://example.com/spec')
+        import base64
+        source=dict(id='legacy-media',kind='comment',text='画像と仕様を確認',status='active',createdAt=TODAY.isoformat()+'T01:00:00Z',subtaskIds=[],subtaskTitles=[],
+                    images=[dict(id='image',name='確認.png',src='data:image/png;base64,'+base64.b64encode(self.progress_png()).decode())],
+                    links=[dict(id='link',url='https://example.com/spec',label='仕様書')])
+        self.seed([task(progressEnabled=True,progressStage='doing',progressHistory=[source])]);self.progress();self.select_chat()
         image=self.entry(source['id']).get_by_role('img',name='確認.png',exact=True)
         expect(image).to_be_visible();self.assertEqual(image.evaluate('el=>el.naturalWidth'),1)
         link=self.entry(source['id']).get_by_role('link',name='仕様書',exact=True)
@@ -556,14 +552,11 @@ class ProgressTests(unittest.TestCase):
 
     def test_attachment_only_comment_and_invalid_link_or_image(self):
         self.seed([task(progressEnabled=True,progressStage='doing')]);self.progress();self.select_chat()
-        self.page.get_by_label('トークに添付するリンク',exact=True).fill('javascript:alert(1)')
-        self.page.get_by_role('button',name='リンクを添付',exact=True).click()
-        expect(self.page.get_by_role('alert')).to_contain_text('https://')
-        expect(self.page.get_by_role('button',name='送信',exact=True)).to_be_disabled()
-        self.page.get_by_label('トークに添付するリンク',exact=True).fill('')
-        self.page.get_by_label('トークに画像を添付',exact=True).set_input_files(dict(name='不正.svg',mimeType='image/svg+xml',buffer=b'<svg/>'))
+        editor=self.page.get_by_label('進捗コメント',exact=True)
+        editor.evaluate('''el=>{const data=new DataTransfer();data.items.add(new File(['<svg/>'],'不正.svg',{type:'image/svg+xml'}));el.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}))}''')
         expect(self.page.get_by_role('alert')).to_contain_text('PNG')
-        self.page.get_by_label('トークに画像を添付',exact=True).set_input_files(dict(name='画像だけ.png',mimeType='image/png',buffer=self.progress_png()))
+        expect(self.page.get_by_role('button',name='送信',exact=True)).to_be_disabled()
+        editor.evaluate('''(el,bytes)=>{const data=new DataTransfer();data.items.add(new File([new Uint8Array(bytes)],'画像だけ.png',{type:'image/png'}));el.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}))}''',list(self.progress_png()))
         expect(self.page.get_by_role('img',name='画像だけ.png',exact=True)).to_be_visible()
         self.page.get_by_label('ただのコメント',exact=True).check()
         self.page.get_by_role('button',name='送信',exact=True).click()
@@ -578,9 +571,7 @@ class ProgressTests(unittest.TestCase):
         editor=self.page.get_by_label('進捗コメント',exact=True)
         editor.evaluate('''(el,bytes)=>{const data=new DataTransfer();data.items.add(new File([new Uint8Array(bytes)],'貼付.png',{type:'image/png'}));el.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}))}''',list(self.progress_png()))
         expect(self.page.get_by_role('img',name='貼付.png',exact=True)).to_be_visible()
-        self.page.get_by_label('トークに添付するリンク',exact=True).fill('https://example.com/result')
-        self.page.get_by_role('button',name='リンクを添付',exact=True).click()
-        self.send('貼り付けた画像')
+        self.send('貼り付けた画像 https://example.com/result')
         before=self.stored()[0]
         comment=before['progressHistory'][0]
         self.entry(comment['id']).get_by_role('button',name='コメントを編集',exact=True).click()
@@ -847,7 +838,7 @@ class ProgressTests(unittest.TestCase):
         original['subtasks'][0].update(completed=True,completedAt='2026-11-01T01:00:00Z',smallTasks=[dict(id='a',title='作業A',completed=True,completionManaged=True,completionEntryId='latest',completionConclusion=records[-1])])
         self.seed([original]);self.progress();self.page.get_by_role('button',name='作業Aのトークを表示',exact=True).click()
         self.entry('old2').get_by_role('button',name='コメントを編集',exact=True).click()
-        self.page.get_by_label('完了',exact=True).uncheck();self.page.get_by_role('button',name='編集を保存',exact=True).click()
+        self.page.get_by_label('コメントの編集',exact=True).fill('過去の結論の本文だけを補足');self.page.get_by_role('button',name='編集を保存',exact=True).click()
         self.assertTrue(self.stored()[0]['subtasks'][0]['smallTasks'][0]['completed'])
         self.entry('latest').get_by_role('button',name='コメントを編集',exact=True).click()
         self.page.get_by_label('完了',exact=True).uncheck();self.page.get_by_role('button',name='編集を保存',exact=True).click()
@@ -865,7 +856,8 @@ class ProgressTests(unittest.TestCase):
         value='資料 https://example.com/spec?x=1&y=2。 (https://example.org/manual_(v2)). www.example.net/guide （HTTPS://example.com/ja）。 WWW.example.org javascript:alert(1)'
         self.page.evaluate('text=>navigator.clipboard.writeText(text)',value)
         self.page.get_by_label('進捗コメント',exact=True).press('Control+v')
-        expect(self.page.get_by_label('進捗コメント',exact=True)).to_have_value(value)
+        expect(self.page.get_by_label('進捗コメント',exact=True)).to_have_text(value)
+        expect(self.page.get_by_label('進捗コメント',exact=True).get_by_role('link')).to_have_count(5)
         self.page.get_by_role('button',name='送信',exact=True).click()
         record=self.stored()[0]['progressHistory'][-1]
         self.assertEqual(record['text'],value)
@@ -879,6 +871,9 @@ class ProgressTests(unittest.TestCase):
 
     def test_native_image_clipboard_pastes_into_composer_preview(self):
         self.seed([task(progressEnabled=True,progressStage='doing')]);self.progress();self.select_chat()
+        expect(self.page.get_by_label('トークに画像を添付',exact=True)).to_have_count(0)
+        expect(self.page.get_by_label('トークに添付するリンク',exact=True)).to_have_count(0)
+        expect(self.page.get_by_role('button',name='リンクを添付',exact=True)).to_have_count(0)
         self.ctx.grant_permissions(['clipboard-read','clipboard-write'])
         self.page.evaluate('''async bytes=>{await navigator.clipboard.write([new ClipboardItem({'image/png':new Blob([new Uint8Array(bytes)],{type:'image/png'})})])}''',list(self.progress_png()))
         self.page.get_by_label('進捗コメント',exact=True).press('Control+v')
@@ -1011,6 +1006,121 @@ class ProgressTests(unittest.TestCase):
         dialog.get_by_role('button',name='確定',exact=True).click()
         expect(self.entry(origin['id'])).to_contain_text(FUTURE+'までに【名前を変更】')
         self.assertEqual(self.stored()[0]['progressHistory'],[origin])
+
+    def paste_rich_link(self,html,plain='資料'):
+        self.ctx.grant_permissions(['clipboard-read','clipboard-write'])
+        self.page.evaluate('''async ({html,plain})=>navigator.clipboard.write([new ClipboardItem({'text/html':new Blob([html],{type:'text/html'}),'text/plain':new Blob([plain],{type:'text/plain'})})])''',dict(html=html,plain=plain))
+        self.page.get_by_label('進捗コメント',exact=True).press('Control+v')
+
+    def test_pasted_named_hyperlink_is_inline_before_send_and_survives_edit_quote_backup(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.progress();self.select_chat()
+        self.paste_rich_link('<a href="https://example.com/spec?rev=2">製品仕様書</a>','製品仕様書')
+        box=self.page.get_by_label('進捗コメント',exact=True)
+        expect(box.get_by_role('link',name='製品仕様書',exact=True)).to_have_attribute('href','https://example.com/spec?rev=2')
+        expect(box).to_have_text(re.compile('^製品仕様書'))
+        box.press('Control+Enter')
+        source=self.stored()[0]['progressHistory'][-1]
+        self.assertEqual(source['text'],'製品仕様書');self.assertEqual(source['textLinks'],[dict(start=0,end=5,url='https://example.com/spec?rev=2')])
+        expect(self.entry(source['id']).get_by_role('link',name='製品仕様書',exact=True)).to_have_attribute('href','https://example.com/spec?rev=2')
+        self.reply(source['id']);self.send('資料を確認')
+        reply=self.stored()[0]['progressHistory'][-1]
+        self.assertEqual(reply['quote']['textLinks'],source['textLinks'])
+        self.entry(source['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+        editor=self.page.get_by_label('コメントの編集',exact=True)
+        expect(editor.get_by_role('link',name='製品仕様書',exact=True)).to_be_visible()
+        editor.fill('取り消す変更');self.page.get_by_role('button',name='編集をキャンセル',exact=True).click()
+        self.assertEqual(self.stored()[0]['progressHistory'][0],source)
+        self.page.get_by_label('履歴を検索',exact=True).fill('example.com/spec')
+        expect(self.entry(source['id'])).to_be_visible();expect(self.entry(reply['id'])).to_be_visible()
+        dialog=self.open_report(start=TODAY.isoformat(),end=TODAY.isoformat());_,body=self.download_report(dialog)
+        self.assertIn('製品仕様書',body);self.assertIn('https://example.com/spec?rev=2',body)
+        with self.page.expect_download() as download:self.page.get_by_role('button',name='エクスポート',exact=True).click()
+        backup=Path(download.value.path()).read_bytes()
+        self.seed([]);self.page.get_by_label('バックアップをインポート',exact=True).set_input_files(dict(name='inline-link.json',mimeType='application/json',buffer=backup))
+        self.progress();self.select_chat()
+        expect(self.entry(reply['id']).get_by_role('blockquote').get_by_role('link',name='製品仕様書',exact=True)).to_have_attribute('href','https://example.com/spec?rev=2')
+
+    def test_link_paste_replaces_selection_and_following_typing_stays_outside_link(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.progress();self.select_chat()
+        box=self.page.get_by_label('進捗コメント',exact=True);box.fill('前置換後')
+        box.evaluate('''el=>{el.focus();const r=document.createRange();r.setStart(el.firstChild,1);r.setEnd(el.firstChild,3);getSelection().removeAllRanges();getSelection().addRange(r)}''')
+        self.paste_rich_link('<a href="https://example.org/manual">説明書</a>','説明書')
+        box.press('Control+z');expect(box).to_have_text('前置換後')
+        box.press('Control+Shift+z');expect(box.get_by_role('link',name='説明書',exact=True)).to_be_visible()
+        box.press_sequentially('追記')
+        expect(box.get_by_role('link',name='説明書',exact=True)).to_have_text('説明書')
+        box.press('Control+Enter')
+        record=self.stored()[0]['progressHistory'][-1]
+        self.assertEqual(record['text'],'前説明書追記後');self.assertEqual(record['textLinks'],[dict(start=1,end=4,url='https://example.org/manual')])
+
+    def test_pasted_html_keeps_safe_links_without_scripts_images_or_markup(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.progress();self.select_chat()
+        self.paste_rich_link('<script>window.pasteExecuted=true</script><style>body{display:none}</style><a href="javascript:alert(1)" onclick="window.pasteExecuted=true">危険なリンク</a><img src="https://outside.invalid/image" onerror="window.pasteExecuted=true"><a href="https://example.com/ok"><b>安全な資料</b></a>','危険なリンク 安全な資料')
+        box=self.page.get_by_label('進捗コメント',exact=True)
+        expect(box.get_by_role('link')).to_have_count(1);expect(box.get_by_role('img')).to_have_count(0)
+        self.assertFalse(self.page.evaluate('!!window.pasteExecuted'))
+        box.press('Control+Enter')
+        record=self.stored()[0]['progressHistory'][-1]
+        self.assertEqual(record['text'],'危険なリンク安全な資料');self.assertNotIn('<',record['text'])
+        expect(self.entry(record['id']).get_by_role('link',name='安全な資料',exact=True)).to_have_attribute('href','https://example.com/ok')
+
+    def test_rich_composer_preserves_typed_linebreaks_and_blank_lines(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.progress();self.select_chat()
+        box=self.page.get_by_label('進捗コメント',exact=True)
+        box.press_sequentially('1行目');box.press('Enter');box.press('Enter');box.press_sequentially('3行目');box.press('Shift+Enter');box.press_sequentially('4行目');box.press('Control+Enter')
+        record=self.stored()[0]['progressHistory'][-1]
+        self.assertEqual(record['text'],'1行目\n\n3行目\n4行目')
+        self.entry(record['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+        editor=self.page.get_by_label('コメントの編集',exact=True)
+        expect(editor).to_have_text(record['text'])
+        self.page.get_by_role('button',name='編集を保存',exact=True).click()
+        self.assertEqual(self.stored()[0]['progressHistory'][-1]['text'],record['text'])
+
+    def test_legacy_completed_small_cards_return_and_any_talk_can_reopen_them(self):
+        origin=dict(id='origin',kind='comment',text='なくなった作業',createdAt='2026-11-01T01:00:00Z',status='active',addedSmallTask=True,smallTaskId='lost',smallTaskTitle='復元する作業',subtaskIds=['s1'],subtaskTitles=['既存の調査'])
+        older=dict(origin,id='older',text='前の結論',status='completed',addedSmallTask=False)
+        latest=dict(origin,id='latest',text='現在の結論',status='completed',addedSmallTask=False,quote=origin,createdAt='2026-11-02T01:00:00Z')
+        original=task(progressEnabled=True,progressStage='doing',progressHistory=[older,latest],completedSmallTaskIds=['lost'])
+        self.seed([original]);self.progress()
+        card=self.page.locator('[data-progress-small-task-id="lost"]');expect(card).to_have_class(re.compile(r'\bbg-blue-50\b'))
+        card.click();expect(self.entry('origin')).to_be_visible()
+        self.entry('origin').get_by_role('button',name='コメントを編集',exact=True).click()
+        expect(self.page.get_by_label('完了',exact=True)).to_be_checked()
+        self.page.get_by_label('完了',exact=True).uncheck();self.page.get_by_role('button',name='編集を保存',exact=True).click()
+        expect(card).to_have_class(re.compile(r'\bbg-purple-50\b'))
+        self.assertFalse(self.stored()[0]['subtasks'][0]['smallTasks'][0]['completed'])
+        self.assertEqual(next(entry for entry in self.stored()[0]['progressHistory'] if entry['id']=='latest')['status'],'completed')
+        self.page.reload();self.progress();expect(card).to_have_count(1);expect(card).to_have_class(re.compile(r'\bbg-purple-50\b'))
+        card.click();self.page.get_by_label('完了',exact=True).check();self.send('あらためて完了')
+        expect(card).to_have_class(re.compile(r'\bbg-blue-50\b'));self.assertEqual(self.page.locator('[data-progress-stage="doing"]').locator('[data-progress-small-task-id="lost"]').count(),1)
+        self.page.get_by_role('button',name='復元する作業を削除',exact=True).click()
+        expect(card).to_have_count(0);self.page.reload();self.progress();expect(card).to_have_count(0)
+
+    def test_legacy_waiting_sources_and_missing_small_card_are_recovered(self):
+        source=dict(id='wait-old',text='消えた相手待ちメッセージ',createdAt='2026-11-01T01:00:00Z',status='waiting',smallTaskId='old-small',smallTaskTitle='待っていた作業',subtaskIds=['s1'],subtaskTitles=['既存の調査'])
+        reply=dict(id='reply',kind='comment',text='回答を受領',createdAt='2026-11-02T01:00:00Z',status='active',smallTaskId='old-small',smallTaskTitle='待っていた作業',subtaskIds=['s1'],subtaskTitles=['既存の調査'],quote=source)
+        self.seed([task(progressEnabled=True,progressStage='doing',progressHistory=[reply])]);self.progress();self.select_chat()
+        expect(self.entry('wait-old').locator(':scope > div')).to_have_class(re.compile(r'\bbg-blue-50\b'))
+        expect(self.page.locator('[data-progress-small-task-id="old-small"]')).to_have_class(re.compile(r'\bbg-purple-50\b'))
+        restored=self.stored()[0];self.assertEqual(restored['progressHistory'][0]['resolvedByReplyId'],'reply')
+        self.page.get_by_label('返信済みの相手待ちの表示',exact=True).select_option('hide');expect(self.entry('wait-old')).to_have_count(0)
+        self.page.reload();self.progress();self.select_chat();expect(self.entry('wait-old')).to_have_count(0)
+        self.page.get_by_label('返信済みの相手待ちの表示',exact=True).select_option('show');expect(self.entry('wait-old')).to_be_visible()
+        self.assertEqual(self.stored()[0],restored)
+
+    def test_legacy_todo_headers_show_deadline_and_title_without_inventing_dates(self):
+        original=task(progressEnabled=True,progressStage='doing')
+        original['subtasks'][1]['completed']=True
+        self.seed([original]);self.progress();self.select_chat()
+        first=self.page.locator('[data-todo-thread-id="s1"]');second=self.page.locator('[data-todo-thread-id="s2"]')
+        expect(first).to_contain_text(FUTURE+'までに【既存の調査】');expect(second).to_contain_text(PAST+'までに【期限切れの確認】')
+        expect(first.locator(':scope > div > div')).to_have_class(re.compile(r'\bbg-purple-50\b'))
+        expect(second.locator(':scope > div > div')).to_have_class(re.compile(r'\bbg-blue-50\b'))
+        expect(first).to_contain_text('日時未記録');self.assertEqual(self.stored()[0],original)
+        first.get_by_role('button',name='既存の調査のトークを折りたたむ',exact=True).click()
+        expect(first.get_by_role('button',name='既存の調査のトークを展開',exact=True)).to_have_attribute('aria-expanded','false')
+        self.page.reload();self.progress();self.select_chat();expect(first).to_contain_text(FUTURE+'までに【既存の調査】')
+        self.assertEqual(self.stored()[0],original)
 
     def test_report_default_range_is_seven_days_ago_through_today(self):
         self.seed([task(progressEnabled=True)])
@@ -1244,7 +1354,7 @@ class ProgressTests(unittest.TestCase):
     def test_quote_navigation_displays_saved_source_after_deletion(self):
         quote=dict(id='deleted-jump-source',text='削除済みでも保存した元コメント',status='waiting',createdAt='2026-01-01T01:00:00.000Z',subtaskIds=['s1'],subtaskTitles=['既存の調査'])
         reply=dict(id='saved-jump',kind='comment',createdAt='2026-01-02T01:00:00.000Z',text='引用を保持する返信',status='active',subtaskIds=['s1'],subtaskTitles=['既存の調査'],quote=quote)
-        self.seed([task(progressEnabled=True,progressStage='doing',progressHistory=[reply])])
+        self.seed([task(progressEnabled=True,progressStage='doing',progressHistory=[reply],deletedProgressEntryIds=[quote['id']])])
         self.progress();self.select_chat()
         before=self.stored()
         self.entry(reply['id']).get_by_role('button',name='引用元へ移動: 削除済みでも保存した元コメント',exact=True).click()
@@ -1618,7 +1728,7 @@ class ProgressTests(unittest.TestCase):
         expect(send).to_be_disabled()
         self.page.get_by_label('関連: 期限切れの確認',exact=True).uncheck()
         box.press('Control+Enter')
-        expect(box).to_have_value('')
+        expect(box).to_have_text('')
         stored=self.stored()[0]
         self.assertEqual(len(stored['subtasks']),2)
         small=stored['subtasks'][0]['smallTasks'][0]
@@ -1753,6 +1863,8 @@ class ProgressTests(unittest.TestCase):
         expected=json.loads(json.dumps(before))
         expected['progressHistory']=[reply]
         expected['deletedSmallTaskOriginIds']=[small['id']]
+        expected['deletedProgressSmallTaskIds']=[small['id']]
+        expected['deletedProgressEntryIds']=[message['id']]
         expected['subtasks'][0]['smallTasks']=[before['subtasks'][0]['smallTasks'][0]]
         self.assertEqual(self.stored()[0],expected)
         expect(self.entry(message['id'])).to_have_count(0)
@@ -1780,12 +1892,13 @@ class ProgressTests(unittest.TestCase):
         self.page.get_by_label('進捗コメント',exact=True).fill('送信していない下書き')
         row.get_by_role('button',name='一覧から削除する項目を削除',exact=True).click()
         expected=json.loads(json.dumps(original))
+        expected['deletedProgressSmallTaskIds']=['remove']
         expected['subtasks'][0]['smallTasks']=[original['subtasks'][0]['smallTasks'][1]]
         self.assertEqual(self.stored()[0],expected)
         expect(row).to_have_count(0)
         expect(self.page.locator('[data-progress-small-task-id="keep"]')).to_be_visible()
         expect(self.entry(comment['id'])).to_be_visible()
-        expect(self.page.get_by_label('進捗コメント',exact=True)).to_have_value('送信していない下書き')
+        expect(self.page.get_by_label('進捗コメント',exact=True)).to_have_text('送信していない下書き')
         expect(self.page.get_by_role('region',name='返信先',exact=True)).to_be_visible()
         self.entry(comment['id']).get_by_role('button',name='コメントを編集',exact=True).click()
         self.page.get_by_label('コメントの編集',exact=True).fill('削除済み項目の記録を訂正')
@@ -1812,7 +1925,7 @@ class ProgressTests(unittest.TestCase):
         row.get_by_role('button',name='以前に選択した項目を削除',exact=True).click()
         expect(row).to_have_count(0)
         expect(self.page.get_by_role('region',name='返信先',exact=True)).to_be_visible()
-        expect(editor).to_have_value('別件の返信を入力中')
+        expect(editor).to_have_text('別件の返信を入力中')
         self.assertEqual(self.stored()[0]['progressHistory'],history)
         editor.press('Control+Enter')
         final=self.stored()[0]
@@ -1833,9 +1946,10 @@ class ProgressTests(unittest.TestCase):
         editor=self.page.get_by_label('コメントの編集',exact=True)
         editor.fill('編集中の返信も保持')
         self.entry(source['id']).get_by_role('button',name='コメントを削除',exact=True).click()
-        expect(editor).to_have_value('編集中の返信も保持')
+        expect(editor).to_have_text('編集中の返信も保持')
         expected=json.loads(json.dumps(original))
         expected['progressHistory']=[reply]
+        expected['deletedProgressEntryIds']=[source['id']]
         self.assertEqual(self.stored()[0],expected)
         self.page.get_by_role('button',name='編集を保存',exact=True).click()
         after=self.stored()[0]
@@ -1862,7 +1976,7 @@ class ProgressTests(unittest.TestCase):
                 self.assertTrue(self.stored()[0]['waiting'])
                 expect(self.page.get_by_label('コメントの編集',exact=True)).to_have_count(0)
                 expect(self.page.get_by_role('region',name='返信先',exact=True)).to_have_count(0)
-                expect(self.page.get_by_label('進捗コメント',exact=True)).to_have_value('')
+                expect(self.page.get_by_label('進捗コメント',exact=True)).to_have_text('')
                 self.send('削除後の新しい記録')
                 history=self.stored()[0]['progressHistory']
                 self.assertEqual(len(history),1)
@@ -1878,6 +1992,7 @@ class ProgressTests(unittest.TestCase):
         expect(self.entry(note['id']).locator(':scope > div')).to_have_class(re.compile(r'\bbg-purple-50\b'))
         self.entry(note['id']).get_by_role('button',name='コメントを削除',exact=True).click()
         expected=json.loads(json.dumps(original));expected['progressHistory']=[]
+        expected['deletedProgressEntryIds']=[note['id']]
         self.assertEqual(self.stored()[0],expected)
         expect(self.entry(note['id'])).to_have_count(0)
 
@@ -2103,7 +2218,7 @@ class ProgressTests(unittest.TestCase):
         before=self.stored()[0]
         self.entry(original['id']).get_by_role('button',name='コメントを編集',exact=True).click()
         editor=self.page.get_by_label('コメントの編集',exact=True)
-        expect(editor).to_have_value('最初の担当者への依頼')
+        expect(editor).to_have_text('最初の担当者への依頼')
         expect(self.page.get_by_label('関連: 既存の調査',exact=True)).to_be_checked()
         expect(self.page.get_by_label('相手待ち',exact=True)).to_be_checked()
         editor.fill('依頼内容を訂正しました')

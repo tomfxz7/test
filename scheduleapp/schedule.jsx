@@ -225,6 +225,7 @@ const getProgressSubtasks = (task) => (task.subtasks || []).map((subtask, index)
 const progressTodoOriginText = (title, dueDate) => `${dueDate || '期限未設定'}までに【${title}】`;
 const removeProgressSmallTask = (task, id) => ({
   ...task,
+  deletedProgressSmallTaskIds: [...new Set([...(task.deletedProgressSmallTaskIds || []), id])],
   subtasks: getProgressSubtasks(task).map(st => {
     const smallTasks = getProgressSmallTasks(st);
     return smallTasks.some(small => small.id === id)
@@ -270,8 +271,44 @@ const reopenProgressSmallTask = (task, id, waiting = false) => {
     }) };
   delete updated.completedAt; return updated;
 };
+const restoreProgressTalks = task => {
+  const source = task.progressHistory || [], deleted = new Set(task.deletedProgressEntryIds || []);
+  const byId = new Map(source.map(entry => [entry.id, entry])), restored = [], resolved = new Map();
+  const recover = (quote, reply) => {
+    if (!quote) return;
+    recover(quote.quote, quote);
+    if (!quote.id || deleted.has(quote.id)) return;
+    if (quote.status === 'waiting' && !quote.plainComment && !reply.plainComment) resolved.set(quote.id, quote.resolvedByReplyId || reply.id);
+    if (!byId.has(quote.id) && (quote.addedSmallTask || (quote.status === 'waiting' && !quote.plainComment))) {
+      const entry = { ...quote, kind: 'comment' }; byId.set(entry.id, entry); restored.push(entry);
+    }
+  };
+  source.forEach(entry => recover(entry.quote, entry));
+  if (!restored.length && ![...resolved.keys()].some(id => byId.has(id) && !byId.get(id).resolvedByReplyId)) return task;
+  const history = [...restored, ...source].map(entry => resolved.has(entry.id) && !entry.resolvedByReplyId
+    ? { ...entry, resolvedByReplyId: resolved.get(entry.id) } : entry);
+  // Stable order for records with no timestamp; never invent a historical date.
+  history.sort((a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0));
+  return { ...task, progressHistory: history };
+};
 const normalizeProgressTask = task => {
-  let normalized = { ...task, ...(task.subtasks ? { subtasks: getProgressSubtasks(task) } : {}) };
+  let normalized = restoreProgressTalks({ ...task, ...(task.subtasks ? { subtasks: getProgressSubtasks(task) } : {}) });
+  const records = [];
+  const collect = entry => { if (!entry) return; records.push(entry); collect(entry.quote); };
+  (normalized.progressHistory || []).forEach(collect);
+  const completedIds = getCompletedProgressSmallIds(normalized);
+  const missingIds = new Set([...completedIds, ...records.filter(entry => entry.smallTaskTitle || entry.addedSmallTask).map(entry => entry.smallTaskId).filter(Boolean)]);
+  missingIds.forEach(id => {
+    if (getProgressSubtasks(normalized).some(st => getProgressSmallTasks(st).some(small => small.id === id))
+      || (normalized.deletedProgressSmallTaskIds || []).includes(id) || (normalized.deletedSmallTaskOriginIds || []).includes(id)) return;
+    const info = records.find(entry => entry.smallTaskId === id && entry.subtaskIds?.some(parentId => getProgressSubtasks(normalized).some(st => st.id === parentId)));
+    const parentId = info?.subtaskIds.find(parentId => getProgressSubtasks(normalized).some(st => st.id === parentId));
+    if (!parentId) return;
+    const latest = (normalized.progressHistory || []).filter(entry => entry.smallTaskId === id && !entry.plainComment).at(-1);
+    const recovered = { id, title: info.smallTaskTitle || info.text || '小さいタスク', completed: completedIds.has(id),
+      waiting: !completedIds.has(id) && latest?.status === 'waiting' && !latest.resolvedByReplyId };
+    normalized = { ...normalized, subtasks: getProgressSubtasks(normalized).map(st => st.id === parentId ? { ...st, smallTasks: [...getProgressSmallTasks(st), recovered] } : st) };
+  });
   getCompletedProgressSmallIds(normalized).forEach(id => {
     const small = getProgressSubtasks(normalized).flatMap(getProgressSmallTasks).find(item => item.id === id);
     const conclusion = (normalized.progressHistory || []).find(entry => entry.id === small?.completionEntryId)
@@ -405,7 +442,7 @@ const progressMediaItems = value => Array.isArray(value)
   ? value.filter(item => item && typeof item === 'object' && !Array.isArray(item)) : [];
 
 const createProgressQuote = (entry) => ({
-  id: entry.id, text: entry.text, createdAt: entry.createdAt, status: entry.status,
+  id: entry.id, text: entry.text, ...(progressMediaItems(entry.textLinks).length ? { textLinks: progressMediaItems(entry.textLinks).map(link => ({ ...link })) } : {}), createdAt: entry.createdAt, status: entry.status,
   ...(entry.plainComment ? { plainComment: true } : {}),
   ...(entry.resolvedByReplyId ? { resolvedByReplyId: entry.resolvedByReplyId } : {}),
   subtaskIds: [...(entry.subtaskIds || [])], subtaskTitles: [...(entry.subtaskTitles || [])],
@@ -423,21 +460,27 @@ const findProgressReplySource = (task, quote) => {
   return small ? { ...quote, text: small.title, smallTaskTitle: small.title } : null;
 };
 const progressQuoteSearchText = quote => quote
-  ? [quote.text, ...(quote.subtaskTitles || []), quote.smallTaskTitle, ...progressMediaItems(quote.images).map(image => image.name), ...progressMediaItems(quote.links).flatMap(link => [link.label, link.url]), progressQuoteSearchText(quote.quote)].filter(Boolean).join(' ')
+  ? [quote.text, ...(quote.subtaskTitles || []), quote.smallTaskTitle, ...progressMediaItems(quote.textLinks).map(link => link.url), ...progressMediaItems(quote.images).map(image => image.name), ...progressMediaItems(quote.links).flatMap(link => [link.label, link.url]), progressQuoteSearchText(quote.quote)].filter(Boolean).join(' ')
   : '';
 
 const progressSafeUrl = value => {
   try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) ? url.href : null; }
   catch { return null; }
 };
-const ProgressText = ({ value }) => {
-  if (typeof value !== 'string') return value ?? null;
-  const parts = [];
-  const pattern = /(?:https?:\/\/|www\.)[^\s<>"'`]+/gi;
-  let start = 0, match;
-  while ((match = pattern.exec(value))) {
-    const raw = match[0];
-    let candidate = raw, before;
+const progressTextLinks = (text, links) => {
+  let end = 0;
+  return progressMediaItems(links).filter(link => Number.isInteger(link.start) && Number.isInteger(link.end)
+    && link.start >= 0 && link.end > link.start && link.end <= text.length && progressSafeUrl(link.url))
+    .sort((a, b) => a.start - b.start).filter(link => {
+      if (link.start < end) return false;
+      end = link.end; return true;
+    }).map(link => ({ start: link.start, end: link.end, url: progressSafeUrl(link.url) }));
+};
+const progressAutoTextLinks = text => {
+  const links = [], pattern = /(?:https?:\/\/|www\.)[^\s<>"'`]+/gi;
+  let match;
+  while ((match = pattern.exec(text))) {
+    let candidate = match[0], before;
     do {
       before = candidate;
       candidate = candidate.replace(/[。、，．！？!,.;:]+$/u, '');
@@ -445,14 +488,99 @@ const ProgressText = ({ value }) => {
         while (candidate.endsWith(closing) && candidate.split(closing).length > candidate.split(opening).length) candidate = candidate.slice(0, -1);
       }
     } while (candidate !== before);
-    const href = progressSafeUrl(/^www\./i.test(candidate) ? `https://${candidate}` : candidate);
-    parts.push(value.slice(start, match.index));
-    parts.push(href ? <a key={`url:${match.index}`} href={href} target="_blank" rel="noopener noreferrer" className="underline break-all">{candidate}</a> : candidate);
-    parts.push(raw.slice(candidate.length));
-    start = match.index + raw.length;
+    const url = progressSafeUrl(/^www\./i.test(candidate) ? `https://${candidate}` : candidate);
+    if (url) links.push({ start: match.index, end: match.index + candidate.length, url });
   }
-  parts.push(value.slice(start));
-  return <>{parts}</>;
+  return links;
+};
+const progressAllTextLinks = (text, links) => {
+  const explicit = progressTextLinks(text, links);
+  return [...explicit, ...progressAutoTextLinks(text).filter(link => !explicit.some(item => link.start < item.end && link.end > item.start))].sort((a, b) => a.start - b.start);
+};
+const progressTextParts = (text, links) => {
+  const parts = []; let start = 0;
+  links.forEach(link => {
+    if (link.start > start) parts.push({ text: text.slice(start, link.start) });
+    parts.push({ text: text.slice(link.start, link.end), url: link.url }); start = link.end;
+  });
+  if (start < text.length) parts.push({ text: text.slice(start) });
+  return parts;
+};
+const ProgressText = ({ value, textLinks }) => {
+  if (typeof value !== 'string') return value ?? null;
+  return <>{progressTextParts(value, progressAllTextLinks(value, textLinks)).map((part, i) => part.url
+    ? <a key={i} href={part.url} target="_blank" rel="noopener noreferrer" className="underline break-all">{part.text}</a> : part.text)}</>;
+};
+// Read only text and HTTP(S) link ranges. Clipboard markup is never inserted as HTML.
+const readProgressEditor = root => {
+  let text = ''; const links = [];
+  const block = node => /^(DIV|P|LI|H[1-6]|BLOCKQUOTE|PRE|TR)$/.test(node.nodeName);
+  const walk = node => {
+    if (node.nodeType === 3) { text += node.textContent.replace(/\u200B/g, ''); return; }
+    if ((node.nodeType !== 1 && node !== root) || /^(SCRIPT|STYLE|HEAD|IFRAME|OBJECT|SVG|TEMPLATE)$/.test(node.nodeName)) return;
+    if (node.nodeName === 'BR') { text += '\n'; return; }
+    const start = text.length;
+    const children = [...node.childNodes].filter(child => child.nodeType === 1 || child.nodeType === 3);
+    const emptyBlock = children.length === 1 && children[0].nodeName === 'BR';
+    if (!emptyBlock || (!block(node) && node !== root)) children.forEach((child, i) => {
+      if (i > 0 && (block(child) || block(children[i - 1]))) text += '\n';
+      walk(child);
+    });
+    const url = node.nodeName === 'A' && progressSafeUrl(node.getAttribute('href'));
+    if (url && text.length > start) links.push({ start, end: text.length, url });
+  };
+  walk(root);
+  return { text, textLinks: progressTextLinks(text, links) };
+};
+const progressEditorFragment = (text, links) => {
+  const fragment = document.createDocumentFragment();
+  progressTextParts(text, progressTextLinks(text, links)).forEach(part => {
+    if (!part.url) { fragment.append(document.createTextNode(part.text)); return; }
+    const anchor = document.createElement('a');
+    anchor.textContent = part.text; anchor.href = part.url; anchor.target = '_blank'; anchor.rel = 'noopener noreferrer';
+    anchor.className = 'text-blue-700 underline break-all'; anchor.contentEditable = 'false';
+    fragment.append(anchor);
+  });
+  return fragment;
+};
+const ProgressComposer = ({ text, textLinks, onChange, onPasteImages, editorRef, editing }) => {
+  const composing = useRef(false);
+  const read = () => readProgressEditor(editorRef.current);
+  const emit = () => onChange(read());
+  React.useLayoutEffect(() => {
+    const editor = editorRef.current;
+    if (!editor || composing.current) return;
+    const current = read(), wanted = progressTextLinks(text, textLinks);
+    if (current.text === text && JSON.stringify(current.textLinks) === JSON.stringify(wanted) && (text || !editor.textContent)) return;
+    editor.replaceChildren(progressEditorFragment(text, wanted));
+  }, [text, textLinks]);
+  const paste = e => {
+    e.preventDefault();
+    const clipboard = e.clipboardData;
+    const files = [...(clipboard?.files || [])];
+    const images = files.length ? files : [...(clipboard?.items || [])].filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter(Boolean);
+    const plain = clipboard?.getData('text/plain') || '', html = clipboard?.getData('text/html');
+    const template = document.createElement('template');
+    if (html) template.innerHTML = html;
+    let draft = html ? readProgressEditor(template.content) : { text: plain, textLinks: [] };
+    if (!draft.text && plain) draft = { text: plain, textLinks: [] };
+    if (draft.text) {
+      const container = document.createElement('div');
+      container.append(progressEditorFragment(draft.text, progressAllTextLinks(draft.text, draft.textLinks)));
+      // Keep subsequent typing outside the pasted hyperlink; omit this caret marker when saving.
+      if (container.lastChild?.nodeName === 'A') container.append(document.createTextNode('\u200B'));
+      editorRef.current.focus();
+      document.execCommand('insertHTML', false, container.innerHTML);
+      emit();
+    }
+    if (images.length) onPasteImages(images);
+  };
+  return <div className="relative">
+    <div ref={editorRef} role="textbox" aria-multiline="true" aria-label={editing ? 'コメントの編集' : '進捗コメント'} contentEditable suppressContentEditableWarning
+      onInput={emit} onPaste={paste} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; emit(); }}
+      className="w-full min-h-[6rem] max-h-64 overflow-y-auto rounded-xl p-3 text-sm whitespace-pre-wrap break-words focus:outline-none"/>
+    {!text && <span aria-hidden="true" className="absolute top-3 left-3 right-3 pointer-events-none text-sm text-gray-400">進捗を入力…画像・リンクを貼り付けできます（Ctrl+Enter で送信）</span>}
+  </div>;
 };
 
 const ProgressAttachments = ({ images = [], links = [], onRemoveImage, onRemoveLink }) => {
@@ -491,7 +619,7 @@ const ProgressQuote = ({ quote, onNavigate, task }) => <blockquote aria-label="�
     {quote.status === 'waiting' && <span>引用当時: 相手待ち</span>}
     {onNavigate && <button type="button" aria-label={`引用元へ移動: ${quote.text}`} onClick={() => onNavigate(quote)} className="text-blue-700 underline">引用元へ移動</button>}
   </div>
-  <p className="whitespace-pre-wrap break-words"><ProgressText value={quote.text}/></p>
+  <p className="whitespace-pre-wrap break-words"><ProgressText value={quote.text} textLinks={quote.textLinks}/></p>
   <ProgressAttachments images={quote.images} links={quote.links}/>
   {quote.smallTaskTitle && <p className="mt-1 text-gray-500 break-words">小さいタスク: {quote.smallTaskTitle}</p>}
   {quote.quote && <ProgressQuote quote={quote.quote} onNavigate={onNavigate} task={task}/>}
@@ -1954,7 +2082,7 @@ const ProgressWaitingModal = ({ task, scope, onClose }) => {
         {!items.length && <p className="text-sm text-gray-500">現在、相手待ちの項目はありません。</p>}
         {items.map(item => <article key={item.key} data-waiting-status-key={item.key} className="rounded-xl border border-green-300 bg-green-50 p-3 text-green-900">
           <p className="text-xs">{item.path} · 相手待ち</p><h4 className="font-bold mt-1 break-words">{item.title}</h4>
-          {item.entry ? <div className="mt-2 space-y-1"><p className="text-xs text-gray-500">直近の相手待ちトーク{(item.entry.editedAt || item.entry.createdAt) && <> · <time dateTime={item.entry.editedAt || item.entry.createdAt}>{new Date(item.entry.editedAt || item.entry.createdAt).toLocaleString('ja-JP')}</time></>}</p><p className="text-sm whitespace-pre-wrap break-words"><ProgressText value={item.entry.text}/></p><ProgressAttachments images={item.entry.images} links={item.entry.links}/></div>
+          {item.entry ? <div className="mt-2 space-y-1"><p className="text-xs text-gray-500">直近の相手待ちトーク{(item.entry.editedAt || item.entry.createdAt) && <> · <time dateTime={item.entry.editedAt || item.entry.createdAt}>{new Date(item.entry.editedAt || item.entry.createdAt).toLocaleString('ja-JP')}</time></>}</p><p className="text-sm whitespace-pre-wrap break-words"><ProgressText value={item.entry.text} textLinks={item.entry.textLinks}/></p><ProgressAttachments images={item.entry.images} links={item.entry.links}/></div>
             : <p className="mt-2 text-sm">相手待ちの内容はまだ記録されていません。</p>}
         </article>)}
       </div>
@@ -2052,16 +2180,24 @@ const getProgressTodoThreads = (task, history) => {
       title: progressTodoOriginText(subtask?.title || origin.subtaskTitles?.[0] || origin.text, subtask?.dueDate || origin.dueDate),
       entries: history.filter(entry => entry.id !== origin.id && progressEntryParentIds(entry).includes(id)) });
   });
+  getProgressSubtasks(task).forEach(subtask => {
+    if (groups.has(subtask.id)) return;
+    const entries = history.filter(entry => progressEntryParentIds(entry).includes(subtask.id));
+    const title = progressTodoOriginText(subtask.title, subtask.dueDate);
+    groups.set(subtask.id, { id: subtask.id, subtask, title, virtual: true, entries,
+      origin: { id: `todo-origin:${task.id}:${subtask.id}`, kind: 'comment', addedSubtask: true, text: title,
+        status: subtask.completed ? 'completed' : 'active', subtaskIds: [subtask.id], subtaskTitles: [subtask.title],
+        createdAt: subtask.createdAt || task.createdAt } });
+  });
   return groups;
 };
 const isResolvedProgressWaiting = entry => entry.status === 'waiting' && !entry.plainComment && !!entry.resolvedByReplyId;
 
 const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiting = true }) => {
   const [text, setText] = useState('');
+  const [textLinks, setTextLinks] = useState([]);
   const [images, setImages] = useState([]);
   const [links, setLinks] = useState([]);
-  const [linkUrl, setLinkUrl] = useState('');
-  const [linkLabel, setLinkLabel] = useState('');
   const [mediaError, setMediaError] = useState('');
   const [mediaBusy, setMediaBusy] = useState(false);
   const mediaVersion = useRef(0);
@@ -2086,12 +2222,6 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
     } catch { if (version === mediaVersion.current) setMediaError('画像を読み込めませんでした。'); }
     finally { if (version === mediaVersion.current) { mediaPending.current -= 1; setMediaBusy(mediaPending.current > 0); } }
   };
-  const addLink = () => {
-    const url = progressSafeUrl(linkUrl.trim());
-    if (!url) { setMediaError('http:// または https:// で始まるリンクを入力してください。'); return; }
-    setLinks(previous => [...previous, { id: createProgressId(), url, label: linkLabel.trim() || url }]);
-    setLinkUrl(''); setLinkLabel(''); setMediaError('');
-  };
   const [selectedIds, setSelectedIds] = useState([]);
   const [addTodo, setAddTodo] = useState(false);
   const [addSmall, setAddSmall] = useState(false);
@@ -2104,12 +2234,14 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
   const [filterId, setFilterId] = useState('');
   const [filterSmallId, setFilterSmallId] = useState('');
   const [editingId, setEditingId] = useState(null);
+  const [editingStatusChanged, setEditingStatusChanged] = useState(false);
   const [replyTo, setReplyTo] = useState(null);
   const [quoteDetail, setQuoteDetail] = useState(null);
   const [jumpRequest, setJumpRequest] = useState(null);
   const [highlightedId, setHighlightedId] = useState(null);
   const [expandedSmallIds, setExpandedSmallIds] = useState([]);
   const [expandedTodoIds, setExpandedTodoIds] = useState([]);
+  const [collapsedTodoIds, setCollapsedTodoIds] = useState([]);
   const historyRef = useRef(null);
   const composerRef = useRef(null);
   const subtasks = getProgressSubtasks(task);
@@ -2138,7 +2270,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
   subtasks.filter(st => !filterId || st.id === filterId).forEach(st => getProgressSmallTasks(st).forEach(small => smallOptions.set(small.id, small.title)));
   history.filter(entry => !filterId || entry.subtaskIds?.includes(filterId)).forEach(entry => { if (entry.smallTaskId && !smallOptions.has(entry.smallTaskId)) smallOptions.set(entry.smallTaskId, `${entry.smallTaskTitle || '小さいタスク'}（${getCompletedProgressSmallIds(task).has(entry.smallTaskId) ? '完了' : '削除済み'}）`); });
   const showEntry = entry => showResolvedWaiting || !isResolvedProgressWaiting(entry);
-  const visibleHistory = history.filter(entry => showEntry(entry) && (!filterSmallId || entry.smallTaskId === filterSmallId || entry.completedSmallTaskId === filterSmallId) && (!filterId || progressEntryParentIds(entry).includes(filterId)) && (!query.trim() || [entry.text, ...(entry.subtaskTitles || []), entry.smallTaskTitle, ...progressMediaItems(entry.images).map(image => image.name), ...progressMediaItems(entry.links).flatMap(link => [link.label, link.url]), entry.createdAt, entry.dueDate, progressQuoteSearchText(entry.quote)].filter(Boolean).join(' ').toLowerCase().includes(query.trim().toLowerCase())));
+  const visibleHistory = history.filter(entry => showEntry(entry) && (!filterSmallId || entry.smallTaskId === filterSmallId || entry.completedSmallTaskId === filterSmallId) && (!filterId || progressEntryParentIds(entry).includes(filterId)) && (!query.trim() || [entry.text, ...progressMediaItems(entry.textLinks).map(link => link.url), ...(entry.subtaskTitles || []), entry.smallTaskTitle, ...progressMediaItems(entry.images).map(image => image.name), ...progressMediaItems(entry.links).flatMap(link => [link.label, link.url]), entry.createdAt, entry.dueDate, progressQuoteSearchText(entry.quote)].filter(Boolean).join(' ').toLowerCase().includes(query.trim().toLowerCase())));
   useEffect(() => { if (historyRef.current) historyRef.current.scrollTop = historyRef.current.scrollHeight; }, [history.length, history[history.length - 1]?.id, task.id]);
   useEffect(() => { if (editingId) composerRef.current?.focus(); }, [editingId]);
   useEffect(() => {
@@ -2171,10 +2303,10 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
     return smallId ? { subtaskId: parentId, smallTaskId: smallId, title: small?.title || small?.smallTaskTitle, subtaskTitle: parent?.title } : null;
   };
   const resetComposer = () => {
-    mediaVersion.current += 1; mediaPending.current = 0; setImages([]); setLinks([]); setLinkUrl(''); setLinkLabel(''); setMediaError(''); setMediaBusy(false);
-    setPlainComment(false); setText(''); setSelectedIds(filterId ? [filterId] : []); setAddTodo(false); setAddSmall(false);
+    mediaVersion.current += 1; mediaPending.current = 0; setImages([]); setLinks([]); setMediaError(''); setMediaBusy(false);
+    setPlainComment(false); setText(''); setTextLinks([]); setSelectedIds(filterId ? [filterId] : []); setAddTodo(false); setAddSmall(false);
     setSmallTarget(scopeSmallTarget(filterId, filterSmallId));
-    setDueDate(''); setWaiting(false); setCompleted(false); setEditingId(null); setReplyTo(null);
+    setDueDate(''); setWaiting(false); setCompleted(false); setEditingId(null); setEditingStatusChanged(false); setReplyTo(null);
   };
   const chooseThreadScope = (parentId = '', smallId = '', force = false) => {
     setQuery(''); setFilterId(parentId); setFilterSmallId(smallId);
@@ -2197,12 +2329,13 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
   }, [smallTarget?.smallTaskId, !!targetSmall, editingId, replyTo?.id]);
   const editComment = entry => {
     revealEntryGroups(entry);
-    mediaVersion.current += 1; mediaPending.current = 0; setMediaBusy(false); setMediaError(''); setLinkUrl(''); setLinkLabel('');
+    mediaVersion.current += 1; mediaPending.current = 0; setMediaBusy(false); setMediaError('');
     setImages(progressMediaItems(entry.images).map(image => ({ ...image }))); setLinks(progressMediaItems(entry.links).map(link => ({ ...link })));
     setReplyTo(null);
-    setEditingId(entry.id); setText(entry.text); setPlainComment(!!entry.plainComment);
+    setEditingId(entry.id); setText(entry.text); setTextLinks(progressAllTextLinks(entry.text, entry.textLinks)); setPlainComment(!!entry.plainComment);
     setSelectedIds(entry.subtaskIds || []);
-    setWaiting(entry.status === 'waiting'); setCompleted(entry.status === 'completed');
+    const completionSmall = subtasks.flatMap(getProgressSmallTasks).find(small => small.id === progressCompletionSmallId(task, entry));
+    setWaiting(entry.status === 'waiting'); setCompleted(completionSmall ? !!completionSmall.completed : entry.status === 'completed'); setEditingStatusChanged(false);
     setAddTodo(false); setAddSmall(false); setDueDate(entry.dueDate || '');
     setSmallTarget(entry.smallTaskId ? { subtaskId: entry.subtaskIds?.[0], smallTaskId: entry.smallTaskId, title: entry.smallTaskTitle, subtaskTitle: entry.subtaskTitles?.[0] } : null);
     composerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -2219,7 +2352,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
     onUpdateTask(task.id, previous => {
       const entry = (previous.progressHistory || []).find(item => item.id === id);
       const next = entry?.addedSmallTask && entry.smallTaskId ? removeProgressSmallTask(previous, entry.smallTaskId) : previous;
-      return { ...next, ...(entry?.addedSmallTask && entry.smallTaskId ? { deletedSmallTaskOriginIds: [...new Set([...(previous.deletedSmallTaskOriginIds || []), entry.smallTaskId])] } : {}), progressHistory: (previous.progressHistory || []).filter(item => item.id !== id) };
+      return { ...next, deletedProgressEntryIds: [...new Set([...(previous.deletedProgressEntryIds || []), id])], ...(entry?.addedSmallTask && entry.smallTaskId ? { deletedSmallTaskOriginIds: [...new Set([...(previous.deletedSmallTaskOriginIds || []), entry.smallTaskId])] } : {}), progressHistory: (previous.progressHistory || []).filter(item => item.id !== id) };
     });
     if (editingId === id || replyTo?.id === id) resetComposer();
   };
@@ -2253,17 +2386,17 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
         : addSmall && !replySource ? [] : smallTarget ? [currentTarget].filter(Boolean) : currentSelected;
       if (completed && !plainComment && completionItems.some(item => isProgressBlocked(previous, item) || getProgressSmallTasks(item).some(small => !small.completed))) return previous;
       const finishingReply = !plainComment && !!replySource && completed;
-      const status = plainComment ? 'note' : completed && (selectedIds.length || smallTarget || replySource || original?.quote) ? 'completed' : waiting ? 'waiting' : 'active';
+      const desiredStatus = plainComment ? 'note' : completed && (selectedIds.length || smallTarget || replySource || original?.quote) ? 'completed' : waiting ? 'waiting' : 'active';
       const sameSelection = original && [...(original.subtaskIds || [])].sort().join('\0') === [...selectedIds].sort().join('\0');
       const sameReplySelection = replySource && [...(replySource.subtaskIds || [])].sort().join('\0') === [...selectedIds].sort().join('\0');
       // Editing just the message must not replay an old status over later work.
       // Changed checkboxes apply to the currently selected targets, without
       // rewinding the state of targets that were removed from the selection.
       const sameTarget = original && (original.smallTaskId || null) === (smallTarget?.smallTaskId || null);
-      const olderCompletionEdit = original?.status === 'completed' && currentEditingCompletion?.completionEntryId && currentEditingCompletion.completionEntryId !== original.id;
+      const status = original && !editingStatusChanged && sameSelection && sameTarget ? original.status || 'active' : desiredStatus;
       const editingOtherCompletion = !!original && currentEditingCompletionId && currentEditingCompletionId !== smallTarget?.smallTaskId;
       const addingInReply = !!replySource && (addTodo || addSmall);
-      const applyStatus = !olderCompletionEdit && !editingOtherCompletion && !addingInReply && !plainComment && !(finishingReply && replySource.smallTaskId) && !addSmall && (!addTodo || waiting || completed) && (!original || !sameSelection || !sameTarget || (original.status || 'active') !== status);
+      const applyStatus = !editingOtherCompletion && !addingInReply && !plainComment && !(finishingReply && replySource.smallTaskId) && !addSmall && (!addTodo || waiting || completed) && (editingStatusChanged || !original || !sameSelection || !sameTarget || (original.status || 'active') !== status);
       const updateStatus = item => ({ ...item, waiting: completed ? false : waiting,
         ...(finishingReply && replySource.status === 'waiting' ? {} : original ? { completed: !!completed } : completed ? { completed: true } : waiting ? { completed: false } : {}) });
       const nextSubtasks = previousSubtasks.map(st => {
@@ -2279,8 +2412,13 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
       });
       if (addTodo) nextSubtasks.push({ id: newId, title: text.trim(), dueDate: dueDate || previous.dueDate || '', completed: false, waiting: false, order: Date.now() });
       const timestamp = new Date().toISOString();
+      const trimStart = text.length - text.trimStart().length;
+      const prefix = addTodo ? progressTodoOriginText('', dueDate || previous.dueDate).indexOf('【') + 1 : 0;
+      const savedTextLinks = progressTextLinks(text, textLinks).filter(link => link.start >= trimStart && link.end <= text.trimEnd().length)
+        .map(link => ({ ...link, start: link.start - trimStart + prefix, end: link.end - trimStart + prefix }));
       const entry = { ...(original || {}), id: original?.id || createProgressId(), kind: 'comment', createdAt: original?.createdAt || timestamp,
         ...(original ? { editedAt: timestamp } : {}), text: addTodo ? progressTodoOriginText(text.trim(), dueDate || previous.dueDate) : commentText,
+        ...(savedTextLinks.length || original?.textLinks ? { textLinks: savedTextLinks } : {}),
         ...(images.length || original?.images ? { images: images.map(image => ({ ...image })) } : {}),
         ...(links.length || original?.links ? { links: links.map(link => ({ ...link })) } : {}),
         subtaskIds: addTodo ? [newId] : sameSelection ? original.subtaskIds : sameReplySelection ? replySource.subtaskIds : currentSelected.map(st => st.id),
@@ -2317,7 +2455,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
         ...(applyStatus && !smallTarget && !selectedIds.length ? { waiting } : {}), progressHistory };
       // Saving a completion from the editor must finish the actual small task
       // too, including old backups whose comment already says completed.
-      const completedSmallId = !plainComment && completed && !addTodo && !addSmall ? currentEditingCompletionId || smallTarget?.smallTaskId : null;
+      const completedSmallId = !plainComment && completed && !addTodo && !addSmall && (!original || editingStatusChanged || (original.status === 'completed' && currentEditingCompletion?.completed)) ? currentEditingCompletionId || smallTarget?.smallTaskId : null;
       const finishedSmallId = completedSmallId || (finishingReply ? replySource.smallTaskId : null);
       if (finishedSmallId) {
         entry.completedSmallTaskId = finishedSmallId;
@@ -2325,9 +2463,9 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
         const refreshConclusion = !original || original.status !== 'completed' || !small?.completed || !small.completionEntryId || small.completionEntryId === original.id;
         return completeProgressSmallTask(updated, finishedSmallId, refreshConclusion ? entry : small.completionConclusion);
       }
-      if (currentEditingCompletionId && original.status === 'completed' && status !== 'completed') {
+      if (currentEditingCompletionId && original && editingStatusChanged && (!completed || plainComment)) {
         const small = previousSubtasks.flatMap(getProgressSmallTasks).find(item => item.id === currentEditingCompletionId);
-        if (small && (!small.completionEntryId || small.completionEntryId === original.id)) return reopenProgressSmallTask(updated, small.id, !plainComment && waiting);
+        if (small) return reopenProgressSmallTask(updated, small.id, !plainComment && waiting);
       }
       const changedSmall = updated.subtasks.flatMap(getProgressSmallTasks).find(small => small.id === currentTarget?.id);
       if (currentTarget?.completed && changedSmall && !changedSmall.completed) return reopenProgressSmallTask(updated, changedSmall.id, changedSmall.waiting);
@@ -2363,16 +2501,20 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
       else if (!seenGroups.has(group.id)) { seenGroups.add(group.id); rows.push({ group }); }
     }
   });
+  if (!filterSmallId) todoThreads.forEach(group => {
+    if (!seenGroups.has(`todo:${group.id}`) && (!filterId || group.id === filterId)
+      && (!query.trim() || group.title.toLowerCase().includes(query.trim().toLowerCase()))) rows.push({ todoGroup: group });
+  });
   // Selecting a completed small card always shows its normal, ungrouped talks.
   if (filterSmallId && completedThreads.get(filterSmallId)?.virtual && visibleHistory.length) {
     rows.unshift({ entry: completedThreads.get(filterSmallId).origin, virtual: true });
   }
-  const renderHistoryEntry = (entry, { extra = null, virtual = false, tone = null } = {}) => <div key={entry.id} data-progress-entry-id={entry.id} tabIndex={-1} className={`flex flex-col items-stretch ${highlightedId === entry.id ? 'ring-2 ring-blue-400 rounded-xl' : ''}`}>
+  const renderHistoryEntry = (entry, { extra = null, virtual = false, tone = null, synthetic = false } = {}) => <div key={entry.id} data-progress-entry-id={synthetic ? undefined : entry.id} tabIndex={-1} className={`flex flex-col items-stretch ${highlightedId === entry.id ? 'ring-2 ring-blue-400 rounded-xl' : ''}`}>
         {Number.isFinite(Date.parse(entry.createdAt)) ? <time dateTime={entry.createdAt} className="text-[10px] text-gray-500 px-1 mb-1">{new Date(entry.createdAt).toLocaleString('ja-JP')}</time> : <span className="text-[10px] text-gray-500 px-1 mb-1">日時未記録</span>}
         <div className={`w-full rounded-xl border px-3 py-2 text-sm shadow-sm ${tone ? progressToneClasses(tone) : progressEntryClasses(entry, task)}`}>
           <p className="text-[10px] font-bold text-gray-400 mb-1">{entry.kind === 'comment' ? (entry.plainComment ? 'コメント' : entry.addedSubtask ? 'やるべきことの追加' : entry.addedSmallTask ? '小さいタスクの追加' : '進捗記録') : '期限変更'}</p>
           {entry.quote && <ProgressQuote quote={entry.quote} onNavigate={navigateQuote} task={task}/>}
-          <p className="whitespace-pre-wrap break-words"><ProgressText value={entry.text}/></p>
+          <p className="whitespace-pre-wrap break-words"><ProgressText value={entry.text} textLinks={entry.textLinks}/></p>
           <ProgressAttachments images={entry.images} links={entry.links}/>
           {!!entry.subtaskTitles?.length && <div className="flex flex-wrap gap-1 mt-2">{entry.subtaskTitles.map((title, i) => <span key={`${entry.subtaskIds?.[i]}-${i}`} className="text-[10px] rounded px-1.5 py-0.5 bg-black/10 break-all">{title}</span>)}</div>}
           {entry.smallTaskTitle && <p className="mt-1 text-xs text-gray-500 break-words">小さいタスク: {entry.smallTaskTitle}</p>}
@@ -2399,7 +2541,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
         return <div key={`completed-thread:${group.id}`} data-completed-small-task-id={group.id} className="rounded-xl border-b-4 border-blue-200 shadow-sm">
           {renderHistoryEntry(origin, { virtual: group.virtual || hiddenOrigin, extra: <div className="mt-3 border-t border-blue-200 pt-3 space-y-2">
             <p className="text-xs font-bold text-blue-800">結論</p>
-            {group.conclusion ? <><p data-small-task-conclusion={group.id} className="whitespace-pre-wrap break-words"><ProgressText value={group.conclusion.text}/></p><ProgressAttachments images={group.conclusion.images} links={group.conclusion.links}/></>
+            {group.conclusion ? <><p data-small-task-conclusion={group.id} className="whitespace-pre-wrap break-words"><ProgressText value={group.conclusion.text} textLinks={group.conclusion.textLinks}/></p><ProgressAttachments images={group.conclusion.images} links={group.conclusion.links}/></>
               : <p className="text-xs text-blue-700">結論は未記録です。</p>}
             <div className="flex gap-3 flex-wrap text-xs">
               <button type="button" aria-label={`${group.origin.smallTaskTitle || group.origin.text}の完了済みトークを${expanded ? '折りたたむ' : '展開'}`} aria-expanded={expanded} aria-controls={`completed-talks-${group.id}`}
@@ -2415,16 +2557,16 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
   const renderRow = row => {
     if (!row.todoGroup) return renderSmallRow(row);
     const group = row.todoGroup;
-    const expanded = expandedTodoIds.includes(group.id) || !!query.trim();
+    const expanded = expandedTodoIds.includes(group.id) || !!query.trim() || (!!group.virtual && !collapsedTodoIds.includes(group.id));
     const done = task.completed || group.subtask?.completed;
     const title = group.subtask?.title || group.origin.subtaskTitles?.[0] || 'やるべきこと';
     const hiddenOrigin = !showEntry(group.origin);
     const origin = { ...group.origin, ...(hiddenOrigin ? { id: `todo-summary:${group.id}`, images: [], links: [], quote: null } : {}), text: group.title };
-    const entries = group.entries.filter(showEntry);
+    const entries = group.entries.filter(showEntry).filter(entry => !query.trim() || visibleHistory.some(item => item.id === entry.id));
     return <div key={`todo-thread:${group.id}`} data-todo-thread-id={group.id} className={`rounded-xl border-b-4 shadow-sm ${done ? 'border-blue-200' : 'border-purple-200'}`}>
-      {renderHistoryEntry(origin, { virtual: hiddenOrigin, tone: done ? 'blue' : 'purple', extra: <div className={`mt-3 pt-3 border-t ${done ? 'border-blue-200' : 'border-purple-200'}`}>
+      {renderHistoryEntry(origin, { virtual: group.virtual || hiddenOrigin, synthetic: group.virtual, tone: done ? 'blue' : 'purple', extra: <div className={`mt-3 pt-3 border-t ${done ? 'border-blue-200' : 'border-purple-200'}`}>
         <button type="button" aria-label={`${title}のトークを${expanded ? '折りたたむ' : '展開'}`} aria-expanded={expanded} aria-controls={`todo-talks-${group.id}`}
-          onClick={() => { if (query.trim()) setQuery(''); setExpandedTodoIds(ids => expanded ? ids.filter(id => id !== group.id) : [...ids, group.id]); }}
+          onClick={() => { if (query.trim()) setQuery(''); setExpandedTodoIds(ids => expanded ? ids.filter(id => id !== group.id) : [...ids, group.id]); setCollapsedTodoIds(ids => expanded ? [...new Set([...ids, group.id])] : ids.filter(id => id !== group.id)); }}
           className="rounded-lg border border-current/30 px-3 py-1.5 text-xs font-bold">{expanded ? '履歴を折りたたむ' : '履歴を展開'}（{entries.length}件）</button>
         {expanded && <div id={`todo-talks-${group.id}`} data-todo-talks={group.id} className="border-l-2 border-current/20 pl-3 mt-3 space-y-3">
           {entries.length ? smallRows(entries).map(renderSmallRow) : <p className="text-xs opacity-70">追加後のトークはありません。</p>}
@@ -2443,7 +2585,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
       </div>
     </div>
     <div ref={historyRef} role="log" aria-label="進捗履歴" className="flex-1 overflow-y-auto min-h-0 p-4 space-y-4 bg-slate-100">
-      {!visibleHistory.length && <p className="text-center text-sm text-gray-400 py-8">{history.length ? '一致する履歴はありません。' : '進捗コメントを送って、履歴を残しましょう。'}</p>}
+      {!rows.length && <p className="text-center text-sm text-gray-400 py-8">{history.length ? '一致する履歴はありません。' : '進捗コメントを送って、履歴を残しましょう。'}</p>}
       {rows.map(renderRow)}
     </div>
     <form onSubmit={send} onKeyDown={e => {
@@ -2465,29 +2607,18 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
         <button type="button" onClick={() => { setSmallTarget(null); setCompleted(false); setWaiting(false); }} className="mt-1 underline">やるべきことへのコメントに戻る</button>
       </div>}
       {editingCompletionSmall && editingCompletionId !== smallTarget?.smallTaskId && <p className="text-xs text-blue-700">このコメントの「完了」は「{editingCompletionSmall.title}」に反映します。追加した次の作業の状態は変わりません。</p>}
-      <label className="flex items-center gap-2 text-xs font-bold"><input type="checkbox" checked={plainComment} onChange={e => { setPlainComment(e.target.checked); if (e.target.checked) { setWaiting(false); setCompleted(false); setAddTodo(false); setAddSmall(false); } }}/>ただのコメント</label>
+      <label className="flex items-center gap-2 text-xs font-bold"><input type="checkbox" checked={plainComment} onChange={e => { setEditingStatusChanged(true); setPlainComment(e.target.checked); if (e.target.checked) { setWaiting(false); setCompleted(false); setAddTodo(false); setAddSmall(false); } }}/>ただのコメント</label>
       <fieldset><legend className="text-xs font-bold text-gray-600 mb-2">関連するやるべきことを選択</legend><div className="max-h-28 overflow-y-auto flex flex-col gap-1.5">
         {subtasks.map(st => <label key={st.id} className="flex gap-2 items-start text-xs text-gray-700"><input type="checkbox" aria-label={`関連: ${st.title}`} checked={selectedIds.includes(st.id)} onChange={e => { setSelectedIds(prev => e.target.checked ? [...prev, st.id] : prev.filter(id => id !== st.id)); setSmallTarget(null); setCompleted(false); }} className="mt-0.5"/><span className="break-words">{st.title} <span className="text-gray-400">{st.dueDate || '期限なし'} · {progressStatusLabel(progressItemStatus(st, task))}</span></span></label>)}
         {!subtasks.length && <p className="text-xs text-gray-400">やるべきことはまだありません。</p>}
       </div></fieldset>
       {completionBlocked && <p role="status" className="text-xs text-yellow-800">{pendingDependencies.length ? `タスク待ち: ${pendingDependencies.map(ref => getProgressDependencyNode(task, ref)?.title || `${ref.title}（削除済み）`).join('、')}。関連先の完了後に進行可能になります。` : '未完了の小さいタスクが残っています。'}</p>}
       <div className="rounded-xl border focus-within:ring-2 focus-within:ring-blue-400">
-        <textarea ref={composerRef} aria-label={editingId ? 'コメントの編集' : '進捗コメント'} placeholder="進捗を入力…画像・URLを貼り付けできます（Ctrl+Enter で送信）" value={text} onChange={e => setText(e.target.value)}
-          onPaste={e => {
-            const clipboard = e.clipboardData;
-            const files = [...(clipboard?.files || [])];
-            const pasted = files.length ? files : [...(clipboard?.items || [])].filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter(Boolean);
-            if (!pasted.length) return;
-            e.preventDefault();
-            const copiedText = clipboard?.getData('text/plain');
-            if (copiedText) { const start = e.currentTarget.selectionStart, end = e.currentTarget.selectionEnd; setText(previous => previous.slice(0, start) + copiedText + previous.slice(end)); }
-            addImages(pasted);
-          }} rows={3} className="w-full rounded-xl p-3 text-sm resize-y focus:outline-none"/>
+        <ProgressComposer text={text} textLinks={textLinks} onChange={draft => { setText(draft.text); setTextLinks(draft.textLinks); }}
+          onPasteImages={addImages} editorRef={composerRef} editing={!!editingId}/>
         {(images.length > 0 || links.length > 0) && <div className="px-3 pb-3" aria-label="本文の添付プレビュー"><ProgressAttachments images={images} links={links} onRemoveImage={id => setImages(previous => previous.filter(image => image.id !== id))} onRemoveLink={id => setLinks(previous => previous.filter(link => link.id !== id))}/></div>}
       </div>
       <div className="space-y-2">
-        <label className="inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs cursor-pointer"><ImageIcon size={14}/>画像を添付（1枚10MBまで）<input type="file" aria-label="トークに画像を添付" accept="image/png,image/jpeg,image/gif,image/webp,image/avif" multiple className="hidden" disabled={mediaBusy} onChange={e => { addImages(e.target.files); e.target.value = ''; }}/></label>
-        <div className="flex flex-wrap gap-2"><input type="url" aria-label="トークに添付するリンク" placeholder="https://…" value={linkUrl} onChange={e => setLinkUrl(e.target.value)} className="border rounded-lg p-2 text-xs min-w-0 flex-1"/><input aria-label="リンクの表示名" placeholder="リンクの表示名（任意）" value={linkLabel} onChange={e => setLinkLabel(e.target.value)} className="border rounded-lg p-2 text-xs min-w-0 flex-1"/><button type="button" onClick={addLink} className="rounded-lg border px-3 py-1.5 text-xs">リンクを添付</button></div>
         {mediaBusy && <p role="status" className="text-xs text-gray-500">画像を読み込み中…</p>}
         {mediaError && <p role="alert" className="text-xs text-red-700">{mediaError}</p>}
       </div>
@@ -2501,8 +2632,8 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
       {addSmall && <p className="text-xs text-blue-600">関連するやるべきことを1つ選択すると、その中にコメント本文を小さいタスクとして追加します。期限は不要です。通常は紫、相手待ちは緑、完了のコメントは青色になります。</p>}
       <div className="flex flex-wrap justify-between items-center gap-3">
         <div className="flex gap-4 text-xs">
-          <label className="flex items-center gap-1.5"><input type="checkbox" disabled={plainComment} checked={waiting} onChange={e => { setWaiting(e.target.checked); if (e.target.checked) setCompleted(false); }}/>相手待ち</label>
-          <label className={`flex items-center gap-1.5 ${selected.length || replyContext || smallTarget ? '' : 'text-gray-400'}`} title="返信では引用元を完了にします。通常のコメントでは関連するやるべきことを選択してください。"><input type="checkbox" disabled={plainComment || completionBlocked || (!selected.length && !replyContext && !smallTarget)} checked={completed && !!(selected.length || replyContext || smallTarget)} onChange={e => { setCompleted(e.target.checked); if (e.target.checked) setWaiting(false); }}/>完了</label>
+          <label className="flex items-center gap-1.5"><input type="checkbox" disabled={plainComment} checked={waiting} onChange={e => { setEditingStatusChanged(true); setWaiting(e.target.checked); if (e.target.checked) setCompleted(false); }}/>相手待ち</label>
+          <label className={`flex items-center gap-1.5 ${selected.length || replyContext || smallTarget ? '' : 'text-gray-400'}`} title="返信では引用元を完了にします。通常のコメントでは関連するやるべきことを選択してください。"><input type="checkbox" disabled={plainComment || completionBlocked || (!selected.length && !replyContext && !smallTarget)} checked={completed && !!(selected.length || replyContext || smallTarget)} onChange={e => { setEditingStatusChanged(true); setCompleted(e.target.checked); if (e.target.checked) setWaiting(false); }}/>完了</label>
         </div>
         <div className="flex gap-2">
           {editingId && <button type="button" onClick={resetComposer} className="rounded-lg border px-3 py-2 text-xs font-bold">編集をキャンセル</button>}
@@ -2700,6 +2831,7 @@ const buildWeeklyReport = ({ tasks, startDate, endDate, now = new Date() }) => {
   const stateWithDue = item => `${state(item)}${!item.completed && item.dueDate && item.dueDate < formatDate(now) ? ' / 期限超過（出力時点）' : ''}`;
   const media = (entry, indent = '') => {
     if (progressMediaItems(entry.images).length) text('添付画像（画像データは含みません）', progressMediaItems(entry.images).map(image => image.name).join(' / '), indent);
+    progressTextLinks(entry.text || '', entry.textLinks).forEach(link => text('本文のリンク', `${entry.text.slice(link.start, link.end)}: ${link.url}`, indent));
     text('添付リンク', progressMediaItems(entry.links).filter(link => progressSafeUrl(link.url)).map(link => `${link.label || link.url}: ${link.url}`).join('\n'), indent);
   };
   const quote = (source, indent = '    ') => {
