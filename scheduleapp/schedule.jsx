@@ -239,21 +239,21 @@ const getCompletedProgressSmallIds = task => {
   const ids = [
     ...(task.completedSmallTaskIds || []),
     ...getProgressSubtasks(task).flatMap(st => getProgressSmallTasks(st).filter(small => small.completed).map(small => small.id)),
-    ...(task.progressHistory || []).filter(entry => entry.kind === 'comment' && (entry.completedSmallTaskId || entry.smallTaskId)
+    ...(task.progressHistory || []).filter(entry => entry.kind === 'comment' && (entry.completedSmallTaskId || (!Array.isArray(entry.completedSubtaskIds) && entry.smallTaskId))
       && entry.status === 'completed' && !entry.plainComment
       && (entry.completedSmallTaskId || !entry.addedSmallTask || !entry.quote || entry.quote.smallTaskId === entry.smallTaskId)).map(entry => entry.completedSmallTaskId || entry.smallTaskId)
   ];
   return new Set(ids.filter(id => !managed.has(id) || managed.get(id)));
 };
 const latestProgressCompletion = (task, id) => (task.progressHistory || []).filter(entry => entry.kind === 'comment'
-  && (entry.completedSmallTaskId || entry.smallTaskId) === id && entry.status === 'completed' && !entry.plainComment
+  && (entry.completedSmallTaskId || (!Array.isArray(entry.completedSubtaskIds) && entry.smallTaskId)) === id && entry.status === 'completed' && !entry.plainComment
   && (entry.completedSmallTaskId || !entry.addedSmallTask || !entry.quote || entry.quote.smallTaskId === id))
   .reduce((latest, entry) => !latest || (Date.parse(entry.editedAt || entry.createdAt) || 0) >= (Date.parse(latest.editedAt || latest.createdAt) || 0) ? entry : latest, null);
 const completeProgressSmallTask = (task, id, conclusion) => ({
   ...task, completedSmallTaskIds: [...new Set([...(task.completedSmallTaskIds || []), id])],
   subtasks: getProgressSubtasks(task).map(st => getProgressSmallTasks(st).some(small => small.id === id)
     ? { ...st, smallTasks: getProgressSmallTasks(st).map(small => small.id === id ? {
-      ...small, completed: true, waiting: false, completionManaged: true,
+      ...small, completed: true, waiting: false, completionManaged: !!conclusion || !!small.completionManaged,
       ...(conclusion ? { completionEntryId: conclusion.id, completionConclusion: { ...conclusion } } : {})
     } : small) } : st)
 });
@@ -261,7 +261,7 @@ const reopenProgressSmallTask = (task, id, waiting = false) => {
   const updated = { ...task, completed: false, completedSmallTaskIds: (task.completedSmallTaskIds || []).filter(value => value !== id),
     subtasks: getProgressSubtasks(task).map(st => {
       if (!getProgressSmallTasks(st).some(small => small.id === id)) return st;
-      const parent = { ...st, completed: false, smallTasks: getProgressSmallTasks(st).map(small => {
+      const parent = { ...st, completed: false, completionManaged: true, smallTasks: getProgressSmallTasks(st).map(small => {
         if (small.id !== id) return small;
         const reopened = { ...small, completed: false, waiting, completionManaged: true };
         delete reopened.completionEntryId; delete reopened.completionConclusion; delete reopened.completedAt;
@@ -293,6 +293,21 @@ const restoreProgressTalks = task => {
 };
 const normalizeProgressTask = task => {
   let normalized = restoreProgressTalks({ ...task, ...(task.subtasks ? { subtasks: getProgressSubtasks(task) } : {}) });
+  const liveHistory = normalized.progressHistory || [];
+  const byId = new Map(liveHistory.map(entry => [entry.id, entry]));
+  const missingCompletion = node => node.completionEntryId && (!byId.has(node.completionEntryId)
+    || byId.get(node.completionEntryId).status !== 'completed' || byId.get(node.completionEntryId).plainComment);
+  // Repair older saved data where a completion comment was undone/deleted but
+  // its canonical flag and ledger were left behind. Preserve manual legacy flags.
+  getProgressSubtasks(normalized).forEach(st => {
+    if (st.completed && st.completionManaged && missingCompletion(st)) normalized = retractProgressCompletion(normalized, { completedSubtaskIds: [st.id] });
+    getProgressSmallTasks(st).forEach(small => {
+      if (small.completed && small.completionManaged && (missingCompletion(small)
+        || (!latestProgressCompletion(normalized, small.id) && liveHistory.some(entry => entry.smallTaskId === small.id || entry.completedSmallTaskId === small.id)))) {
+        normalized = reopenProgressSmallTask(normalized, small.id);
+      }
+    });
+  });
   const records = [];
   const collect = entry => { if (!entry) return; records.push(entry); collect(entry.quote); };
   (normalized.progressHistory || []).forEach(collect);
@@ -320,8 +335,34 @@ const normalizeProgressTask = task => {
 // A reply may finish one small task while creating the next piece of work.
 const progressCompletionSmallId = (task, entry) => entry?.completedSmallTaskId
   || getProgressSubtasks(task).flatMap(getProgressSmallTasks).find(small => small.completionEntryId === entry?.id)?.id
-  || (entry?.status === 'completed' && (entry.addedSmallTask || entry.addedSubtask) && entry.quote?.smallTaskId ? entry.quote.smallTaskId : entry?.smallTaskId);
+  || (Array.isArray(entry?.completedSubtaskIds) ? null
+    : entry?.status === 'completed' && (entry.addedSmallTask || entry.addedSubtask) && entry.quote ? entry.quote.smallTaskId : entry?.smallTaskId);
+const progressCompletionSubtaskIds = (task, entry) => {
+  if (!entry || progressCompletionSmallId(task, entry)) return [];
+  if (Array.isArray(entry.completedSubtaskIds)) return entry.completedSubtaskIds;
+  if (entry.status === 'completed' && (entry.addedSmallTask || entry.addedSubtask) && entry.quote) {
+    return entry.quote.status === 'waiting' ? [] : entry.quote.subtaskIds || [];
+  }
+  return entry.subtaskIds || [];
+};
+// Editing or deleting a completion retracts the same canonical targets it finished.
+const retractProgressCompletion = (task, entry, waiting = false) => {
+  const smallId = progressCompletionSmallId(task, entry);
+  if (smallId) return getProgressSubtasks(task).some(st => getProgressSmallTasks(st).some(small => small.id === smallId))
+    ? reopenProgressSmallTask(task, smallId, waiting) : task;
+  const ids = new Set(progressCompletionSubtaskIds(task, entry));
+  if (!getProgressSubtasks(task).some(st => ids.has(st.id))) return task;
+  const updated = { ...task, completed: false, subtasks: getProgressSubtasks(task).map(st => {
+    if (!ids.has(st.id)) return st;
+    const reopened = { ...st, completed: false, waiting, completionManaged: true };
+    delete reopened.completedAt; delete reopened.completionEntryId; delete reopened.completionConclusion;
+    return reopened;
+  }) };
+  delete updated.completedAt;
+  return updated;
+};
 const progressEntryParentIds = entry => [...new Set([...(entry.subtaskIds || []),
+  ...(Array.isArray(entry.completedSubtaskIds) ? entry.completedSubtaskIds : []),
   ...(entry.completedSmallTaskId ? entry.quote?.subtaskIds || [] : [])])];
 const progressDependencyKey = ref => `${ref.kind}:${ref.parentId || ''}:${ref.id}`;
 const getProgressDependencyNode = (task, ref) => ref.kind === 'subtask'
@@ -418,11 +459,18 @@ const isVisibleProgressEntry = (entry) => {
 
 const progressEntryTone = (entry, task) => {
   if (entry.plainComment) return 'gray';
-  const parents = task ? getProgressSubtasks(task).filter(st => entry.subtaskIds?.includes(st.id)) : [];
-  const small = parents.flatMap(getProgressSmallTasks).find(item => item.id === entry.smallTaskId);
+  const smallId = entry.completedSmallTaskId || (Array.isArray(entry.completedSubtaskIds) ? null : entry.smallTaskId);
+  const parentIds = Array.isArray(entry.completedSubtaskIds) ? entry.completedSubtaskIds : entry.subtaskIds || [];
+  const parents = task ? getProgressSubtasks(task).filter(st => entry.completedSmallTaskId
+    ? getProgressSmallTasks(st).some(small => small.id === smallId) : parentIds.includes(st.id)) : [];
+  const small = parents.flatMap(getProgressSmallTasks).find(item => item.id === smallId);
   // A deliberate reopen overrides completed/resolved snapshots in older talks.
   if (small?.completionManaged && !small.completed && !task.completed && !parents.some(st => st.completed)) {
-    return ({ blocked: 'yellow', overdue: 'red', waiting: 'green', active: 'purple' })[progressItemStatus(small, task)];
+    return ({ blocked: 'yellow', overdue: 'red', waiting: 'green', active: 'blue' })[progressItemStatus(small, task)];
+  }
+  if (!small && !smallId && parents.some(st => st.completionManaged && !st.completed) && !task?.completed) {
+    const states = parents.map(st => progressItemStatus(st, task));
+    return states.includes('blocked') ? 'yellow' : states.includes('overdue') ? 'red' : states.includes('waiting') ? 'green' : 'blue';
   }
   if (task?.completed || (parents.length && parents.every(st => st.completed))
     || (task && getCompletedProgressSmallIds(task).has(entry.smallTaskId || entry.id))
@@ -432,9 +480,19 @@ const progressEntryTone = (entry, task) => {
   if (targets.some(item => isProgressBlocked(task, item))) return 'yellow';
   if (targets.some(item => progressItemStatus(item, task) === 'overdue')) return 'red';
   if (entry.status === 'waiting') return 'green';
-  return 'purple';
+  return 'blue';
 };
 const progressToneBorders = { yellow: 'border-yellow-500', gray: 'border-gray-300', blue: 'border-blue-500', green: 'border-green-500', red: 'border-red-500', purple: 'border-purple-500' };
+const progressEntryLabel = (entry, task, headerTone) => {
+  if (headerTone) return ({ yellow: 'タスク待ち', blue: '完了', red: '期限超過', green: '相手待ち', purple: '進捗中' })[headerTone];
+  if (entry.resolvedByReplyId) return '返信済み';
+  const small = task && getProgressSubtasks(task).flatMap(getProgressSmallTasks).find(item => item.id === progressCompletionSmallId(task, entry));
+  const parents = task ? getProgressSubtasks(task).filter(st => progressCompletionSubtaskIds(task, entry).includes(st.id)) : [];
+  const retracted = small ? small.completionManaged && !small.completed : parents.some(st => st.completionManaged && !st.completed);
+  if (entry.status === 'completed' && !retracted) return '完了';
+  const tone = progressEntryTone(entry, task);
+  return ({ yellow: 'タスク待ち', red: '期限超過', green: '相手待ち' })[tone] || '進捗';
+};
 const progressToneClasses = tone => {
   const backgrounds = { yellow: 'bg-yellow-50 text-yellow-900', gray: 'bg-gray-50 text-gray-700', blue: 'bg-blue-50 text-blue-900', green: 'bg-green-50 text-green-800', red: 'bg-red-50 text-red-800', purple: 'bg-purple-50 text-purple-900' };
   return `${backgrounds[tone]} ${progressToneBorders[tone]}`;
@@ -447,6 +505,8 @@ const progressMediaItems = value => Array.isArray(value)
 
 const createProgressQuote = (entry) => ({
   id: entry.id, text: entry.text, ...(progressMediaItems(entry.textLinks).length ? { textLinks: progressMediaItems(entry.textLinks).map(link => ({ ...link })) } : {}), createdAt: entry.createdAt, status: entry.status,
+  ...(entry.completedSmallTaskId ? { completedSmallTaskId: entry.completedSmallTaskId } : {}),
+  ...(Array.isArray(entry.completedSubtaskIds) ? { completedSubtaskIds: [...entry.completedSubtaskIds] } : {}),
   ...(entry.plainComment ? { plainComment: true } : {}),
   ...(entry.resolvedByReplyId ? { resolvedByReplyId: entry.resolvedByReplyId } : {}),
   subtaskIds: [...(entry.subtaskIds || [])], subtaskTitles: [...(entry.subtaskTitles || [])],
@@ -547,6 +607,42 @@ const progressEditorFragment = (text, links) => {
   });
   return fragment;
 };
+const progressClipboardDraft = (html, plain) => {
+  const plainText = plain.replace(/\u200B/g, '');
+  if (!html) return { text: plainText, textLinks: [] };
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  // Source formatting whitespace between HTML blocks is not a user line break.
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+  const nodes = []; while (walker.nextNode()) nodes.push(walker.currentNode);
+  const block = node => node && /^(DIV|P|LI|H[1-6]|BLOCKQUOTE|PRE|TR|TABLE|UL|OL)$/.test(node.nodeName);
+  nodes.forEach(node => {
+    if (node.parentElement?.closest('pre,[style*="white-space"]')) return;
+    const value = node.textContent;
+    if (/^[\t\r\n ]+$/.test(value) && /[\r\n]/.test(value)) {
+      if (!node.previousSibling || !node.nextSibling || block(node.previousSibling) || block(node.nextSibling)) node.remove();
+      else node.textContent = ' ';
+    } else node.textContent = value.replace(/[\t\r\n ]+/g, ' ');
+  });
+  const rich = readProgressEditor(template.content);
+  if (!rich.text) return { text: plainText, textLinks: [] };
+  const positions = value => {
+    const result = []; for (let i = 0; i < value.length; i += 1) if (!/\s/u.test(value[i])) result.push(i);
+    return result;
+  };
+  const richPositions = positions(rich.text), plainPositions = positions(plainText);
+  if (plainText && richPositions.map(i => rich.text[i]).join('') === plainPositions.map(i => plainText[i]).join('')) {
+    // Keep the clipboard's visible line layout while retaining rich link labels.
+    const textLinks = rich.textLinks.flatMap(link => {
+      const first = richPositions.findIndex(i => i >= link.start);
+      let last = first;
+      while (last + 1 < richPositions.length && richPositions[last + 1] < link.end) last += 1;
+      return first < 0 || richPositions[first] >= link.end ? [] : [{ start: plainPositions[first], end: plainPositions[last] + 1, url: link.url }];
+    });
+    return { text: plainText, textLinks };
+  }
+  return rich;
+};
 const ProgressComposer = ({ text, textLinks, onChange, onPasteImages, editorRef, editing }) => {
   const composing = useRef(false);
   const read = () => readProgressEditor(editorRef.current);
@@ -564,10 +660,7 @@ const ProgressComposer = ({ text, textLinks, onChange, onPasteImages, editorRef,
     const files = [...(clipboard?.files || [])];
     const images = files.length ? files : [...(clipboard?.items || [])].filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter(Boolean);
     const plain = clipboard?.getData('text/plain') || '', html = clipboard?.getData('text/html');
-    const template = document.createElement('template');
-    if (html) template.innerHTML = html;
-    let draft = html ? readProgressEditor(template.content) : { text: plain, textLinks: [] };
-    if (!draft.text && plain) draft = { text: plain, textLinks: [] };
+    const draft = progressClipboardDraft(html, plain);
     if (draft.text) {
       const container = document.createElement('div');
       container.append(progressEditorFragment(draft.text, progressAllTextLinks(draft.text, draft.textLinks)));
@@ -2150,16 +2243,19 @@ const ProgressTaskCard = ({ task, selected, onSelect, onSettings, onStart, onDra
   </article>;
 };
 
-const getCompletedSmallThreads = (task, history) => {
+const getProgressSmallThreads = (task, history) => {
   const groups = new Map();
   const deletedOrigins = new Set(task.deletedSmallTaskOriginIds || []);
-  getCompletedProgressSmallIds(task).forEach(id => {
-    if (deletedOrigins.has(id)) return;
+  const deletedEntries = new Set(task.deletedProgressEntryIds || []);
+  const completedIds = getCompletedProgressSmallIds(task);
+  const ids = new Set([...completedIds, ...getProgressSubtasks(task).flatMap(getProgressSmallTasks).map(small => small.id)]);
+  ids.forEach(id => {
+    if (deletedOrigins.has(id) || (task.deletedProgressSmallTaskIds || []).includes(id)) return;
     const parent = getProgressSubtasks(task).find(st => getProgressSmallTasks(st).some(small => small.id === id));
     const small = getProgressSmallTasks(parent).find(item => item.id === id);
     const entries = history.filter(entry => entry.smallTaskId === id || entry.completedSmallTaskId === id);
     const source = entries.find(entry => entry.addedSmallTask && entry.smallTaskId === id);
-    const findOrigin = quote => !quote ? null : quote.smallTaskId === id && quote.addedSmallTask ? quote : findOrigin(quote.quote);
+    const findOrigin = quote => !quote ? null : quote.smallTaskId === id && quote.addedSmallTask && !deletedEntries.has(quote.id) ? quote : findOrigin(quote.quote);
     const savedOrigin = source || history.map(entry => findOrigin(entry.quote)).find(Boolean);
     const first = savedOrigin || entries[0];
     const origin = source || { ...savedOrigin, id: savedOrigin?.id && !history.some(entry => entry.id === savedOrigin.id) ? savedOrigin.id : `small-origin:${id}`,
@@ -2170,7 +2266,8 @@ const getCompletedSmallThreads = (task, history) => {
       createdAt: savedOrigin?.createdAt || small?.createdAt };
     const conclusion = history.find(entry => entry.id === small?.completionEntryId)
       || small?.completionConclusion || latestProgressCompletion(task, id);
-    groups.set(id, { id, origin, virtual: !source, conclusion, entries: entries.filter(entry => entry.id !== origin.id) });
+    groups.set(id, { id, parentId: parent?.id || origin.subtaskIds?.[0], completed: !!(task.completed || parent?.completed || completedIds.has(id)),
+      status: task.completed || parent?.completed || completedIds.has(id) ? 'completed' : small ? progressItemStatus(small, task) : 'active', origin, virtual: !source, conclusion, entries: entries.filter(entry => entry.id !== origin.id) });
   });
   return groups;
 };
@@ -2252,8 +2349,8 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
   // Hide old automatic logs without deleting saved data or user comments.
   const history = (task.progressHistory || []).filter(isVisibleProgressEntry);
   useEffect(() => {
-    const completedIds = getCompletedProgressSmallIds(task);
-    setExpandedSmallIds(ids => { const retained = ids.filter(id => completedIds.has(id)); return retained.length === ids.length ? ids : retained; });
+    const availableIds = new Set([...getCompletedProgressSmallIds(task), ...getProgressSubtasks(task).flatMap(getProgressSmallTasks).map(small => small.id)]);
+    setExpandedSmallIds(ids => { const retained = ids.filter(id => availableIds.has(id)); return retained.length === ids.length ? ids : retained; });
   }, [task]);
   const editingEntry = history.find(entry => entry.id === editingId && entry.kind === 'comment');
   const replyContext = replyTo || editingEntry?.quote;
@@ -2266,7 +2363,8 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
     .flatMap(getProgressSmallTasks).find(small => small.id === replyTo.smallTaskId) : null;
   const editingCompletionId = editingEntry ? progressCompletionSmallId(task, editingEntry) : null;
   const editingCompletionSmall = subtasks.flatMap(getProgressSmallTasks).find(small => small.id === editingCompletionId);
-  const completionTargets = editingCompletionId ? [editingCompletionSmall].filter(Boolean) : replyTo?.smallTaskId ? [replySmall].filter(Boolean)
+  const editingParentIds = editingEntry ? progressCompletionSubtaskIds(task, editingEntry) : [];
+  const completionTargets = editingParentIds.length ? subtasks.filter(st => editingParentIds.includes(st.id)) : editingCompletionId ? [editingCompletionSmall].filter(Boolean) : replyTo?.smallTaskId ? [replySmall].filter(Boolean)
     : addSmall && !replyContext ? [] : smallTarget ? [targetSmall].filter(Boolean) : selected;
   const completionBlocked = completionTargets.some(item => isProgressBlocked(task, item) || getProgressSmallTasks(item).some(small => !small.completed));
   const pendingDependencies = completionTargets.flatMap(item => pendingProgressDependencies(task, item));
@@ -2339,7 +2437,8 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
     setEditingId(entry.id); setText(entry.text); setTextLinks(progressAllTextLinks(entry.text, entry.textLinks)); setPlainComment(!!entry.plainComment);
     setSelectedIds(entry.subtaskIds || []);
     const completionSmall = subtasks.flatMap(getProgressSmallTasks).find(small => small.id === progressCompletionSmallId(task, entry));
-    setWaiting(entry.status === 'waiting'); setCompleted(completionSmall ? !!completionSmall.completed : entry.status === 'completed'); setEditingStatusChanged(false);
+    const completionParents = subtasks.filter(st => progressCompletionSubtaskIds(task, entry).includes(st.id));
+    setWaiting(entry.status === 'waiting'); setCompleted(completionSmall ? !!completionSmall.completed : completionParents.length ? completionParents.every(st => st.completed) : entry.status === 'completed'); setEditingStatusChanged(false);
     setAddTodo(false); setAddSmall(false); setDueDate(entry.dueDate || '');
     setSmallTarget(entry.smallTaskId ? { subtaskId: entry.subtaskIds?.[0], smallTaskId: entry.smallTaskId, title: entry.smallTaskTitle, subtaskTitle: entry.subtaskTitles?.[0] } : null);
     composerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -2355,8 +2454,13 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
   const deleteComment = id => {
     onUpdateTask(task.id, previous => {
       const entry = (previous.progressHistory || []).find(item => item.id === id);
-      const next = entry?.addedSmallTask && entry.smallTaskId ? removeProgressSmallTask(previous, entry.smallTaskId) : previous;
-      return { ...next, deletedProgressEntryIds: [...new Set([...(previous.deletedProgressEntryIds || []), id])], ...(entry?.addedSmallTask && entry.smallTaskId ? { deletedSmallTaskOriginIds: [...new Set([...(previous.deletedSmallTaskOriginIds || []), entry.smallTaskId])] } : {}), progressHistory: (previous.progressHistory || []).filter(item => item.id !== id) };
+      const retractsCompletion = entry?.kind === 'comment' && !entry.plainComment && entry.status === 'completed';
+      const deletesSmall = entry?.addedSmallTask && entry.smallTaskId && !retractsCompletion;
+      const next = retractsCompletion ? retractProgressCompletion(previous, entry)
+        : deletesSmall ? removeProgressSmallTask(previous, entry.smallTaskId) : previous;
+      return { ...next, deletedProgressEntryIds: [...new Set([...(previous.deletedProgressEntryIds || []), id])],
+        ...(deletesSmall ? { deletedSmallTaskOriginIds: [...new Set([...(previous.deletedSmallTaskOriginIds || []), entry.smallTaskId])] } : {}),
+        progressHistory: (previous.progressHistory || []).filter(item => item.id !== id) };
     });
     if (editingId === id || replyTo?.id === id) resetComposer();
   };
@@ -2385,8 +2489,11 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
       const currentReplySmall = replySource?.smallTaskId ? previousSubtasks.filter(st => replySource.subtaskIds?.includes(st.id))
         .flatMap(getProgressSmallTasks).find(small => small.id === replySource.smallTaskId) : null;
       const currentEditingCompletionId = original ? progressCompletionSmallId(previous, original) : null;
+      const currentEditingParentIds = original ? progressCompletionSubtaskIds(previous, original) : [];
+      const parentCompletionEdit = original && !currentEditingCompletionId && (Array.isArray(original.completedSubtaskIds) || (original.status === 'completed' && (original.addedSmallTask || original.addedSubtask) && original.quote));
+      const statusParentIds = parentCompletionEdit ? currentEditingParentIds : selectedIds;
       const currentEditingCompletion = previousSubtasks.flatMap(getProgressSmallTasks).find(small => small.id === currentEditingCompletionId);
-      const completionItems = currentEditingCompletionId ? [currentEditingCompletion].filter(Boolean) : replySource?.smallTaskId ? [currentReplySmall].filter(Boolean)
+      const completionItems = parentCompletionEdit ? previousSubtasks.filter(st => currentEditingParentIds.includes(st.id)) : currentEditingCompletionId ? [currentEditingCompletion].filter(Boolean) : replySource?.smallTaskId ? [currentReplySmall].filter(Boolean)
         : addSmall && !replySource ? [] : smallTarget ? [currentTarget].filter(Boolean) : currentSelected;
       if (completed && !plainComment && completionItems.some(item => isProgressBlocked(previous, item) || getProgressSmallTasks(item).some(small => !small.completed))) return previous;
       const finishingReply = !plainComment && !!replySource && completed;
@@ -2407,11 +2514,11 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
         if (addSmall && st.id === currentSelected[0].id) return { ...st, smallTasks: [...getProgressSmallTasks(st), {
           id: newId, title: text.trim(), completed: addingInReply ? false : !!completed, waiting: addingInReply ? false : !completed && waiting
         }] };
-        if (smallTarget) {
+        if (smallTarget && !parentCompletionEdit) {
           if (!applyStatus || st.id !== smallTarget.subtaskId || !currentTarget) return st;
           return { ...st, smallTasks: getProgressSmallTasks(st).map(small => small.id === smallTarget.smallTaskId ? updateStatus(small) : small) };
         }
-        if (!applyStatus || !selectedIds.includes(st.id)) return st;
+        if (!applyStatus || !statusParentIds.includes(st.id)) return st;
         return updateStatus(st);
       });
       if (addTodo) nextSubtasks.push({ id: newId, title: text.trim(), dueDate: dueDate || previous.dueDate || '', completed: false, waiting: false, order: Date.now() });
@@ -2454,12 +2561,23 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
             : { ...st, waiting: false, ...(completed && replySource.status !== 'waiting' ? { completed: true } : {}) };
         });
       }
+      if (!plainComment && completed && status === 'completed' && !currentEditingCompletionId && !replySource?.smallTaskId
+        && (parentCompletionEdit || (addingInReply && !replySource.smallTaskId) || (!smallTarget && !addSmall))) {
+        const ids = parentCompletionEdit ? currentEditingParentIds : addingInReply
+          ? replySource.status === 'waiting' ? [] : replySource.subtaskIds || [] : currentSelected.map(st => st.id);
+        entry.completedSubtaskIds = ids.filter(id => nextSubtasks.some(st => st.id === id && st.completed));
+        nextSubtasks.forEach((st, index) => {
+          if (entry.completedSubtaskIds.includes(st.id) && (!original || editingStatusChanged || !st.completionEntryId || st.completionEntryId === entry.id)) {
+            nextSubtasks[index] = { ...st, completionManaged: true, completionEntryId: entry.id };
+          }
+        });
+      }
       const updated = { ...previous, subtasks: nextSubtasks,
         ...(addingInReply && !replySource.smallTaskId && !replySource.subtaskIds?.length ? { waiting: false } : {}),
         ...(applyStatus && !smallTarget && !selectedIds.length ? { waiting } : {}), progressHistory };
       // Saving a completion from the editor must finish the actual small task
       // too, including old backups whose comment already says completed.
-      const completedSmallId = !plainComment && completed && !addTodo && !addSmall && (!original || editingStatusChanged || (original.status === 'completed' && currentEditingCompletion?.completed)) ? currentEditingCompletionId || smallTarget?.smallTaskId : null;
+      const completedSmallId = !plainComment && completed && !parentCompletionEdit && !addTodo && !addSmall && (!original || editingStatusChanged || (original.status === 'completed' && currentEditingCompletion?.completed)) ? currentEditingCompletionId || smallTarget?.smallTaskId : null;
       const finishedSmallId = completedSmallId || (finishingReply ? replySource.smallTaskId : null);
       if (finishedSmallId) {
         entry.completedSmallTaskId = finishedSmallId;
@@ -2467,9 +2585,9 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
         const refreshConclusion = !original || original.status !== 'completed' || !small?.completed || !small.completionEntryId || small.completionEntryId === original.id;
         return completeProgressSmallTask(updated, finishedSmallId, refreshConclusion ? entry : small.completionConclusion);
       }
-      if (currentEditingCompletionId && original && editingStatusChanged && (!completed || plainComment)) {
-        const small = previousSubtasks.flatMap(getProgressSmallTasks).find(item => item.id === currentEditingCompletionId);
-        if (small) return reopenProgressSmallTask(updated, small.id, !plainComment && waiting);
+      if (original && editingStatusChanged && (!completed || plainComment) && (original.status === 'completed'
+        || currentEditingCompletion?.completed || previousSubtasks.some(st => currentEditingParentIds.includes(st.id) && st.completed))) {
+        return retractProgressCompletion(updated, original, !plainComment && waiting);
       }
       const changedSmall = updated.subtasks.flatMap(getProgressSmallTasks).find(small => small.id === currentTarget?.id);
       if (currentTarget?.completed && changedSmall && !changedSmall.completed) return reopenProgressSmallTask(updated, changedSmall.id, changedSmall.waiting);
@@ -2481,37 +2599,47 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
     : smallTarget && !targetSmall && !editingId && !replyTo ? false
     : addSmall ? !!text.trim() && selected.length === 1
     : addTodo ? !!text.trim() : hasDraftContent || waiting || (completed && (selected.length > 0 || !!replyContext || !!smallTarget));
-  const completedThreads = getCompletedSmallThreads(task, history);
+  const smallThreads = getProgressSmallThreads(task, history);
   const todoThreads = getProgressTodoThreads(task, history);
-  const smallRows = entries => {
+  const smallRows = (entries, parentId) => {
     const result = [], seen = new Set();
     entries.forEach(entry => {
-      const group = !filterSmallId && completedThreads.get(entry.smallTaskId);
+      const own = smallThreads.get(entry.smallTaskId), target = smallThreads.get(entry.completedSmallTaskId);
+      const group = !filterSmallId && (own?.parentId === parentId ? own : target?.parentId === parentId ? target : null);
       if (!group) result.push({ entry });
       else if (!seen.has(group.id)) { seen.add(group.id); result.push({ group }); }
+    });
+    smallThreads.forEach(group => {
+      if (group.parentId === parentId && !seen.has(group.id)
+        && (!query.trim() || (group.origin.smallTaskTitle || group.origin.text || '').toLowerCase().includes(query.trim().toLowerCase()))) result.push({ group });
     });
     return result;
   };
   const rows = [];
   const seenGroups = new Set();
-  visibleHistory.forEach(entry => {
-    const parentId = filterId || entry.subtaskIds?.find(id => todoThreads.has(id));
+  if (filterId && !filterSmallId) rows.push(...smallRows(visibleHistory, filterId));
+  else visibleHistory.forEach(entry => {
+    const parentId = entry.subtaskIds?.find(id => todoThreads.has(id));
     const todoGroup = !filterSmallId && todoThreads.get(parentId);
     if (todoGroup) {
       if (!seenGroups.has(`todo:${todoGroup.id}`)) { seenGroups.add(`todo:${todoGroup.id}`); rows.push({ todoGroup }); }
-    } else {
-      const group = !filterSmallId && completedThreads.get(entry.smallTaskId);
-      if (!group) rows.push({ entry });
-      else if (!seenGroups.has(group.id)) { seenGroups.add(group.id); rows.push({ group }); }
-    }
+    } else rows.push({ entry });
   });
-  if (!filterSmallId) todoThreads.forEach(group => {
+  if (!filterId && !filterSmallId) todoThreads.forEach(group => {
     if (!seenGroups.has(`todo:${group.id}`) && (!filterId || group.id === filterId)
       && (!query.trim() || group.title.toLowerCase().includes(query.trim().toLowerCase()))) rows.push({ todoGroup: group });
   });
+  if (filterId && !filterSmallId) {
+    const group = todoThreads.get(filterId);
+    if (group?.virtual && (!query.trim() || group.title.toLowerCase().includes(query.trim().toLowerCase()))) {
+      rows.unshift({ entry: { ...group.origin, text: group.title }, virtual: true, synthetic: true });
+    } else if (group) rows.forEach(row => {
+      if (row.entry?.id === group.origin.id) row.entry = { ...row.entry, text: group.title };
+    });
+  }
   // Selecting a completed small card always shows its normal, ungrouped talks.
-  if (filterSmallId && completedThreads.get(filterSmallId)?.virtual && visibleHistory.length) {
-    rows.unshift({ entry: completedThreads.get(filterSmallId).origin, virtual: true });
+  if (filterSmallId && smallThreads.get(filterSmallId)?.virtual && !query.trim()) {
+    rows.unshift({ entry: smallThreads.get(filterSmallId).origin, virtual: true, synthetic: true });
   }
   const renderHistoryEntry = (entry, { extra = null, virtual = false, tone = null, synthetic = false } = {}) => <div key={entry.id} data-progress-entry-id={synthetic ? undefined : entry.id} tabIndex={-1} className={`flex flex-col items-stretch ${highlightedId === entry.id ? 'ring-2 ring-blue-400 rounded-xl' : ''}`}>
         {Number.isFinite(Date.parse(entry.createdAt)) ? <time dateTime={entry.createdAt} className="text-[10px] text-gray-500 px-1 mb-1">{new Date(entry.createdAt).toLocaleString('ja-JP')}</time> : <span className="text-[10px] text-gray-500 px-1 mb-1">日時未記録</span>}
@@ -2522,40 +2650,43 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
           <ProgressAttachments images={entry.images} links={entry.links}/>
           {!!entry.subtaskTitles?.length && <div className="flex flex-wrap gap-1 mt-2">{entry.subtaskTitles.map((title, i) => <span key={`${entry.subtaskIds?.[i]}-${i}`} className="text-[10px] rounded px-1.5 py-0.5 bg-black/10 break-all">{title}</span>)}</div>}
           {entry.smallTaskTitle && <p className="mt-1 text-xs text-gray-500 break-words">小さいタスク: {entry.smallTaskTitle}</p>}
-          {entry.status && !entry.plainComment && entry.kind === 'comment' && <p className="text-[10px] mt-1 opacity-80">{entry.resolvedByReplyId && !tone ? '返信済み' : ({ yellow: 'タスク待ち', blue: '完了', red: '期限超過', green: '相手待ち', purple: '進捗中' })[tone || progressEntryTone(entry, task)]}</p>}
+          {entry.status && !entry.plainComment && entry.kind === 'comment' && <p className="text-[10px] mt-1 opacity-80">{progressEntryLabel(entry, task, tone)}</p>}
           {!virtual && <div className="flex items-center justify-end gap-2 mt-2 text-[11px]">
             {entry.kind === 'comment' && <>
               {entry.editedAt && <span title={`編集日時: ${new Date(entry.editedAt).toLocaleString('ja-JP')}`}>編集済み</span>}
               <button type="button" aria-label="コメントに返信" onClick={() => replyToComment(entry)} className="rounded px-2 py-1 text-blue-700 hover:bg-blue-50 underline">返信</button>
               <button type="button" aria-label="コメントを編集" onClick={() => editComment(entry)} className="rounded px-2 py-1 text-blue-700 hover:bg-blue-50 underline">編集</button>
             </>}
-            <button type="button" aria-label="コメントを削除" title={entry.addedSmallTask ? 'この追加コメントと、ひも付く小さいタスクを削除します。保存済みの引用は残ります。' : 'コメントだけを削除します。タスクの状態や、保存済みの引用は残ります。'} onClick={() => deleteComment(entry.id)} className="rounded px-2 py-1 text-red-700 hover:bg-red-50 underline">削除</button>
+            <button type="button" aria-label="コメントを削除" title={entry.status === 'completed' && !entry.plainComment ? 'この完了記録を削除し、完了した対象を未完了に戻します。保存済みの引用は残ります。' : entry.addedSmallTask ? 'この追加コメントと、ひも付く小さいタスクを削除します。保存済みの引用は残ります。' : 'コメントだけを削除します。保存済みの引用は残ります。'} onClick={() => deleteComment(entry.id)} className="rounded px-2 py-1 text-red-700 hover:bg-red-50 underline">削除</button>
           </div>}
           {extra}
         </div>
       </div>;
   const renderSmallRow = row => {
-        if (!row.group) return renderHistoryEntry(row.entry, { virtual: row.virtual });
+        if (!row.group) return renderHistoryEntry(row.entry, { virtual: row.virtual, synthetic: row.synthetic });
         const group = row.group;
         const expanded = expandedSmallIds.includes(group.id) || !!query.trim();
         const editableConclusion = history.find(entry => entry.id === group.conclusion?.id);
         const hiddenOrigin = !showEntry(group.origin);
-        const origin = hiddenOrigin ? { ...group.origin, id: `small-summary:${group.id}`, text: group.origin.smallTaskTitle || '完了した小さいタスク', images: [], links: [], quote: null } : group.origin;
+        const separateWaitingOrigin = !group.completed && group.origin.status === 'waiting' && !!group.origin.resolvedByReplyId;
+        const summaryOrigin = hiddenOrigin || separateWaitingOrigin;
+        const origin = summaryOrigin ? { ...group.origin, id: `small-summary:${group.id}`, text: group.origin.smallTaskTitle || '小さいタスク', images: [], links: [], quote: null } : group.origin;
         const entries = group.entries.filter(showEntry);
-        return <div key={`completed-thread:${group.id}`} data-completed-small-task-id={group.id} className="rounded-xl border-b-4 border-blue-200 shadow-sm">
-          {renderHistoryEntry(origin, { virtual: group.virtual || hiddenOrigin, extra: <div className="mt-3 border-t border-blue-200 pt-3 space-y-2">
-            <p className="text-xs font-bold text-blue-800">結論</p>
+        if (separateWaitingOrigin && !hiddenOrigin) entries.unshift(group.origin);
+        return <div key={`completed-thread:${group.id}`} data-small-thread-id={group.id} data-completed-small-task-id={group.completed ? group.id : undefined} className={`rounded-xl border-b-4 shadow-sm ${group.completed ? 'border-blue-200' : 'border-purple-200'}`}>
+          {renderHistoryEntry(origin, { virtual: group.virtual || summaryOrigin, synthetic: group.virtual || summaryOrigin, tone: ({ completed: 'blue', active: 'purple', waiting: 'green', blocked: 'yellow', overdue: 'red' })[group.status], extra: <div className="mt-3 border-t border-blue-200 pt-3 space-y-2">
+            {group.completed && <><p className="text-xs font-bold text-blue-800">結論</p>
             {group.conclusion ? <><p data-small-task-conclusion={group.id} className="whitespace-pre-wrap break-words"><ProgressText value={group.conclusion.text} textLinks={group.conclusion.textLinks}/></p><ProgressAttachments images={group.conclusion.images} links={group.conclusion.links}/></>
-              : <p className="text-xs text-blue-700">結論は未記録です。</p>}
+              : <p className="text-xs text-blue-700">結論は未記録です。</p>}</>}
             <div className="flex gap-3 flex-wrap text-xs">
-              <button type="button" aria-label={`${group.origin.smallTaskTitle || group.origin.text}の完了済みトークを${expanded ? '折りたたむ' : '展開'}`} aria-expanded={expanded} aria-controls={`completed-talks-${group.id}`}
+              <button type="button" aria-label={`${group.origin.smallTaskTitle || group.origin.text}の${group.completed ? '完了済み' : ''}トークを${expanded ? '折りたたむ' : '展開'}`} aria-expanded={expanded} aria-controls={`completed-talks-${group.id}`}
                 onClick={() => { if (query.trim()) setQuery(''); setExpandedSmallIds(ids => expanded ? ids.filter(id => id !== group.id) : [...ids, group.id]); }} className="rounded-lg border border-blue-300 px-3 py-1.5 font-bold">{expanded ? '履歴を折りたたむ' : '履歴を展開'}（{entries.length}件）</button>
-              {editableConclusion && <button type="button" onClick={() => editComment(editableConclusion)} className="underline">結論を編集</button>}
+              {group.completed && editableConclusion && <button type="button" onClick={() => editComment(editableConclusion)} className="underline">結論を編集</button>}
             </div>
-            {expanded && <div id={`completed-talks-${group.id}`} data-completed-small-talks={group.id} className="border-l-2 border-blue-300 pl-3 space-y-3 mt-3">
-              {entries.length ? entries.map(entry => renderHistoryEntry(entry)) : <p className="text-xs text-blue-700">追加後のトークはありません。</p>}
-            </div>}
           </div> })}
+          {expanded && <div id={`completed-talks-${group.id}`} data-small-talks={group.id} data-completed-small-talks={group.completed ? group.id : undefined} className="border-l-2 border-blue-300 pl-3 space-y-3 mt-3">
+            {entries.length ? entries.map(entry => renderHistoryEntry(entry)) : <p className="text-xs text-blue-700">追加後のトークはありません。</p>}
+          </div>}
         </div>;
   };
   const renderRow = row => {
@@ -2567,15 +2698,16 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
     const hiddenOrigin = !showEntry(group.origin);
     const origin = { ...group.origin, ...(hiddenOrigin ? { id: `todo-summary:${group.id}`, images: [], links: [], quote: null } : {}), text: group.title };
     const entries = group.entries.filter(showEntry).filter(entry => !query.trim() || visibleHistory.some(item => item.id === entry.id));
+    const childRows = smallRows(entries, group.id);
     return <div key={`todo-thread:${group.id}`} data-todo-thread-id={group.id} className={`rounded-xl border-b-4 shadow-sm ${done ? 'border-blue-200' : 'border-purple-200'}`}>
       {renderHistoryEntry(origin, { virtual: group.virtual || hiddenOrigin, synthetic: group.virtual, tone: done ? 'blue' : 'purple', extra: <div className={`mt-3 pt-3 border-t ${done ? 'border-blue-200' : 'border-purple-200'}`}>
         <button type="button" aria-label={`${title}のトークを${expanded ? '折りたたむ' : '展開'}`} aria-expanded={expanded} aria-controls={`todo-talks-${group.id}`}
           onClick={() => { if (query.trim()) setQuery(''); setExpandedTodoIds(ids => expanded ? ids.filter(id => id !== group.id) : [...ids, group.id]); setCollapsedTodoIds(ids => expanded ? [...new Set([...ids, group.id])] : ids.filter(id => id !== group.id)); }}
           className="rounded-lg border border-current/30 px-3 py-1.5 text-xs font-bold">{expanded ? '履歴を折りたたむ' : '履歴を展開'}（{entries.length}件）</button>
-        {expanded && <div id={`todo-talks-${group.id}`} data-todo-talks={group.id} className="border-l-2 border-current/20 pl-3 mt-3 space-y-3">
-          {entries.length ? smallRows(entries).map(renderSmallRow) : <p className="text-xs opacity-70">追加後のトークはありません。</p>}
-        </div>}
       </div> })}
+      {expanded && <div id={`todo-talks-${group.id}`} data-todo-talks={group.id} className="border-l-2 border-current/20 pl-3 mt-3 space-y-3">
+        {childRows.length ? childRows.map(renderSmallRow) : <p className="text-xs opacity-70">追加後のトークはありません。</p>}
+      </div>}
     </div>;
   };
   return <div className="flex flex-col flex-1 min-h-0">
@@ -2611,6 +2743,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
         <button type="button" onClick={() => { setSmallTarget(null); setCompleted(false); setWaiting(false); }} className="mt-1 underline">やるべきことへのコメントに戻る</button>
       </div>}
       {editingCompletionSmall && editingCompletionId !== smallTarget?.smallTaskId && <p className="text-xs text-blue-700">このコメントの「完了」は「{editingCompletionSmall.title}」に反映します。追加した次の作業の状態は変わりません。</p>}
+      {editingEntry && editingParentIds.length > 0 && (smallTarget || [...editingParentIds].sort().join('\0') !== [...selectedIds].sort().join('\0')) && <p className="text-xs text-blue-700">このコメントの「完了」は「{subtasks.filter(st => editingParentIds.includes(st.id)).map(st => st.title).join('、')}」に反映します。追加した次の作業の状態は変わりません。</p>}
       <label className="flex items-center gap-2 text-xs font-bold"><input type="checkbox" checked={plainComment} onChange={e => { setEditingStatusChanged(true); setPlainComment(e.target.checked); if (e.target.checked) { setWaiting(false); setCompleted(false); setAddTodo(false); setAddSmall(false); } }}/>ただのコメント</label>
       <fieldset><legend className="text-xs font-bold text-gray-600 mb-2">関連するやるべきことを選択</legend><div className="max-h-28 overflow-y-auto flex flex-col gap-1.5">
         {subtasks.map(st => <label key={st.id} className="flex gap-2 items-start text-xs text-gray-700"><input type="checkbox" aria-label={`関連: ${st.title}`} checked={selectedIds.includes(st.id)} onChange={e => { setSelectedIds(prev => e.target.checked ? [...prev, st.id] : prev.filter(id => id !== st.id)); setSmallTarget(null); setCompleted(false); }} className="mt-0.5"/><span className="break-words">{st.title} <span className="text-gray-400">{st.dueDate || '期限なし'} · {progressStatusLabel(progressItemStatus(st, task))}</span></span></label>)}
@@ -2699,9 +2832,10 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
       const parent = getProgressSubtasks(previous).find(st => st.id === id);
       if (!parent || parent.completed || isProgressBlocked(previous, parent) || getProgressSmallTasks(parent).some(small => !small.completed)) return previous;
       const now = new Date().toISOString();
-      return { ...previous, subtasks: getProgressSubtasks(previous).map(st => st.id === id ? { ...st, completed: true, waiting: false, completedAt: now } : st),
-        progressHistory: [...(previous.progressHistory || []), { id: createProgressId(), kind: 'comment', createdAt: now,
-          text: `やるべきこと「${parent.title}」を完了しました。`, status: 'completed', subtaskIds: [id], subtaskTitles: [parent.title] }] };
+      const entryId = createProgressId();
+      return { ...previous, subtasks: getProgressSubtasks(previous).map(st => st.id === id ? { ...st, completed: true, waiting: false, completedAt: now, completionManaged: true, completionEntryId: entryId } : st),
+        progressHistory: [...(previous.progressHistory || []), { id: entryId, kind: 'comment', createdAt: now,
+          text: `やるべきこと「${parent.title}」を完了しました。`, status: 'completed', completedSubtaskIds: [id], subtaskIds: [id], subtaskTitles: [parent.title] }] };
     });
   };
   const dropTask = (e, stage) => {
@@ -2717,7 +2851,7 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
     <div className="px-6 py-3 bg-white/70 border-b flex flex-wrap items-center justify-between gap-2 shrink-0">
       <p className="text-sm text-gray-600">ボードでチェックしたタスクを、やるべきことと進捗の記録で管理します。</p>
       <label className="text-xs flex items-center gap-2">返信済みの相手待ち<select aria-label="返信済みの相手待ちの表示" value={showResolvedWaiting ? 'show' : 'hide'} onChange={e => changeResolvedWaiting(e.target.value)} className="border rounded-lg bg-white p-2"><option value="show">青色で残す</option><option value="hide">非表示</option></select></label>
-      <div className="flex flex-wrap gap-3 text-xs"><span className="text-purple-700">● 進行可能</span><span className="text-blue-700">● 完了</span><span className="text-green-700">● 相手待ち</span><span className="text-yellow-700">● タスク待ち</span><span className="text-red-700">● 期限超過</span><span className="text-gray-600">● ただのコメント</span></div>
+      <div className="flex flex-wrap gap-3 text-xs"><span className="text-purple-700">● 進行可能</span><span className="text-blue-700">● 完了・進捗トーク</span><span className="text-green-700">● 相手待ち</span><span className="text-yellow-700">● タスク待ち</span><span className="text-red-700">● 期限超過</span><span className="text-gray-600">● ただのコメント</span></div>
     </div>
     <div className="flex-1 min-h-0 overflow-x-auto p-4 md:p-6">
       <div className="grid gap-4 h-full min-h-0" style={{ gridTemplateColumns: 'minmax(240px, 1fr) minmax(240px, 1fr) minmax(380px, 1.6fr)', minWidth: 920 }}>
