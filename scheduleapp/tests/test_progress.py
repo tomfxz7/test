@@ -155,6 +155,90 @@ class ProgressTests(unittest.TestCase):
         self.assertTrue(raw.startswith(b'\xef\xbb\xbf'))
         return download.value.suggested_filename,raw.decode('utf-8-sig')
 
+    def test_premise_memos_are_gray_neutral_and_editable_without_resolving_waits(self):
+        original=task(progressEnabled=True,progressStage='doing')
+        original['subtasks'][0]['smallTasks']=[dict(id='a',title='前提を残す作業',waiting=True)]
+        original['progressHistory']=[dict(id='waiting',kind='comment',text='回答待ち',status='waiting',smallTaskId='a',smallTaskTitle='前提を残す作業',subtaskIds=['s1'],subtaskTitles=['既存の調査'])]
+        self.seed([original]);self.progress();self.page.get_by_role('button',name='前提を残す作業のトークを表示',exact=True).click()
+        self.reply('waiting');self.page.get_by_label('前提メモ',exact=True).check()
+        expect(self.page.get_by_label('相手待ち',exact=True)).to_be_disabled()
+        expect(self.page.get_by_label('小さいタスクの追加',exact=True)).to_be_disabled()
+        self.send('そもそも締結トルクが有効かを確認する https://example.com/basis',expand_threads=False)
+        memo=self.stored()[0]['progressHistory'][-1]
+        self.assertTrue(memo['assumptionMemo']);self.assertFalse(memo['plainComment'])
+        self.assertTrue(self.stored()[0]['subtasks'][0]['smallTasks'][0]['waiting'])
+        self.assertNotIn('resolvedByReplyId',self.stored()[0]['progressHistory'][0])
+        expect(self.entry(memo['id']).locator(':scope > div')).to_have_class(re.compile(r'\bbg-gray-50\b'))
+        expect(self.entry(memo['id']).get_by_text('前提メモ',exact=True)).to_be_visible()
+        self.entry(memo['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+        expect(self.page.get_by_label('前提メモ',exact=True)).to_be_checked()
+        expect(self.page.get_by_label('ただのコメント',exact=True)).not_to_be_checked()
+        self.page.get_by_label('ただのコメント',exact=True).check()
+        expect(self.page.get_by_label('前提メモ',exact=True)).not_to_be_checked()
+        self.page.get_by_role('button',name='編集を保存',exact=True).click()
+        self.entry(memo['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+        expect(self.page.get_by_label('ただのコメント',exact=True)).to_be_checked()
+        self.page.get_by_label('前提メモ',exact=True).check();self.page.get_by_role('button',name='編集を保存',exact=True).click()
+        self.reply(memo['id']);self.send('前提について補足',expand_threads=False)
+        reply=self.stored()[0]['progressHistory'][-1]
+        self.assertTrue(reply['quote']['assumptionMemo'])
+        self.page.get_by_role('button',name='前提を残す作業を完了',exact=True).click()
+        expect(self.entry(memo['id']).locator(':scope > div')).to_have_class(re.compile(r'\bbg-gray-50\b'))
+        self.page.reload();self.progress();self.page.get_by_role('button',name='前提を残す作業のトークを表示',exact=True).click()
+        expect(self.entry(reply['id']).get_by_role('blockquote').get_by_text('前提メモ',exact=True)).to_be_visible()
+        with self.page.expect_download() as download:self.page.get_by_role('button',name='エクスポート',exact=True).click()
+        backup=Path(download.value.path()).read_bytes();self.seed([])
+        self.page.get_by_label('バックアップをインポート',exact=True).set_input_files(dict(name='premises.json',mimeType='application/json',buffer=backup))
+        expect(self.page.get_by_text('データをインポートしました',exact=True)).to_be_visible()
+        self.progress();self.page.get_by_role('button',name='前提を残す作業のトークを表示',exact=True).click()
+        expect(self.entry(memo['id']).get_by_text('前提メモ',exact=True)).to_be_visible()
+
+    def test_reports_distinguish_premises_from_progress_and_include_prior_context(self):
+        import base64,io,zipfile,xml.etree.ElementTree as ET
+        png='data:image/png;base64,'+base64.b64encode(self.progress_png()).decode()
+        def record(id,text,at,**extra):return dict(id=id,kind='comment',text=text,createdAt=at,status='note',subtaskIds=['s1'],subtaskTitles=['既存の調査'],**extra)
+        records=[record('past','期間前からの検証の前提 https://example.com/premise','2000-01-01T01:00:00Z',assumptionMemo=True,images=[dict(id='img',name='前提図.png',src=png)]),
+            record('current','期間内に追加した前提',TODAY.isoformat()+'T01:00:00Z',assumptionMemo=True),
+            record('future','未来の前提は含めない','2099-01-01T01:00:00Z',assumptionMemo=True),
+            record('note','期間外の通常コメントは含めない','2000-01-01T01:00:00Z',plainComment=True)]
+        progress=record('progress','実際に検証した内容',TODAY.isoformat()+'T01:00:00Z');progress['status']='active';records.append(progress)
+        self.seed([task(progressEnabled=True,progressStage='doing',progressHistory=records)])
+        dialog=self.open_report(start=TODAY.isoformat(),end=TODAY.isoformat());_,body=self.download_report(dialog)
+        for text in ['期間前からの検証の前提','期間内に追加した前提','前提メモ（背景情報・実績ではない）','進捗記録: 1件','通常コメント: 0件','前提メモ（期間内）: 1件','前提図.png']:self.assertIn(text,body)
+        for text in ['未来の前提は含めない','期間外の通常コメントは含めない']:self.assertNotIn(text,body)
+        dialog=self.open_report(start=TODAY.isoformat(),end=TODAY.isoformat())
+        with self.page.expect_download() as download:dialog.get_by_role('button',name='Wordをダウンロード',exact=True).click()
+        with zipfile.ZipFile(io.BytesIO(Path(download.value.path()).read_bytes())) as archive:
+            root=ET.fromstring(archive.read('word/document.xml'));text=''.join(root.itertext())
+            self.assertIn('期間前からの検証の前提',text);self.assertIn('期間内に追加した前提',text)
+            self.assertNotIn('未来の前提は含めない',text)
+            self.assertEqual(len([name for name in archive.namelist() if name.startswith('word/media/')]),1)
+
+    def test_renaming_todo_updates_comment_classification_and_report_by_id(self):
+        origin=dict(id='origin',kind='comment',text=FUTURE+'までに【旧タイトル】',status='active',addedSubtask=True,subtaskIds=['s1'],subtaskTitles=['旧タイトル'],createdAt=TODAY.isoformat()+'T01:00:00Z')
+        memo=dict(origin,id='memo',text='前提として残す背景',addedSubtask=False,assumptionMemo=True,status='note',createdAt='2000-01-01T01:00:00Z')
+        child=dict(origin,id='child-note',text='小さいタスクの記録',addedSubtask=False,smallTaskId='a',smallTaskTitle='配下の作業')
+        removed=dict(origin,id='removed-note',text='削除済みの項目の記録',addedSubtask=False,subtaskIds=['removed'],subtaskTitles=['削除済みの旧項目'])
+        original=task(progressEnabled=True,progressStage='doing',progressHistory=[origin,memo,child,removed])
+        original['subtasks'][0].update(title='旧タイトル',smallTasks=[dict(id='a',title='配下の作業')])
+        self.seed([original]);self.progress();self.select_chat()
+        self.card().get_by_role('button',name='進捗テスト案件の設定',exact=True).click()
+        dialog=self.page.get_by_role('dialog',name='進捗の設定',exact=True)
+        dialog.get_by_label('やるべきこと 1',exact=True).fill('固定資産シールを貼る')
+        dialog.get_by_role('button',name='確定',exact=True).click();self.expand_talks()
+        for id in ['origin','memo','child-note']:
+            expect(self.entry(id).locator('[data-progress-subtask-label="s1"]')).to_have_text('固定資産シールを貼る')
+        expect(self.entry('removed-note').locator('[data-progress-subtask-label="removed"]')).to_have_text('削除済みの旧項目')
+        self.assertEqual(self.stored()[0]['progressHistory'],original['progressHistory'])
+        self.page.get_by_label('履歴を検索',exact=True).fill('固定資産シールを貼る')
+        expect(self.entry('memo')).to_be_visible()
+        self.page.reload();self.progress();self.select_chat()
+        expect(self.entry('memo').locator('[data-progress-subtask-label="s1"]')).to_have_text('固定資産シールを貼る')
+        dialog=self.open_report(start=TODAY.isoformat(),end=TODAY.isoformat());_,body=self.download_report(dialog)
+        self.assertIn('固定資産シールを貼る [s1]',body)
+        self.assertNotIn('旧タイトル [s1]',body)
+        self.assertIn('削除済みの旧項目 [removed]',body)
+
     def test_word_report_is_default_and_embeds_images_hyperlinks_and_scoped_history(self):
         import io,zipfile,xml.etree.ElementTree as ET,base64
         png='data:image/png;base64,'+base64.b64encode(self.progress_png()).decode()
@@ -271,7 +355,7 @@ class ProgressTests(unittest.TestCase):
         self.seed([original]);self.progress();self.page.get_by_role('button',name='サイズ確認のトークを表示',exact=True).click()
         panel=self.page.get_by_role('region',name='進捗リストボード',exact=True)
         options=panel.get_by_role('group',name='送信オプション',exact=True)
-        expect(options.get_by_role('checkbox')).to_have_count(5)
+        expect(options.get_by_role('checkbox')).to_have_count(6)
         for width,height in [(1800,1000),(1300,750),(390,700)]:
             with self.subTest(width=width,height=height):
                 self.page.set_viewport_size(dict(width=width,height=height))
@@ -751,6 +835,33 @@ class ProgressTests(unittest.TestCase):
     def dependency_dialog(self, title):
         self.page.get_by_role('button',name=title+'のタスク待ちを設定',exact=True).click()
         return self.page.get_by_role('dialog',name='タスク待ちの設定',exact=True)
+
+    def test_waiting_dependency_choices_show_only_the_matching_comment_body(self):
+        import base64
+        original=task(progressEnabled=True,progressStage='doing',waiting=True)
+        original['subtasks'][0]['smallTasks']=[dict(id='a',title='図面の確認',waiting=True),dict(id='b',title='確認後の作業')]
+        original['subtasks'][1]['waiting']=True
+        def waiting(id,text,parents=None,small=None,**extra):return dict(id=id,kind='comment',text=text,status='waiting',createdAt=TODAY.isoformat()+'T01:00:00Z',subtaskIds=parents or [],subtaskTitles=['既存の調査'] if parents==['s1'] else ['期限切れの確認'] if parents else [],smallTaskId=small,**extra)
+        image=dict(id='img',name='選択欄には出さない画像.png',src='data:image/png;base64,'+base64.b64encode(self.progress_png()).decode())
+        original['progressHistory']=[waiting('global','全体の見積回答を待っています'),waiting('parent','シールの発行回答を待っています',['s2']),
+            waiting('old','解除済みの古い依頼は表示しない',['s1'],'a',resolvedByReplyId='new'),
+            waiting('small','図面の寸法確認の回答を待っています',['s1'],'a',images=[image],links=[dict(id='link',label='添付仕様書は表示しない',url='https://example.com/attachment')]),
+            waiting('premise','前提メモは待ち本文に使わない',['s1'],'a',assumptionMemo=True)]
+        self.seed([original]);self.progress();before=self.stored();dialog=self.dependency_dialog('確認後の作業')
+        for text in ['全体の見積回答を待っています','シールの発行回答を待っています','図面の寸法確認の回答を待っています']:expect(dialog.get_by_text(text,exact=True)).to_be_visible()
+        for text in ['解除済みの古い依頼は表示しない','前提メモは待ち本文に使わない','添付仕様書は表示しない']:expect(dialog.get_by_text(text,exact=True)).to_have_count(0)
+        preview=dialog.locator('[data-dependency-option="waiting:small:s1:a"]').get_by_label('相手待ちの内容',exact=True)
+        expect(preview).to_have_text('図面の寸法確認の回答を待っています')
+        expect(preview.locator('time,img,a,button')).to_have_count(0)
+        choice=dialog.get_by_label('解除を待つ: 相手待ち 図面の確認',exact=True)
+        preview.click();expect(choice).not_to_be_checked();self.assertEqual(self.stored(),before)
+        choice.check();dialog.get_by_role('button',name='タスク待ちを保存',exact=True).click()
+        self.page.get_by_role('button',name='図面の確認のトークを表示',exact=True).click();self.reply('small');self.send('確認の回答を受領')
+        expect(self.page.locator('[data-progress-small-task-id="b"]')).to_have_class(re.compile(r'\bbg-purple-50\b'))
+        dialog=self.dependency_dialog('確認後の作業')
+        expect(dialog.get_by_label('解除を待つ: 相手待ち 図面の確認',exact=True)).to_be_checked()
+        expect(dialog.get_by_text('図面の寸法確認の回答を待っています',exact=True)).to_be_visible()
+        dialog.get_by_role('button',name='キャンセル',exact=True).click()
 
     def test_waiting_dependencies_release_on_reply_for_all_scopes_without_task_completion(self):
         for target_kind in ['small','subtask']:
