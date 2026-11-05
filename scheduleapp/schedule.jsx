@@ -1951,7 +1951,11 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget }) => {
       const updated = { ...previous, subtasks: nextSubtasks,
         ...(addingInReply && !replySource.smallTaskId && !replySource.subtaskIds?.length ? { waiting: false } : {}),
         ...(applyStatus && !smallTarget && !selectedIds.length ? { waiting } : {}), progressHistory };
-      return finishingReply && replySource.smallTaskId ? removeProgressSmallTask(updated, replySource.smallTaskId) : updated;
+      // Saving a completion from the editor must finish the actual small task
+      // too, including old backups whose comment already says completed.
+      const completedSmallId = !plainComment && completed && !addTodo && !addSmall ? smallTarget?.smallTaskId : null;
+      const removedSmallId = completedSmallId || (finishingReply ? replySource.smallTaskId : null);
+      return removedSmallId ? removeProgressSmallTask(updated, removedSmallId) : updated;
     });
     resetComposer();
   };

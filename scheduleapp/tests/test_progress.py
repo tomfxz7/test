@@ -225,6 +225,32 @@ class ProgressTests(unittest.TestCase):
         self.select_chat()
         expect(self.entry('別親の記録')).to_be_visible()
 
+    def test_edit_reply_completion_removes_small_task_even_if_already_marked_completed(self):
+        for prior_status in ['active', 'completed']:
+            with self.subTest(prior_status=prior_status):
+                addition=dict(id='addition',kind='comment',createdAt='2026-10-29T01:00:00Z',text='照合作業',
+                              status='active',subtaskIds=['s1'],subtaskTitles=['既存の調査'],
+                              smallTaskId='small',smallTaskTitle='照合作業',addedSmallTask=True)
+                quoted=dict(addition,id='quoted',text='確認した内容',addedSmallTask=False)
+                reply=dict(addition,id='reply',text='確認結果の補足',addedSmallTask=False,
+                           status=prior_status,quote=quoted)
+                original=task(progressEnabled=True,progressStage='doing',progressHistory=[addition,reply])
+                original['subtasks'][0]['smallTasks']=[dict(id='small',title='照合作業',completed=False,waiting=False),
+                                                       dict(id='keep',title='別の作業',completed=False)]
+                self.seed([original]);self.progress();self.select_chat()
+                self.entry('reply').get_by_role('button',name='コメントを編集',exact=True).click()
+                self.page.get_by_label('完了',exact=True).check()
+                self.page.get_by_role('button',name='編集を保存',exact=True).click()
+                expect(self.page.get_by_label('コメントの編集',exact=True)).to_have_count(0)
+                result=self.stored()[0]
+                self.assertEqual([small['id'] for small in result['subtasks'][0]['smallTasks']],['keep'])
+                self.assertFalse(result['subtasks'][0]['completed'])
+                self.assertEqual(result['progressHistory'][0],addition)
+                self.assertEqual(result['progressHistory'][1]['quote'],quoted)
+                self.assertEqual(result['progressHistory'][1]['status'],'completed')
+                self.page.reload();self.progress();self.select_chat()
+                self.assertEqual(self.stored()[0]['subtasks'][0]['smallTasks'],result['subtasks'][0]['smallTasks'])
+
     def test_report_default_range_is_seven_days_ago_through_today(self):
         self.seed([task(progressEnabled=True)])
         self.page.get_by_role('button',name='レポート作成',exact=True).click()
