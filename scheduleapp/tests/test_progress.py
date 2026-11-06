@@ -219,7 +219,7 @@ class ProgressTests(unittest.TestCase):
         self.send('選択先を続ける');self.assertEqual(self.stored()[0]['progressHistory'][-1]['smallTaskId'],'a')
         self.page.get_by_role('button',name='表示中の範囲に戻す',exact=True).click();self.send('大タスクへの追記')
         self.assertIsNone(self.stored()[0]['progressHistory'][-1].get('smallTaskId'))
-        self.assertEqual(self.entry('small-note').locator(':scope > div').evaluate('el=>getComputedStyle(el).borderTopColor'),'rgb(0, 0, 0)')
+        self.assertEqual(self.entry('small-note').locator(':scope > div').evaluate('el=>getComputedStyle(el).borderTopColor'),'rgb(100, 116, 139)')
 
     def test_small_task_drag_reorders_within_parent_and_persists(self):
         original=task(progressEnabled=True,progressStage='doing')

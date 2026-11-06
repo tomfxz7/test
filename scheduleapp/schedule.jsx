@@ -2738,9 +2738,9 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
     setSmallTarget(scopeSmallTarget(parentId, smallId));
     setReplyTo(null); selectedEntryRef.current = { ...entry, smallTaskId: smallId }; setSelectedEntryId(entry.id);
   };
-  const renderHistoryEntry = (entry, { extra = null, virtual = false, tone = null, synthetic = false } = {}) => <div key={entry.id} data-progress-entry-id={synthetic ? undefined : entry.id} tabIndex={0} onClick={e => selectCommentTarget(entry, e)} onKeyDown={e => { if (e.key === 'Enter' && e.target === e.currentTarget) { e.preventDefault(); selectCommentTarget(entry, e); } }} aria-current={selectedEntryId === entry.id ? 'true' : undefined} className={`flex flex-col items-stretch ${selectedEntryId === entry.id ? 'ring-2 ring-black rounded-xl' : ''} ${highlightedId === entry.id ? 'ring-2 ring-blue-400 rounded-xl' : ''}`}>
+  const renderHistoryEntry = (entry, { extra = null, virtual = false, tone = null, synthetic = false } = {}) => <div key={entry.id} data-progress-entry-id={synthetic ? undefined : entry.id} tabIndex={0} onClick={e => selectCommentTarget(entry, e)} onKeyDown={e => { if (e.key === 'Enter' && e.target === e.currentTarget) { e.preventDefault(); selectCommentTarget(entry, e); } }} aria-current={selectedEntryId === entry.id ? 'true' : undefined} className={`flex flex-col items-stretch ${selectedEntryId === entry.id ? 'ring-2 ring-slate-300 ring-offset-2 rounded-xl' : ''} ${highlightedId === entry.id ? 'ring-2 ring-blue-400 rounded-xl' : ''}`}>
         {Number.isFinite(Date.parse(entry.createdAt)) ? <time dateTime={entry.createdAt} className="text-[10px] text-gray-500 px-1 mb-1">{new Date(entry.createdAt).toLocaleString('ja-JP')}</time> : <span className="text-[10px] text-gray-500 px-1 mb-1">日時未記録</span>}
-        <div className={`w-full rounded-xl border px-3 py-2 text-sm shadow-sm ${tone ? progressToneClasses(tone) : progressEntryClasses(entry, task)}`}>
+        <div className={`progress-talk-bubble w-full rounded-xl border px-3 py-2 text-sm shadow-sm ${tone ? progressToneClasses(tone) : progressEntryClasses(entry, task)}`}>
           <p className="text-[10px] font-bold text-gray-400 mb-1">{entry.kind === 'comment' ? (entry.assumptionMemo ? '前提メモ' : progressEntryIsNote(entry) ? 'コメント' : entry.addedSubtask ? 'やるべきことの追加' : entry.addedSmallTask ? '小さいタスクの追加' : '進捗記録') : '期限変更'}</p>
           {entry.quote && <ProgressQuote quote={entry.quote} onNavigate={navigateQuote} task={task}/>}
           <p className="whitespace-pre-wrap break-words"><ProgressText value={entry.text} textLinks={entry.textLinks}/></p>
@@ -2778,7 +2778,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
         const origin = summaryOrigin ? { ...group.origin, id: `small-summary:${group.id}`, text: group.origin.smallTaskTitle || '小さいタスク', images: [], links: [], quote: null } : group.origin;
         const entries = group.entries.filter(showEntry);
         if (separateWaitingOrigin && !hiddenOrigin) entries.unshift(group.origin);
-        return <div key={`completed-thread:${group.id}`} data-small-thread-id={group.id} data-completed-small-task-id={group.completed ? group.id : undefined} className={`rounded-xl border-b-4 shadow-sm ${progressToneBorders[progressStatusTone(group.status)]}`}>
+        return <div key={`completed-thread:${group.id}`} data-small-thread-id={group.id} data-completed-small-task-id={group.completed ? group.id : undefined} className="rounded-xl">
           {renderHistoryEntry(origin, { virtual: group.virtual || summaryOrigin, synthetic: group.virtual || summaryOrigin, tone: progressStatusTone(group.status), extra: <div className="mt-3 border-t border-black pt-3 space-y-2">
             {renderConclusions(group, 'small')}
             <div className="flex gap-3 flex-wrap text-xs">
@@ -2786,7 +2786,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
                 onClick={() => { if (query.trim()) setQuery(''); setExpandedSmallIds(ids => expanded ? ids.filter(id => id !== group.id) : [...ids, group.id]); }} className="rounded-lg border border-black px-3 py-1.5 font-bold">{expanded ? '履歴を折りたたむ' : '履歴を展開'}（{entries.length}件）</button>
             </div>
           </div> })}
-          {expanded && <div id={`completed-talks-${group.id}`} data-small-talks={group.id} data-completed-small-talks={group.completed ? group.id : undefined} className="border-l-2 border-black pl-3 space-y-3 mt-3">
+          {expanded && <div id={`completed-talks-${group.id}`} data-small-talks={group.id} data-completed-small-talks={group.completed ? group.id : undefined} className="border-l border-slate-300 pl-3 space-y-3 mt-3">
             {entries.length ? memoFirst(entries).map(entry => renderHistoryEntry(entry)) : <p className="text-xs text-blue-700">追加後のトークはありません。</p>}
           </div>}
         </div>;
@@ -2803,14 +2803,14 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
     const origin = { ...group.origin, ...(hiddenOrigin ? { id: `todo-summary:${group.id}`, images: [], links: [], quote: null } : {}), text: group.title };
     const entries = group.entries.filter(showEntry).filter(entry => !query.trim() || visibleHistory.some(item => item.id === entry.id));
     const childRows = smallRows(memoFirst(entries), group.id);
-    return <div key={`todo-thread:${group.id}`} data-todo-thread-id={group.id} className={`rounded-xl border-b-4 shadow-sm ${progressToneBorders[tone]}`}>
+    return <div key={`todo-thread:${group.id}`} data-todo-thread-id={group.id} className="rounded-xl">
       {renderHistoryEntry(origin, { virtual: group.virtual || hiddenOrigin, synthetic: group.virtual, tone, extra: <div className="mt-3 pt-3 border-t border-black space-y-2">
         {renderConclusions(group, 'todo')}
         <button type="button" aria-label={`${title}のトークを${expanded ? '折りたたむ' : '展開'}`} aria-expanded={expanded} aria-controls={`todo-talks-${group.id}`}
           onClick={() => { if (query.trim()) setQuery(''); setExpandedTodoIds(ids => expanded ? ids.filter(id => id !== group.id) : [...ids, group.id]); setCollapsedTodoIds(ids => expanded ? [...new Set([...ids, group.id])] : ids.filter(id => id !== group.id)); }}
           className="rounded-lg border border-black px-3 py-1.5 text-xs font-bold">{expanded ? '履歴を折りたたむ' : '履歴を展開'}（{entries.length}件）</button>
       </div> })}
-      {expanded && <div id={`todo-talks-${group.id}`} data-todo-talks={group.id} className="border-l-2 border-black pl-3 mt-3 space-y-3">
+      {expanded && <div id={`todo-talks-${group.id}`} data-todo-talks={group.id} className="border-l border-slate-300 pl-3 mt-3 space-y-3">
         {childRows.length ? childRows.map(renderSmallRow) : <p className="text-xs opacity-70">追加後のトークはありません。</p>}
       </div>}
     </div>;
@@ -2974,7 +2974,12 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
     else onUpdateTask(task.id, previous => ({ ...previous, progressStage: 'todo' }));
   };
   return <div className="h-full min-h-0 flex flex-col overflow-hidden" data-progress-page="">
-    <style>{`[data-progress-page] *, [data-progress-page] *::before, [data-progress-page] *::after { border-color: #000 !important; }`}</style>
+    <style>{`
+      [data-progress-page] *, [data-progress-page] *::before, [data-progress-page] *::after { border-color: #cbd5e1 !important; }
+      [data-progress-page] [data-progress-task-id], [data-progress-page] [data-progress-subtask-id],
+      [data-progress-page] [data-progress-small-task-id], [data-progress-page] .progress-talk-bubble { border-color: #64748b !important; }
+      [data-progress-page] .progress-talk-bubble { box-shadow: 0 1px 3px rgba(15, 23, 42, .06); }
+    `}</style>
     <div className="px-4 py-2 bg-white/70 border-b flex items-center justify-between gap-3 shrink-0">
       <label className="text-xs flex items-center gap-2">返信済みの相手待ち<select aria-label="返信済みの相手待ちの表示" value={showResolvedWaiting ? 'show' : 'hide'} onChange={e => changeResolvedWaiting(e.target.value)} className="border rounded-lg bg-white px-2 py-1.5"><option value="show">青色で残す</option><option value="hide">非表示</option></select></label>
       <details className="relative text-xs shrink-0"><summary className="cursor-pointer text-gray-600">色の説明</summary>
