@@ -155,6 +155,148 @@ class ProgressTests(unittest.TestCase):
         self.assertTrue(raw.startswith(b'\xef\xbb\xbf'))
         return download.value.suggested_filename,raw.decode('utf-8-sig')
 
+    def connect_backup_file(self):
+        # The picker is replaced because headless Chromium cannot operate the
+        # OS dialog. The returned handle is real: writes, close, reads and IDB
+        # structured-clone persistence all use Chromium's file implementation.
+        self.page.evaluate('''async () => {
+          const directory = await navigator.storage.getDirectory();
+          window.backupFile = await directory.getFileHandle('taskmatrix-test.json', {create:true});
+          window.backupControl = {permission:'granted',requests:0,writes:0,closed:0,fail:false,cancel:false,holdNext:false};
+          window.showSaveFilePicker = async () => {
+            if (backupControl.cancel) throw new DOMException('Cancelled','AbortError');
+            return backupFile;
+          };
+          const proto = FileSystemFileHandle.prototype;
+          proto.queryPermission = async () => backupControl.permission;
+          proto.requestPermission = async () => {backupControl.requests++;return backupControl.permission;};
+          const create = proto.createWritable;
+          proto.createWritable = async function() {
+            if (backupControl.fail) throw new DOMException('Disk full','QuotaExceededError');
+            const stream = await create.call(this);
+            return {
+              write:async text => {
+                backupControl.writes++;
+                if (backupControl.holdNext) {
+                  backupControl.holdNext=false;
+                  await new Promise(resolve=>window.releaseBackupWrite=resolve);
+                }
+                return stream.write(text);
+              },
+              close:async()=>{await stream.close();backupControl.closed++;},
+              abort:()=>stream.abort()
+            };
+          };
+        }''')
+        self.page.locator('[data-file-backup] summary').click()
+        self.page.get_by_role('button',name='保存先ファイルを選択',exact=True).click()
+        expect(self.page.get_by_label('ファイル保存状態',exact=True)).to_have_text('保存済み')
+
+    def backup_contents(self):
+        return self.page.evaluate('''async()=>JSON.parse(await(await(await navigator.storage.getDirectory()).getFileHandle('taskmatrix-test.json')).getFile().then(file=>file.text()))''')
+
+    def test_file_backup_writes_all_data_auto_saves_and_restores_real_handle(self):
+        original=task(progressEnabled=True,progressStage='doing')
+        original['progressHistory']=[dict(id='image-link',kind='comment',status='active',text='https://example.com',subtaskIds=[],images=[dict(id='img',name='資料.png',src='data:image/png;base64,'+__import__('base64').b64encode(self.progress_png()).decode())],links=[dict(url='https://example.com',label='資料')])]
+        self.seed([original])
+        shared=dict(projects=[dict(id='p1',title='保存対象プロジェクト',type='project',durationWeeks=4,tasksTemplate=[])],recurringSchedules=[dict(id='r1',title='定例会議',frequency='weekly',interval=1,dayOfWeek=1,dayOfMonth=1,startDate=TODAY.isoformat(),endDate='',memo='',urls=[])],recurringCompletions={'r1_'+TODAY.isoformat():dict(completed=True,completionNote='保存対象の記録')})
+        self.page.get_by_label('バックアップをインポート',exact=True).set_input_files(dict(name='shared.json',mimeType='application/json',buffer=json.dumps(shared,ensure_ascii=False).encode()))
+        expect(self.page.get_by_text('データをインポートしました',exact=True)).to_be_visible()
+        self.connect_backup_file()
+        saved=self.backup_contents()
+        self.assertEqual(set(saved),{'tasks','projects','recurringSchedules','recurringCompletions'})
+        self.assertEqual(saved['tasks'],self.stored())
+        for key,value in shared.items():self.assertEqual(saved[key],value)
+        with self.page.expect_download() as download:self.page.get_by_role('button',name='エクスポート',exact=True).click()
+        self.assertEqual(saved,json.loads(Path(download.value.path()).read_text()))
+        self.progress();self.select_chat();self.send('ファイルへ自動保存する進捗')
+        self.page.wait_for_function('backupControl.closed===2')
+        self.assertEqual(self.backup_contents()['tasks'],self.stored())
+        self.page.wait_for_function('''async()=>{const db=await new Promise(r=>{const q=indexedDB.open('TaskMatrixAppDB',1);q.onsuccess=()=>r(q.result)});return await new Promise(r=>{const q=db.transaction('appData').objectStore('appData').get('fileBackupSettings');q.onsuccess=()=>{db.close();r(!!q.result?.lastSavedAt)}})}''')
+        self.page.reload();expect(self.page.get_by_role('heading',name='TaskMatrix Pro')).to_be_visible()
+        expect(self.page.get_by_label('ファイル保存状態',exact=True)).to_have_text('接続済み')
+        self.page.locator('[data-file-backup] summary').click()
+        expect(self.page.get_by_text('保存先：taskmatrix-test.json',exact=True)).to_be_visible()
+        self.progress();self.select_chat();self.send('再読み込み後も同じファイルへ保存')
+        expect(self.page.get_by_label('ファイル保存状態',exact=True)).to_have_text('保存済み')
+        self.assertEqual(self.backup_contents()['tasks'],self.stored())
+        # A backup remains usable even after browser data is lost/replaced.
+        raw=json.dumps(self.backup_contents(),ensure_ascii=False).encode()
+        self.seed([])
+        self.page.get_by_label('バックアップをインポート',exact=True).set_input_files(dict(name='file-backup.json',mimeType='application/json',buffer=raw))
+        expect(self.page.get_by_text('データをインポートしました',exact=True)).to_be_visible()
+        self.assertEqual(self.stored(),json.loads(raw)['tasks'])
+
+    def test_file_backup_manual_mode_cancel_and_disconnect_preserve_file(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.connect_backup_file()
+        before=self.backup_contents()
+        self.page.get_by_label('変更時に自動で上書き保存',exact=True).uncheck()
+        self.page.evaluate('backupControl.cancel=true')
+        self.page.get_by_role('button',name='保存先を変更',exact=True).click()
+        expect(self.page.get_by_label('ファイル保存状態',exact=True)).to_have_text('保存済み')
+        self.progress();self.select_chat();self.send('手動で保存する進捗')
+        expect(self.page.get_by_label('ファイル保存状態',exact=True)).to_have_text('未保存')
+        self.page.wait_for_timeout(1200)
+        self.assertEqual(self.backup_contents(),before)
+        self.page.get_by_role('button',name='今すぐ保存',exact=True).click()
+        expect(self.page.get_by_label('ファイル保存状態',exact=True)).to_have_text('保存済み')
+        saved=self.backup_contents();self.assertEqual(saved['tasks'],self.stored())
+        self.page.reload();expect(self.page.get_by_role('heading',name='TaskMatrix Pro')).to_be_visible()
+        self.page.locator('[data-file-backup] summary').click()
+        expect(self.page.get_by_label('変更時に自動で上書き保存',exact=True)).not_to_be_checked()
+        self.page.get_by_role('button',name='保存先の接続を解除',exact=True).click()
+        expect(self.page.get_by_role('button',name='今すぐ保存',exact=True)).to_be_disabled()
+        self.assertEqual(self.backup_contents(),saved)
+
+    def test_file_backup_permission_and_write_failures_are_visible_and_retryable(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.connect_backup_file()
+        before=self.backup_contents();self.page.evaluate("backupControl.permission='prompt'")
+        self.progress();self.select_chat();self.send('権限を失った後の進捗')
+        expect(self.page.get_by_label('ファイル保存状態',exact=True)).to_have_text('許可が必要')
+        self.assertEqual(self.page.evaluate('backupControl.requests'),0)
+        self.assertEqual(self.backup_contents(),before)
+        self.page.get_by_role('button',name='今すぐ保存',exact=True).click()
+        expect(self.page.get_by_role('alert').filter(has_text='書き込みの許可が必要')).to_be_visible()
+        self.assertEqual(self.page.evaluate('backupControl.requests'),1)
+        self.page.evaluate("backupControl.permission='granted';backupControl.fail=true")
+        self.page.get_by_role('button',name='今すぐ保存',exact=True).click()
+        expect(self.page.get_by_label('ファイル保存状態',exact=True)).to_have_text('保存失敗')
+        expect(self.page.get_by_role('alert').filter(has_text='ファイルへの保存に失敗')).to_be_visible()
+        self.assertEqual(self.backup_contents(),before)
+        self.page.evaluate('backupControl.fail=false')
+        self.page.get_by_role('button',name='今すぐ保存',exact=True).click()
+        expect(self.page.get_by_label('ファイル保存状態',exact=True)).to_have_text('保存済み')
+        self.assertEqual(self.backup_contents()['tasks'],self.stored())
+
+    def test_file_backup_serializes_changes_during_an_in_flight_write(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.connect_backup_file()
+        self.progress();self.select_chat();self.page.evaluate('backupControl.holdNext=true')
+        self.send('保存途中の最初の進捗');self.page.wait_for_function('!!window.releaseBackupWrite')
+        expect(self.page.get_by_label('ファイル保存状態',exact=True)).to_have_text('保存中…')
+        self.send('保存中に追加した最新の進捗')
+        self.page.evaluate('releaseBackupWrite()')
+        self.page.wait_for_function('backupControl.closed===3')
+        expect(self.page.get_by_label('ファイル保存状態',exact=True)).to_have_text('保存済み')
+        self.assertEqual(self.backup_contents()['tasks'],self.stored())
+
+    def test_file_backup_unsupported_browser_keeps_export_available(self):
+        self.page.add_init_script('window.showSaveFilePicker=undefined')
+        self.page.reload();expect(self.page.get_by_role('heading',name='TaskMatrix Pro')).to_be_visible()
+        self.page.locator('[data-file-backup] summary').click()
+        expect(self.page.get_by_text(re.compile('このブラウザーでは直接上書き保存に対応していません'))).to_be_visible()
+        expect(self.page.get_by_role('button',name='保存先ファイルを選択',exact=True)).to_have_count(0)
+        with self.page.expect_download() as download:self.page.get_by_role('button',name='エクスポート',exact=True).click()
+        self.assertIn('tasks',json.loads(Path(download.value.path()).read_text()))
+
+    def test_file_backup_auto_save_preference_survives_without_a_connected_file(self):
+        self.page.locator('[data-file-backup] summary').click()
+        self.page.get_by_label('変更時に自動で上書き保存',exact=True).uncheck()
+        self.page.wait_for_function('''async()=>{const db=await new Promise(r=>{const q=indexedDB.open('TaskMatrixAppDB',1);q.onsuccess=()=>r(q.result)});return await new Promise(r=>{const q=db.transaction('appData').objectStore('appData').get('fileBackupSettings');q.onsuccess=()=>{db.close();r(q.result?.enabled===false)}})}''')
+        self.page.reload();expect(self.page.get_by_role('heading',name='TaskMatrix Pro')).to_be_visible()
+        self.page.locator('[data-file-backup] summary').click()
+        expect(self.page.get_by_label('変更時に自動で上書き保存',exact=True)).not_to_be_checked()
+        expect(self.page.get_by_role('button',name='今すぐ保存',exact=True)).to_be_disabled()
+
     def test_ordinary_progress_never_closes_waiting_and_only_waiting_replies_resolve_it(self):
         for scope in ['task','subtask','small']:
             with self.subTest(scope=scope):

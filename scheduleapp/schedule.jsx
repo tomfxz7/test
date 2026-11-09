@@ -79,6 +79,166 @@ const loadFromDB = async (key) => {
   }
 };
 
+// File handles are kept separately from exported data. Only an explicit picker
+// selection connects a file; importing data never changes the connected handle.
+const FILE_BACKUP_KEY = 'fileBackupSettings';
+const storeFileBackupSettings = async (settings) => {
+  const db = await initDB();
+  try {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      tx.objectStore(STORE_NAME).put(settings, FILE_BACKUP_KEY);
+      tx.oncomplete = resolve;
+      tx.onabort = tx.onerror = () => reject(tx.error || new Error('保存先を記憶できませんでした'));
+    });
+  } finally { db.close(); }
+};
+
+function useFileBackup(data, isDBReady) {
+  const content = useMemo(() => JSON.stringify(data, null, 2), [data]);
+  const contentRef = useRef(content);
+  contentRef.current = content;
+  const settingsRef = useRef({ handle: null, enabled: true, lastSavedAt: null });
+  const settingsQueue = useRef(Promise.resolve());
+  const busyRef = useRef(false);
+  const dirtyRef = useRef(false);
+  const observedContent = useRef(null);
+  const [status, setStatus] = useState('unconnected');
+  const [message, setMessage] = useState('');
+  const [settingsWarning, setSettingsWarning] = useState('');
+  const [settings, setSettings] = useState({ name: '', enabled: true, lastSavedAt: null });
+  const [ready, setReady] = useState(false);
+  const supported = typeof window !== 'undefined' && typeof window.showSaveFilePicker === 'function';
+
+  const persistSettings = () => {
+    const snapshot = { ...settingsRef.current };
+    settingsQueue.current = settingsQueue.current.catch(() => {}).then(() => storeFileBackupSettings(snapshot));
+    settingsQueue.current.then(() => setSettingsWarning(''), () => setSettingsWarning('保存先を記憶できませんでした。次回は保存先を選び直してください。'));
+  };
+  const refreshSettings = () => setSettings({ name: settingsRef.current.handle?.name || '', enabled: settingsRef.current.enabled, lastSavedAt: settingsRef.current.lastSavedAt });
+
+  useEffect(() => {
+    let cancelled = false;
+    loadFromDB(FILE_BACKUP_KEY).then(saved => {
+      if (cancelled) return;
+      if (saved) {
+        const handle = typeof saved.handle?.createWritable === 'function' ? saved.handle : null;
+        settingsRef.current = { handle, enabled: saved.enabled !== false, lastSavedAt: handle ? saved.lastSavedAt || null : null };
+        refreshSettings();
+        if (handle) {
+          setStatus('ready');
+          setMessage('保存先を復元しました。必要な場合は「今すぐ保存」で書き込みを許可してください。');
+        }
+      }
+      setReady(true);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const writeNow = async (requestPermission = false) => {
+    const handle = settingsRef.current.handle;
+    if (!handle || busyRef.current || !isDBReady) return;
+    busyRef.current = true;
+    dirtyRef.current = true;
+    setStatus('saving');
+    setMessage('');
+    try {
+      let permission = handle.queryPermission ? await handle.queryPermission({ mode: 'readwrite' }) : 'granted';
+      if (permission !== 'granted' && requestPermission && handle.requestPermission) permission = await handle.requestPermission({ mode: 'readwrite' });
+      if (permission !== 'granted') {
+        setStatus('permission');
+        setMessage('書き込みの許可が必要です。「今すぐ保存」を押して許可してください。');
+        return;
+      }
+      // Serialize writes, including changes made while an earlier write is in
+      // flight. Never allow an old snapshot to finish after a newer snapshot.
+      do {
+        const snapshot = contentRef.current;
+        const writable = await handle.createWritable();
+        try {
+          await writable.write(snapshot);
+          await writable.close();
+        } catch (error) {
+          try { await writable.abort(); } catch { /* Preserve the original error. */ }
+          throw error;
+        }
+        settingsRef.current.lastSavedAt = new Date().toISOString();
+        dirtyRef.current = snapshot !== contentRef.current;
+        refreshSettings();
+        persistSettings();
+      } while (dirtyRef.current && settingsRef.current.enabled);
+      setStatus(dirtyRef.current ? 'pending' : 'saved');
+    } catch (error) {
+      setStatus(error?.name === 'NotAllowedError' || error?.name === 'SecurityError' ? 'permission' : 'error');
+      setMessage(error?.name === 'NotAllowedError' || error?.name === 'SecurityError'
+        ? 'ファイルに書き込めません。「今すぐ保存」で許可するか、保存先を選び直してください。'
+        : 'ファイルへの保存に失敗しました。保存先を確認して再試行してください。');
+    } finally { busyRef.current = false; }
+  };
+
+  useEffect(() => {
+    if (!ready || !isDBReady) return;
+    if (observedContent.current === null) { observedContent.current = content; return; }
+    if (observedContent.current !== content) {
+      observedContent.current = content;
+      if (settingsRef.current.handle) {
+        dirtyRef.current = true;
+        if (!busyRef.current) setStatus('pending');
+      }
+    }
+    if (!settingsRef.current.handle || !settings.enabled || !dirtyRef.current) return;
+    const timer = setTimeout(() => writeNow(), 1000);
+    return () => clearTimeout(timer);
+  }, [content, ready, isDBReady, settings.enabled]);
+
+  useEffect(() => {
+    const beforeUnload = event => {
+      if (!settingsRef.current.handle || (!dirtyRef.current && !busyRef.current)) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', beforeUnload);
+    return () => window.removeEventListener('beforeunload', beforeUnload);
+  }, []);
+
+  const chooseDestination = async () => {
+    if (!supported || !ready || busyRef.current) return;
+    busyRef.current = true;
+    const previousStatus = status;
+    setStatus('choosing');
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: `taskmatrix_backup_${formatDate(new Date())}.json`,
+        types: [{ description: 'TaskMatrix バックアップ（JSON）', accept: { 'application/json': ['.json'] } }]
+      });
+      settingsRef.current = { handle, enabled: settingsRef.current.enabled, lastSavedAt: null };
+      dirtyRef.current = true;
+      refreshSettings();
+      persistSettings();
+      busyRef.current = false;
+      await writeNow(true);
+    } catch (error) {
+      if (error?.name === 'AbortError') setStatus(previousStatus);
+      else { setStatus('error'); setMessage('保存先を選択できませんでした。別のファイルを選んで再試行してください。'); }
+    } finally { busyRef.current = false; }
+  };
+  const setEnabled = enabled => {
+    settingsRef.current.enabled = enabled;
+    refreshSettings();
+    persistSettings();
+  };
+  const disconnect = () => {
+    if (busyRef.current) return;
+    settingsRef.current = { handle: null, enabled: settingsRef.current.enabled, lastSavedAt: null };
+    dirtyRef.current = false;
+    refreshSettings();
+    persistSettings();
+    setStatus('unconnected');
+    setMessage('保存先の接続を解除しました。保存済みのファイルは残ります。');
+  };
+  return { ...settings, ready, supported, status, message, settingsWarning, chooseDestination, writeNow, setEnabled, disconnect };
+}
+
 // --- Utility Functions ---
 
 const getLocalDate = (val) => {
@@ -3401,6 +3561,8 @@ export default function App() {
   const [projects, setProjects] = useState([]);
   const [recurringSchedules, setRecurringSchedules] = useState([]);
   const [recurringCompletions, setRecurringCompletions] = useState({});
+  const backupData = useMemo(() => ({ tasks, projects, recurringSchedules, recurringCompletions }), [tasks, projects, recurringSchedules, recurringCompletions]);
+  const fileBackup = useFileBackup(backupData, isDBReady);
 
   useEffect(() => {
     const loadData = async () => {
@@ -3532,8 +3694,7 @@ export default function App() {
   }, []);
 
   const handleExport = () => {
-    const data = { tasks, projects, recurringSchedules, recurringCompletions };
-    const jsonString = JSON.stringify(data, null, 2);
+    const jsonString = JSON.stringify(backupData, null, 2);
     const blob = new Blob([jsonString], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -4176,7 +4337,30 @@ export default function App() {
         </div>
 
         <div className="flex flex-wrap items-center gap-4">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <details className="relative" data-file-backup>
+              <summary className="flex cursor-pointer list-none items-center gap-1.5 text-slate-700 hover:bg-slate-100 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-bold shadow-sm">
+                <Download size={14} /><span>ファイル保存</span>
+                {fileBackup.name && <span className={fileBackup.status === 'saved' ? 'text-emerald-700' : fileBackup.status === 'error' || fileBackup.status === 'permission' ? 'text-red-600' : 'text-amber-700'} role="status" aria-label="ファイル保存状態">{({ saved: '保存済み', saving: '保存中…', choosing: '選択中…', pending: '未保存', permission: '許可が必要', error: '保存失敗', ready: '接続済み' })[fileBackup.status]}</span>}
+              </summary>
+              <section aria-label="ファイル保存設定" className="absolute top-full left-0 mt-2 w-80 max-w-[calc(100vw-2rem)] bg-white border border-slate-200 rounded-xl shadow-lg p-4 space-y-3 z-50 text-sm font-normal">
+                <p className="font-bold text-slate-800">ブラウザー外へのバックアップ</p>
+                <p className="text-xs text-slate-500">タスク・トーク・画像・予定を、指定したJSONファイルに上書き保存します。復元は「インポート」から行えます。</p>
+                {!fileBackup.supported ? <p className="text-xs text-amber-800" role="status">このブラウザーでは直接上書き保存に対応していません。Chrome・EdgeのHTTPS環境をご利用いただくか、「エクスポート」で保存してください。</p> : <>
+                  <p className="text-xs break-all">保存先：{fileBackup.name || '未設定'}</p>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={fileBackup.chooseDestination} disabled={!fileBackup.ready || ['saving', 'choosing'].includes(fileBackup.status)} className="rounded-lg px-3 py-2 bg-blue-600 text-white text-xs font-bold disabled:opacity-50">{fileBackup.name ? '保存先を変更' : '保存先ファイルを選択'}</button>
+                    <button type="button" onClick={() => fileBackup.writeNow(true)} disabled={!fileBackup.name || ['saving', 'choosing'].includes(fileBackup.status)} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold disabled:opacity-50">今すぐ保存</button>
+                  </div>
+                  <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={fileBackup.enabled} disabled={!fileBackup.ready || ['saving', 'choosing'].includes(fileBackup.status)} onChange={event => fileBackup.setEnabled(event.target.checked)} />変更時に自動で上書き保存</label>
+                  <p className="text-xs text-slate-500">自動保存は変更から約1秒後に行います。この画面を開いている間に動作します。</p>
+                  {fileBackup.lastSavedAt && <p className="text-xs text-slate-500">最終保存：{new Date(fileBackup.lastSavedAt).toLocaleString('ja-JP')}</p>}
+                  {fileBackup.name && <button type="button" onClick={fileBackup.disconnect} disabled={['saving', 'choosing'].includes(fileBackup.status)} className="text-xs text-slate-500 underline disabled:opacity-50">保存先の接続を解除</button>}
+                </>}
+                {fileBackup.message && <p className={`text-xs ${['error', 'permission'].includes(fileBackup.status) ? 'text-red-700' : 'text-slate-600'}`} role={['error', 'permission'].includes(fileBackup.status) ? 'alert' : 'status'}>{fileBackup.message}</p>}
+                {fileBackup.settingsWarning && <p className="text-xs text-amber-800" role="alert">{fileBackup.settingsWarning}</p>}
+              </section>
+            </details>
             <input
               type="file"
               aria-label="バックアップをインポート"
