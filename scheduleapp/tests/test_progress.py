@@ -155,6 +155,52 @@ class ProgressTests(unittest.TestCase):
         self.assertTrue(raw.startswith(b'\xef\xbb\xbf'))
         return download.value.suggested_filename,raw.decode('utf-8-sig')
 
+    def test_ordinary_progress_never_closes_waiting_and_only_waiting_replies_resolve_it(self):
+        for scope in ['task','subtask','small']:
+            with self.subTest(scope=scope):
+                original=task(progressEnabled=True,progressStage='doing')
+                owner=original if scope=='task' else original['subtasks'][0]
+                if scope=='small':
+                    owner=dict(id='a',title='返答待ちの小作業',waiting=True);original['subtasks'][0]['smallTasks']=[owner]
+                owner['waiting']=True
+                def wait(id,text):return dict(id=id,kind='comment',status='waiting',text=text,subtaskIds=[] if scope=='task' else ['s1'],subtaskTitles=[] if scope=='task' else ['既存の調査'],**(dict(smallTaskId='a',smallTaskTitle=owner['title']) if scope=='small' else {}))
+                original['progressHistory']=[wait('w1','質問1の返答待ち'),wait('w2','質問2の返答待ち')]
+                self.seed([original]);self.progress()
+                if scope=='task':self.select_chat()
+                else:self.page.get_by_role('button',name=('返答待ちの小作業' if scope=='small' else '既存の調査')+'のトークを表示',exact=True).click()
+                self.send('返答とは無関係の進捗',expand_threads=False);progress=self.stored()[0]['progressHistory'][-1]
+                self.reply(progress['id']);self.send('進捗への補足返信',expand_threads=False)
+                result=self.stored()[0]
+                for id in ['w1','w2']:self.assertNotIn('resolvedByReplyId',next(e for e in result['progressHistory'] if e['id']==id))
+                self.reply('w1');self.send('質問1の回答を受領',expand_threads=False)
+                result=self.stored()[0];self.assertIn('resolvedByReplyId',next(e for e in result['progressHistory'] if e['id']=='w1'))
+                self.assertNotIn('resolvedByReplyId',next(e for e in result['progressHistory'] if e['id']=='w2'))
+                current=result if scope=='task' else result['subtasks'][0]
+                if scope=='small':current=current['smallTasks'][0]
+                self.assertTrue(current['waiting'])
+                self.reply('w2');self.page.get_by_label('相手待ち',exact=True).check();self.send('追加の返答待ち',expand_threads=False)
+                followup=self.stored()[0]['progressHistory'][-1]
+                self.reply(followup['id']);self.send('すべての回答を受領',expand_threads=False)
+                self.page.reload();self.progress();result=self.stored()[0]
+                current=result if scope=='task' else result['subtasks'][0]
+                if scope=='small':current=current['smallTasks'][0]
+                self.assertFalse(current['waiting'])
+
+    def test_loading_repairs_waits_closed_by_unquoted_progress_but_keeps_real_closures(self):
+        def wait(id,closer):return dict(id=id,kind='comment',status='waiting',text=id,subtaskIds=['s1'],subtaskTitles=['既存の調査'],resolvedByReplyId=closer)
+        bad=wait('bad','progress');good=wait('good','reply');manual=wait('manual','waiting-cleared-in-settings')
+        original=task(progressEnabled=True,progressStage='doing',progressHistory=[bad,good,manual,
+            dict(id='progress',kind='comment',status='active',text='普通の進捗',subtaskIds=['s1'],subtaskTitles=['既存の調査']),
+            dict(id='reply',kind='comment',status='active',text='実際の返信',subtaskIds=['s1'],subtaskTitles=['既存の調査'],quote=good)])
+        original['subtasks'][0]['waiting']=False
+        self.seed([original]);self.progress();result=self.stored()[0]
+        self.assertNotIn('resolvedByReplyId',next(e for e in result['progressHistory'] if e['id']=='bad'))
+        self.assertEqual(next(e for e in result['progressHistory'] if e['id']=='good')['resolvedByReplyId'],'reply')
+        self.assertEqual(next(e for e in result['progressHistory'] if e['id']=='manual')['resolvedByReplyId'],'waiting-cleared-in-settings')
+        self.assertTrue(result['subtasks'][0]['waiting'])
+        self.page.get_by_role('button',name='既存の調査のトークを表示',exact=True).click();self.send('さらに進捗を記録',expand_threads=False)
+        self.assertTrue(self.stored()[0]['subtasks'][0]['waiting'])
+
     def test_waiting_from_deleted_small_tasks_repairs_parent_and_resolves_individually(self):
         original=task(progressEnabled=True,progressStage='doing',deletedProgressSmallTaskIds=['gone'],deletedSmallTaskOriginIds=['gone'])
         original['subtasks'][0]['waiting']=False
@@ -259,6 +305,7 @@ class ProgressTests(unittest.TestCase):
         self.reply(memo['id']);self.send('前提について補足',expand_threads=False)
         reply=self.stored()[0]['progressHistory'][-1]
         self.assertTrue(reply['quote']['assumptionMemo'])
+        self.reply('waiting');self.send('相手からの回答を受領',expand_threads=False)
         self.page.get_by_role('button',name='前提を残す作業を完了',exact=True).click()
         expect(self.entry(memo['id']).locator(':scope > div')).to_have_class(re.compile(r'\bbg-gray-50\b'))
         self.page.reload();self.progress();self.page.get_by_role('button',name='前提を残す作業のトークを表示',exact=True).click()
@@ -812,6 +859,7 @@ class ProgressTests(unittest.TestCase):
     def test_parent_completion_button_waits_for_all_children_and_closes_parent(self):
         original=task(progressEnabled=True,progressStage='doing')
         original['subtasks'][0]['smallTasks']=[dict(id='a',title='作業A'),dict(id='b',title='作業B',waiting=True)]
+        original['progressHistory']=[dict(id='wait-b',kind='comment',text='Bの返答待ち',status='waiting',subtaskIds=['s1'],subtaskTitles=['既存の調査'],smallTaskId='b',smallTaskTitle='作業B')]
         self.seed([original]);self.progress()
         complete=self.page.get_by_role('button',name='既存の調査を完了',exact=True)
         expect(complete).to_have_count(0)
@@ -819,7 +867,7 @@ class ProgressTests(unittest.TestCase):
         self.page.get_by_role('button',name='作業Aを完了',exact=True).click()
         expect(complete).to_have_count(0)
         self.page.get_by_role('button',name='作業Bのトークを表示',exact=True).click()
-        self.send('回答を受領');self.page.get_by_role('button',name='作業Bを完了',exact=True).click()
+        self.reply('wait-b');self.send('回答を受領');self.page.get_by_role('button',name='作業Bを完了',exact=True).click()
         expect(complete).to_be_visible()
         complete.click()
         expect(complete).to_have_count(0)
@@ -828,7 +876,7 @@ class ProgressTests(unittest.TestCase):
         card=self.page.locator('[data-progress-subtask-id="s1"]')
         expect(card).to_have_class(re.compile(r'\bbg-blue-50\b'))
         self.select_chat()
-        expect(self.page.get_by_role('log').locator('[data-progress-entry-id] > div.bg-blue-50')).to_have_count(1)
+        expect(self.page.get_by_role('log').locator('[data-progress-entry-id] > div.bg-blue-50')).to_have_count(2)
         self.page.reload();self.progress()
         expect(card).to_have_class(re.compile(r'\bbg-blue-50\b'))
 
@@ -907,7 +955,7 @@ class ProgressTests(unittest.TestCase):
                 result=self.stored()[0]
                 self.assertNotIn('quote',result['progressHistory'][-1])
                 self.assertFalse(result['completed']);self.assertFalse(result['subtasks'][0]['completed'])
-                self.assertFalse(result['subtasks'][0].get('waiting',False));self.assertFalse(result.get('waiting',False))
+                self.assertEqual(result['subtasks'][0].get('waiting',False),bool(parent));self.assertEqual(result.get('waiting',False),not bool(parent))
 
     def dependency_dialog(self, title):
         self.page.get_by_role('button',name=title+'のタスク待ちを設定',exact=True).click()
@@ -2018,10 +2066,11 @@ class ProgressTests(unittest.TestCase):
     def test_aggregate_colors_update_after_wait_resolution_completion_and_retraction(self):
         original=task(progressEnabled=True,progressStage='doing');original['subtasks']=original['subtasks'][:1]
         original['subtasks'][0]['smallTasks']=[dict(id='a',title='作業A',waiting=True),dict(id='b',title='作業B',waiting=True)]
+        original['progressHistory']=[dict(id='wait-'+id,kind='comment',text=title+'の返答待ち',status='waiting',subtaskIds=['s1'],subtaskTitles=['既存の調査'],smallTaskId=id,smallTaskTitle=title) for id,title in [('a','作業A'),('b','作業B')]]
         self.seed([original]);self.progress();self.select_chat()
         parent=self.page.locator('[data-progress-subtask-id="s1"]')
         expect(parent).to_have_class(re.compile(r'\bbg-green-50\b'));expect(self.card()).to_have_class(re.compile(r'\bbg-green-50\b'))
-        self.page.get_by_role('button',name='作業Bのトークを表示',exact=True).click();self.send('回答を受領して再開')
+        self.page.get_by_role('button',name='作業Bのトークを表示',exact=True).click();self.reply('wait-b');self.send('回答を受領して再開')
         expect(parent).to_have_class(re.compile(r'\bbg-purple-50\b'));expect(self.card()).to_have_class(re.compile(r'\bbg-purple-50\b'))
         self.page.get_by_role('button',name='作業Bを完了',exact=True).click()
         expect(parent).to_have_class(re.compile(r'\bbg-green-50\b'));expect(self.card()).to_have_class(re.compile(r'\bbg-green-50\b'))
@@ -2029,7 +2078,7 @@ class ProgressTests(unittest.TestCase):
         self.page.reload();self.progress();expect(parent).to_have_class(re.compile(r'\bbg-green-50\b'))
         self.select_chat()
         expect(self.page.locator('[data-todo-thread-id="s1"]').locator(':scope > div > div').first).to_have_class(re.compile(r'\bbg-green-50\b'))
-        self.page.get_by_role('button',name='作業Aのトークを表示',exact=True).click();self.send('回答を受けてAを再開')
+        self.page.get_by_role('button',name='作業Aのトークを表示',exact=True).click();self.reply('wait-a');self.send('回答を受けてAを再開')
         expect(parent).to_have_class(re.compile(r'\bbg-purple-50\b'))
         self.page.get_by_role('button',name='作業Aを完了',exact=True).click();done=self.stored()[0]['progressHistory'][-1]
         expect(parent).to_have_class(re.compile(r'\bbg-purple-50\b'))

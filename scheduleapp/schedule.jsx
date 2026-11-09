@@ -307,6 +307,15 @@ const syncProgressWaiting = task => {
   return { ...sync(task, 'task'), subtasks: getProgressSubtasks(task).map(st => ({ ...sync(st, `subtask:${st.id}`), ...(st.smallTasks ? { smallTasks: getProgressSmallTasks(st).map(small => sync(small, `small:${small.id}`)) } : {}) })) };
 };
 const normalizeProgressTask = task => {
+  // Older builds marked ordinary progress as a reply and closed unrelated waits.
+  // Repair only verifiable cases; keep real replies and explicit manual clears.
+  const waitingClosers = new Map((task.progressHistory || []).map(entry => [entry.id, entry]));
+  task = { ...task, ...(task.progressHistory ? { progressHistory: task.progressHistory.map(entry => {
+    const closer = waitingClosers.get(entry.resolvedByReplyId);
+    if (entry.status !== 'waiting' || progressEntryIsNote(entry) || !closer || closer.kind !== 'comment'
+      || closer.status !== 'active' || progressEntryIsNote(closer) || closer.quote) return entry;
+    const reopened = { ...entry }; delete reopened.resolvedByReplyId; return reopened;
+  }) } : {}) };
   let normalized = restoreProgressTalks({ ...task, ...(task.subtasks ? { subtasks: getProgressSubtasks(task) } : {}) });
   const liveHistory = normalized.progressHistory || [];
   const byId = new Map(liveHistory.map(entry => [entry.id, entry]));
@@ -2625,8 +2634,9 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
       const status = original && !editingStatusChanged && sameSelection && sameTarget ? original.status || 'active' : desiredStatus;
       const addingInReply = !!replySource && (addTodo || addSmall);
       const applyStatus = !addingInReply && !neutralComment && !addSmall && !addTodo && (editingStatusChanged || !original || !sameSelection || !sameTarget);
-      // Posting progress changes waiting only. Completion has its own button.
-      const updateStatus = item => ({ ...item, waiting });
+      // Only an actual waiting reply (or an explicit status edit) clears a wait.
+      const clearsWaiting = replySource?.status === 'waiting' || (original?.status === 'waiting' && editingStatusChanged);
+      const updateStatus = item => ({ ...item, waiting: waiting ? true : clearsWaiting ? false : !!item.waiting });
       const nextSubtasks = previousSubtasks.map(st => {
         if (addSmall && st.id === currentSelected[0].id) return { ...st, smallTasks: [...getProgressSmallTasks(st), {
           id: newId, title: text.trim(), completed: false, waiting: !addingInReply && waiting
@@ -2671,10 +2681,6 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
         entry.quote = { ...entry.quote, resolvedByReplyId: entry.id };
         progressHistory = progressHistory.map(item => item.id === replySource.id ? { ...item, resolvedByReplyId: entry.id } : item);
       }
-      if (!original && !replySource && !neutralComment && !waiting && !addTodo && !addSmall) {
-        const scope = smallTarget ? `small:${smallTarget.smallTaskId}` : currentSelected.length ? `subtask:${currentSelected[0].id}` : 'task';
-        progressHistory = progressHistory.map(item => item.status === 'waiting' && !progressEntryIsNote(item) && !item.resolvedByReplyId && progressWaitingScope(previous, item) === scope ? { ...item, resolvedByReplyId: entry.id } : item);
-      }
       // The reply updates the source's wait; added work starts independently.
       if (addingInReply && !neutralComment) {
         nextSubtasks.forEach((st, index) => {
@@ -2685,8 +2691,8 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
         });
       }
       const updated = { ...previous, subtasks: nextSubtasks,
-        ...(addingInReply && !neutralComment && !replySource.smallTaskId && !replySource.subtaskIds?.length ? { waiting } : {}),
-        ...(applyStatus && !smallTarget && !selectedIds.length ? { waiting } : {}), progressHistory };
+        ...(addingInReply && !neutralComment && !replySource.smallTaskId && !replySource.subtaskIds?.length ? { waiting: updateStatus(previous).waiting } : {}),
+        ...(applyStatus && !smallTarget && !selectedIds.length ? { waiting: updateStatus(previous).waiting } : {}), progressHistory };
       if (original?.status === 'completed' && editingStatusChanged && status !== 'completed') {
         return retractProgressCompletion(updated, original, !neutralComment && waiting);
       }
