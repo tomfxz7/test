@@ -2500,7 +2500,7 @@ const ProgressWaitingModal = ({ task, scope, onClose }) => {
   </div>;
 };
 
-const ProgressTaskCard = ({ task, selected, onSelect, onSettings, onStart, onDragStart, onDeleteSmallTask, onFilter, onCompleteSubtask, onCompleteTask, onDependency, onWaiting, onReorderSubtask, onReorderSmallTask }) => {
+const ProgressTaskCard = ({ task, selected, onSelect, onSettings, onStart, onDragStart, onDeleteSmallTask, onFilter, onCompleteSubtask, onCompleteTask, onReopenTask, onDependency, onWaiting, onReorderSubtask, onReorderSmallTask }) => {
   const [dropHint, setDropHint] = useState(null);
   const todoDragType = 'application/x-taskmatrix-progress-todo';
   const status = progressItemStatus(task);
@@ -2511,6 +2511,7 @@ const ProgressTaskCard = ({ task, selected, onSelect, onSettings, onStart, onDra
       <button type="button" aria-label={`${task.title}の設定`} onClick={e => { e.stopPropagation(); onSettings(); }} className="p-1.5 rounded-lg hover:bg-white/70 shrink-0"><Settings size={16}/></button>
     </div>
     <div className="mt-2 mb-3 flex flex-wrap gap-2 text-xs items-center"><span className="font-bold px-2 py-0.5 rounded bg-white/70">{progressStatusLabel(status)}</span><span>タスク期日: {task.dueDate || '未設定'}</span><button type="button" aria-label={`${task.title}の相手待ち一覧`} onClick={e => { e.stopPropagation(); onWaiting(); }} className="rounded-lg border border-black bg-white/80 px-2 py-1 text-green-800">相手待ち一覧（{waitingItems.length}）</button></div>
+    {task.completed && <p className="mb-3 text-xs">完了日時: {Number.isFinite(reportEntryDate(task.completedAt).getTime()) ? reportEntryDate(task.completedAt).toLocaleString('ja-JP') : '未記録'}</p>}
     <ul className="space-y-1.5">
       {getProgressSubtasks(task).map(st => {
         const smallTasks = getProgressSmallTasks(st);
@@ -2563,7 +2564,8 @@ const ProgressTaskCard = ({ task, selected, onSelect, onSettings, onStart, onDra
       })}
     </ul>
     {canCompleteProgressTask(task) && <button type="button" aria-label={`${task.title}を完了`} onClick={e => { e.stopPropagation(); onCompleteTask(); }} className="mt-3 w-full rounded-lg bg-blue-600 hover:bg-blue-700 text-white py-2 text-xs font-bold">タスク全体を完了</button>}
-    {(!task.progressStage || task.progressStage === 'todo') && <button type="button" onClick={e => { e.stopPropagation(); onStart(); }} className="mt-3 w-full bg-white/80 border border-current rounded-lg py-1.5 text-xs font-bold hover:bg-white">着手する</button>}
+    {task.completed && <button type="button" aria-label={`${task.title}の完了を取り消す`} onClick={e => { e.stopPropagation(); onReopenTask(); }} className="mt-3 w-full rounded-lg border bg-white/80 py-1.5 text-xs font-bold">完了を取り消す</button>}
+    {!task.completed && (!task.progressStage || task.progressStage === 'todo') && <button type="button" onClick={e => { e.stopPropagation(); onStart(); }} className="mt-3 w-full bg-white/80 border border-current rounded-lg py-1.5 text-xs font-bold hover:bg-white">着手する</button>}
     <p className="mt-3 text-[11px] opacity-70">クリックしてタスク全体のトークを表示</p>
   </article>;
 };
@@ -3194,7 +3196,17 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
   const [dependencyTarget, setDependencyTarget] = useState(null);
   const [waitingTarget, setWaitingTarget] = useState(null);
   const [draggingId, setDraggingId] = useState(null);
+  const [showCompleted, setShowCompleted] = useState(false);
+  const [boardQuery, setBoardQuery] = useState('');
+  const [completionMonth, setCompletionMonth] = useState('');
+  const [showCompletionPeriod, setShowCompletionPeriod] = useState(false);
   const tracked = tasks.filter(task => task.progressEnabled);
+  const query = boardQuery.trim().toLowerCase();
+  const boardMatches = task => !query || [task.title, task.memo, task.completionNote, task.richResult,
+    ...(task.urls || []), ...getProgressSubtasks(task).flatMap(st => [st.title, ...getProgressSmallTasks(st).map(small => small.title)]),
+    ...(task.progressHistory || []).flatMap(entry => [entry.text, progressQuoteSearchText(entry.quote),
+      ...progressMediaItems(entry.images).map(image => image.name), ...progressMediaItems(entry.links).flatMap(link => [link.label, link.url]),
+      ...progressMediaItems(entry.textLinks).map(link => link.url)])].filter(Boolean).join(' ').toLowerCase().includes(query);
   const selectedTask = tracked.find(task => task.id === selectedId);
   const settingsTask = tracked.find(task => task.id === settings?.id);
   const startTask = task => setSettings({ id: task.id, starting: true });
@@ -3227,6 +3239,12 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
       return completed;
     });
   };
+  const reopenTask = task => onUpdateTask(task.id, previous => {
+    if (!previous.completed) return previous;
+    const reopened = { ...previous, completed: false };
+    delete reopened.completedAt; delete reopened.completionEntryId; delete reopened.completionConclusion;
+    return reopened;
+  });
   const reorderSubtask = (taskId, sourceId, targetId, after) => {
     if (sourceId === targetId) return;
     onUpdateTask(taskId, previous => {
@@ -3278,12 +3296,28 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
     <div className="flex-1 min-h-0 overflow-x-auto p-4 md:p-6">
       <div className="grid gap-4 h-full min-h-0" style={{ gridTemplateColumns: 'minmax(240px, 1fr) minmax(240px, 1fr) minmax(380px, 1.6fr)', minWidth: 920 }}>
         {[{ stage: 'todo', title: '未着手ボード' }, { stage: 'doing', title: '着手中ボード' }].map(({ stage, title }) => {
-          const items = tracked.filter(task => (task.progressStage || 'todo') === stage);
-          return <section key={stage} aria-label={title} data-progress-stage={stage} onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }} onDrop={e => dropTask(e, stage)} className={`rounded-2xl border flex flex-col min-h-0 overflow-hidden ${draggingId ? 'border-black bg-blue-50' : 'border-black bg-gray-50'}`}>
+          const items = tracked.filter(task => stage === 'doing' && showCompleted
+            ? task.completed && boardMatches(task) && (!completionMonth || (Number.isFinite(reportEntryDate(task.completedAt).getTime()) && formatDate(reportEntryDate(task.completedAt)).slice(0, 7) === completionMonth))
+            : !task.completed && (task.progressStage || 'todo') === stage && (stage !== 'doing' || boardMatches(task)));
+          if (stage === 'doing' && showCompleted) items.sort((a, b) => (reportEntryDate(b.completedAt).getTime() || 0) - (reportEntryDate(a.completedAt).getTime() || 0));
+          return <section key={stage} aria-label={title} data-progress-stage={stage} onDragOver={e => { if (stage === 'doing' && showCompleted) return; e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }} onDrop={e => { if (stage === 'doing' && showCompleted) { e.preventDefault(); return; } dropTask(e, stage); }} className={`rounded-2xl border flex flex-col min-h-0 overflow-hidden ${draggingId ? 'border-black bg-blue-50' : 'border-black bg-gray-50'}`}>
             <header className="p-4 border-b flex items-center justify-between bg-white shrink-0"><h2 className="text-sm font-black flex items-center gap-2">{title}<span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">{items.length}</span></h2>{stage === 'todo' && <button onClick={onAddTask} aria-label="未着手タスクを追加" className="p-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100"><Plus size={18}/></button>}</header>
+            {stage === 'doing' && <div className="shrink-0 border-b bg-white px-3 py-2 space-y-2">
+              <div className="flex rounded-lg bg-slate-100 p-0.5 text-xs font-bold">
+                {[false, true].map(completed => <button type="button" key={String(completed)} aria-label={completed ? '完了済みタスクを表示' : '未完了タスクを表示'} aria-pressed={showCompleted === completed} onClick={() => setShowCompleted(completed)} className={`flex-1 rounded-md px-2 py-1.5 ${showCompleted === completed ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500'}`}>{completed ? '完了済み' : '未完了'}</button>)}
+              </div>
+              <div className="flex items-center gap-1.5">
+                <label className="flex min-w-0 flex-1 items-center gap-1 rounded-lg border px-2 py-1.5"><Search size={13} className="shrink-0 text-slate-400"/><input aria-label="ボードのタスクを検索" placeholder="タスク・トークを検索" value={boardQuery} onChange={e => setBoardQuery(e.target.value)} className="min-w-0 w-full text-xs outline-none"/></label>
+                <button type="button" aria-label="完了時期で絞り込み" title="完了した年月で絞り込み" disabled={!showCompleted} aria-expanded={showCompleted && showCompletionPeriod} aria-controls="progress-completion-period" onClick={() => setShowCompletionPeriod(value => !value)} className={`rounded-lg border p-2 disabled:opacity-30 ${completionMonth ? 'bg-blue-50 text-blue-700' : 'text-slate-500'}`}><CalendarDays size={16}/></button>
+              </div>
+              {showCompleted && showCompletionPeriod && <div id="progress-completion-period" className="space-y-1.5 rounded-lg border bg-slate-50 p-2 text-xs">
+                <label className="flex flex-wrap items-center gap-1.5">完了した年月<input aria-label="完了した年月" type="month" value={completionMonth} onChange={e => setCompletionMonth(e.target.value)} className="min-w-0 rounded border bg-white px-2 py-1"/></label>
+                <button type="button" disabled={!completionMonth} onClick={() => setCompletionMonth('')} className="underline text-slate-500 disabled:opacity-40">年月指定を解除</button>
+              </div>}
+            </div>}
             <div className="overflow-y-auto p-3 space-y-3 flex-1 min-h-0">
-              {items.map(task => <ProgressTaskCard key={task.id} task={task} selected={selectedId === task.id} onSelect={() => selectTask(task)} onSettings={() => setSettings({ id: task.id, starting: false })} onStart={() => startTask(task)} onCompleteTask={() => completeTask(task)} onDeleteSmallTask={id => deleteSmallTask(task, id)} onFilter={(subtaskId, smallTaskId) => filterThread(task, subtaskId, smallTaskId)} onReorderSmallTask={(parent, source, target, after) => reorderSmallTask(task.id, parent, source, target, after)} onReorderSubtask={(source, target, after) => reorderSubtask(task.id, source, target, after)} onCompleteSubtask={id => completeSubtask(task, id)} onDependency={target => setDependencyTarget({ taskId: task.id, ...target })} onWaiting={scope => setWaitingTarget({ taskId: task.id, scope })} onDragStart={(e, id) => { setDraggingId(id); e.dataTransfer.setData('application/x-taskmatrix-progress', id); e.dataTransfer.effectAllowed = 'move'; e.currentTarget.addEventListener('dragend', () => setDraggingId(null), { once: true }); }}/>) }
-              {!items.length && <p className="border-2 border-dashed border-black rounded-xl p-5 text-xs text-gray-400 text-center leading-relaxed">{stage === 'todo' ? 'ボードの「進捗ページに表示」にチェックするか、＋からタスクを追加してください。' : '未着手のカードをここへドラッグするか、「着手する」を押してください。'}</p>}
+              {items.map(task => <ProgressTaskCard key={task.id} task={task} selected={selectedId === task.id} onSelect={() => selectTask(task)} onSettings={() => setSettings({ id: task.id, starting: false })} onStart={() => startTask(task)} onCompleteTask={() => completeTask(task)} onReopenTask={() => reopenTask(task)} onDeleteSmallTask={id => deleteSmallTask(task, id)} onFilter={(subtaskId, smallTaskId) => filterThread(task, subtaskId, smallTaskId)} onReorderSmallTask={(parent, source, target, after) => reorderSmallTask(task.id, parent, source, target, after)} onReorderSubtask={(source, target, after) => reorderSubtask(task.id, source, target, after)} onCompleteSubtask={id => completeSubtask(task, id)} onDependency={target => setDependencyTarget({ taskId: task.id, ...target })} onWaiting={scope => setWaitingTarget({ taskId: task.id, scope })} onDragStart={(e, id) => { if (task.completed) { e.preventDefault(); return; } setDraggingId(id); e.dataTransfer.setData('application/x-taskmatrix-progress', id); e.dataTransfer.effectAllowed = 'move'; e.currentTarget.addEventListener('dragend', () => setDraggingId(null), { once: true }); }}/>) }
+              {!items.length && <p className="border-2 border-dashed border-black rounded-xl p-5 text-xs text-gray-400 text-center leading-relaxed">{stage === 'todo' ? 'ボードの「進捗ページに表示」にチェックするか、＋からタスクを追加してください。' : showCompleted || query ? '条件に一致するタスクはありません。' : '未着手のカードをここへドラッグするか、「着手する」を押してください。'}</p>}
             </div>
           </section>;
         })}
