@@ -27,7 +27,9 @@ import {
   MonitorPlay,
   FileText,
   Repeat,
-  Table2
+  Table2,
+  Minus,
+  Home
 } from 'lucide-react';
 
 // --- IndexedDB Configuration & Utils ---
@@ -1058,7 +1060,12 @@ const progressClipboardDraft = (html, plain) => {
   return rich;
 };
 const ProgressTableDialog = ({ initial, onApply, onClose }) => {
-  const [rows, setRows] = useState(initial || [['', ''], ['', '']]);
+  const [gridState, setGridState] = useState(() => ({ rows: initial || [['', ''], ['', '']], past: [], future: [] }));
+  const rows = gridState.rows;
+  const setRows = update => setGridState(previous => {
+    const next = typeof update === 'function' ? update(previous.rows) : update;
+    return JSON.stringify(next) === JSON.stringify(previous.rows) ? previous : { rows: next, past: [...previous.past, previous.rows].slice(-100), future: [] };
+  });
   const [error, setError] = useState('');
   const dialogRef = useRef(null);
   useEffect(() => {
@@ -1079,6 +1086,36 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
     window.addEventListener('pointerup', stop); window.addEventListener('pointercancel', stop);
     return () => { window.removeEventListener('pointerup', stop); window.removeEventListener('pointercancel', stop); };
   }, []);
+  const [contextMenu, setContextMenu] = useState(null);
+  const menuRef = useRef(null);
+  const menuAnchor = useRef(null);
+  const historyChange = direction => {
+    setGridState(previous => {
+      const source = direction === 'undo' ? previous.past : previous.future;
+      if (!source.length) return previous;
+      return direction === 'undo'
+        ? { rows: source[source.length - 1], past: source.slice(0, -1), future: [...previous.future, previous.rows] }
+        : { rows: source[source.length - 1], past: [...previous.past, previous.rows], future: source.slice(0, -1) };
+    });
+    setEditingCell(null); setContextMenu(null); setSelection({ row: 0, column: 0, endRow: 0, endColumn: 0 }); setError('');
+    setNotice(direction === 'undo' ? '操作を元に戻しました。' : '操作をやり直しました。');
+    requestAnimationFrame(() => dialogRef.current?.querySelector('textarea')?.focus());
+  };
+  const closeMenu = () => { setContextMenu(null); menuAnchor.current?.focus(); };
+  const openContextMenu = (event, row, column, keyboard = false) => {
+    event.preventDefault(); event.stopPropagation();
+    if (!(row >= bounds.top && row <= bounds.bottom && column >= bounds.left && column <= bounds.right)) selectCell(row, column);
+    setEditingCell(null); dragging.current = false; menuAnchor.current = event.currentTarget;
+    const rect = event.currentTarget.getBoundingClientRect();
+    setContextMenu({ x: Math.max(8, Math.min(keyboard ? rect.left : event.clientX, window.innerWidth - 280)), y: Math.max(8, Math.min(keyboard ? rect.bottom : event.clientY, window.innerHeight - 210)) });
+  };
+  useEffect(() => {
+    if (!contextMenu) return;
+    menuRef.current?.querySelector('[role="menuitem"]')?.focus();
+    const outside = e => { if (!menuRef.current?.contains(e.target)) setContextMenu(null); };
+    document.addEventListener('pointerdown', outside, true);
+    return () => document.removeEventListener('pointerdown', outside, true);
+  }, [contextMenu]);
   const selectCell = (row, column, extend = false) => {
     setNotice(''); setError(''); setEditingCell(null);
     setSelection(previous => extend ? { ...previous, endRow: row, endColumn: column } : { row, column, endRow: row, endColumn: column });
@@ -1092,12 +1129,13 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
     try { await navigator.clipboard.writeText(selectedTsv()); setNotice('選択セルをコピーしました。'); }
     catch { setError('コピーできませんでした。セルを選択してCtrl+C（Macは⌘C）を使ってください。'); }
   };
-  const deleteAxis = axis => {
-    const row = axis === 'row', start = row ? bounds.top : bounds.left, end = row ? bounds.bottom : bounds.right;
+  const deleteAxis = (axis, first, last) => {
+    const row = axis === 'row', start = first ?? (row ? bounds.top : bounds.left), end = last ?? (row ? bounds.bottom : bounds.right);
     setRows(previous => row
       ? (previous.filter((_, i) => i < start || i > end).length ? previous.filter((_, i) => i < start || i > end) : [Array(previous[0].length).fill('')])
       : previous.map(values => { const retained = values.filter((_, j) => j < start || j > end); return retained.length ? retained : ['']; }));
     selectCell(0, 0); setNotice(row ? '選択行を削除しました。' : '選択列を削除しました。');
+    requestAnimationFrame(() => dialogRef.current?.querySelector('textarea')?.focus());
   };
   const pasteCells = (event, row, column) => {
     const plain = event.clipboardData?.getData('text/plain') || '';
@@ -1119,23 +1157,38 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
   const resize = (height, width) => { setRows(previous => Array.from({ length: height }, (_, i) => Array.from({ length: width }, (_, j) => previous[i]?.[j] || ''))); selectCell(0, 0); };
   const insertRow = index => setRows(previous => previous.length >= maxRows ? previous : [...previous.slice(0, index), Array(previous[0].length).fill(''), ...previous.slice(index)]);
   const insertColumn = index => setRows(previous => previous[0].length >= maxColumns ? previous : previous.map(row => [...row.slice(0, index), '', ...row.slice(index)]));
-  const insertionControl = (axis, index, count, limit, insert) => {
+  const edgeControl = (axis, index, count, limit, insert, remove = false) => {
     const column = axis === 'column';
-    const label = index === 0 ? `先頭に${column ? '列' : '行'}を追加` : index === count ? `末尾に${column ? '列' : '行'}を追加` : `${index + 1}${column ? '列' : '行'}目の前に${column ? '列' : '行'}を追加`;
-    return <div key={`${axis}-${index === count ? 'end' : index}`} data-table-boundary={axis} className={`group absolute ${column ? 'top-0 bottom-0 z-20 w-4 -translate-x-1/2' : 'left-0 right-0 z-10 h-4 -translate-y-1/2'}`}
-      style={column ? { left: `${index / count * 100}%` } : { top: `${index / count * 100}%` }}>
-      <span aria-hidden="true" className={`pointer-events-none absolute bg-violet-500 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 ${column ? 'left-1/2 top-0 bottom-0 w-0.5' : 'top-1/2 left-0 right-0 h-0.5'}`}/>
-      <button type="button" data-progress-table-insert aria-label={label} title={count >= limit ? `${column ? '列' : '行'}は最大${limit}までです` : label} disabled={count >= limit}
-        onClick={() => insert(index)}
-        className={`absolute z-10 flex h-5 w-5 items-center justify-center rounded-full border border-violet-500 bg-white text-violet-600 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:text-gray-400 disabled:border-gray-300 ${column ? '-top-5 left-1/2 -translate-x-1/2' : '-left-5 top-1/2 -translate-y-1/2'}`}><Plus size={14}/></button>
-    </div>;
+    const base = remove ? `${index + 1}${column ? '列' : '行'}目を削除`
+      : index === 0 ? `先頭に${column ? '列' : '行'}を追加` : index === count ? `末尾に${column ? '列' : '行'}を追加` : `${index + 1}${column ? '列' : '行'}目の前に${column ? '列' : '行'}を追加`;
+    return (column ? ['top', 'bottom'] : ['left', 'right']).map((side, sideIndex) => {
+      const sideName = { top: '上辺', bottom: '下辺', left: '左辺', right: '右辺' }[side];
+      const label = remove || sideIndex ? `${base}（${sideName}）` : base;
+      const position = `${(index + (remove ? 0.5 : 0)) / count * 100}%`;
+      return <button key={`${axis}-${remove ? 'delete' : 'insert'}-${index === count ? 'end' : index}-${side}`} type="button" data-grid-side={side}
+        data-progress-table-insert={remove ? undefined : ''} data-progress-table-delete={remove ? '' : undefined}
+        aria-label={label} title={remove ? base : count >= limit ? `${column ? '列' : '行'}は最大${limit}までです` : base}
+        disabled={!remove && count >= limit}
+        style={column ? { left: position, [side]: -28, transform: 'translateX(-50%)' } : { top: position, [side]: -28, transform: 'translateY(-50%)' }}
+        onClick={() => remove ? deleteAxis(axis === 'column' ? 'column' : 'row', index, index) : insert(index)}
+        className={`absolute z-20 flex h-5 w-5 items-center justify-center rounded-full border bg-white disabled:opacity-30 focus-visible:outline focus-visible:outline-2 ${remove ? 'text-red-600 focus-visible:outline-red-500' : 'text-violet-600 focus-visible:outline-violet-500'}`}>
+        {remove ? <Minus size={14}/> : <Plus size={14}/>}</button>;
+    });
   };
   return <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-3" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
     <section ref={dialogRef} role="dialog" aria-modal="true" aria-label={initial ? '表を編集' : '表を作成'} className="bg-white rounded-xl shadow-xl p-4 w-full max-w-3xl max-h-[85vh] overflow-auto text-black space-y-3"
       onCopy={e => { if (editingCell) return; e.preventDefault(); e.clipboardData.setData('text/plain', selectedTsv()); }}
       onKeyDown={e => {
         e.stopPropagation();
-        if (e.key === 'Escape' && !e.nativeEvent.isComposing) { e.preventDefault(); onClose(); }
+        if (e.nativeEvent.isComposing) return;
+        const command = e.ctrlKey || e.metaKey;
+        if (command && (e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'y')) {
+          e.preventDefault(); historyChange(e.key.toLowerCase() === 'y' || e.shiftKey ? 'redo' : 'undo'); return;
+        }
+        if (command && e.key === 'Backspace' && (e.altKey || e.shiftKey)) {
+          e.preventDefault(); deleteAxis(e.altKey ? 'row' : 'column'); return;
+        }
+        if (e.key === 'Escape') { e.preventDefault(); if (contextMenu) closeMenu(); else onClose(); }
         if (e.key === 'Tab') {
           const items = [...dialogRef.current.querySelectorAll('button:not(:disabled), textarea, select')];
           if (e.shiftKey && e.target === items[0]) { e.preventDefault(); items[items.length - 1].focus(); }
@@ -1154,11 +1207,13 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
         <button type="button" className="border rounded px-2 py-1" onClick={clearCells}>選択セルの内容を削除</button>
         <button type="button" className="border rounded px-2 py-1" onClick={() => deleteAxis('row')}>選択行を削除</button>
         <button type="button" className="border rounded px-2 py-1" onClick={() => deleteAxis('column')}>選択列を削除</button>
+        <button type="button" aria-label="表の操作を元に戻す" title="Ctrl/⌘+Z" disabled={!gridState.past.length} onClick={() => historyChange('undo')} className="border rounded px-2 py-1 disabled:opacity-30">元に戻す</button>
+        <button type="button" aria-label="表の操作をやり直す" title="Ctrl/⌘+Y / Ctrl/⌘+Shift+Z" disabled={!gridState.future.length} onClick={() => historyChange('redo')} className="border rounded px-2 py-1 disabled:opacity-30">やり直す</button>
         <span role="status">{notice || `${bounds.bottom - bounds.top + 1}行・${bounds.right - bounds.left + 1}列を選択中`}</span>
       </div>
-      <p className="text-xs text-gray-600">行・列の境界にマウスを合わせると「＋」が現れます。クリックすると、その位置に挿入します。</p>
-      <style>{`[data-progress-page] [data-progress-table-insert]:not(:disabled) { border-color: #8b5cf6 !important; } @media (hover: none) { [data-progress-table-insert] { opacity: 1; } }`}</style>
-      <div className="overflow-x-auto p-6">
+      <p className="text-xs text-gray-600">四辺の＋で行・列を挿入、−で行・列を削除できます。選択範囲の右クリックでも操作できます。</p>
+      <style>{`[data-progress-page] [data-progress-table-insert]:not(:disabled) { border-color: #8b5cf6 !important; } [data-progress-page] [data-progress-table-delete] { border-color: #ef4444 !important; }`}</style>
+      <div className="overflow-x-auto p-10">
         <div className="relative" style={{ minWidth: rows[0].length * 144 }}>
           <table role="grid" aria-label="表のセル編集" aria-rowcount={rows.length} aria-colcount={rows[0].length} className="w-full border-collapse table-fixed" style={{ height: rows.length * 64 }}><tbody>{rows.map((row, i) => <tr key={i} className="h-16">{row.map((cell, j) => <td key={j} role="gridcell" aria-selected={i >= bounds.top && i <= bounds.bottom && j >= bounds.left && j <= bounds.right} className={`border p-1 ${i === 0 ? 'bg-slate-100' : ''}`}><textarea aria-label={`${i + 1}行${j + 1}列`} value={cell}
       onPointerDown={e => {
@@ -1166,16 +1221,18 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
         e.preventDefault(); e.currentTarget.focus(); e.currentTarget.select(); dragging.current = true; selectCell(i, j, e.shiftKey);
       }}
       onPointerEnter={() => { if (dragging.current) setSelection(previous => ({ ...previous, endRow: i, endColumn: j })); }}
+      onContextMenu={e => openContextMenu(e, i, j)}
       onCompositionStart={() => setEditingCell({ row: i, column: j })}
       onDoubleClick={e => { selectCell(i, j); setEditingCell({ row: i, column: j }); e.currentTarget.focus(); }}
       onFocus={() => { if (!dragging.current && !(i >= bounds.top && i <= bounds.bottom && j >= bounds.left && j <= bounds.right)) selectCell(i, j); }}
       onPaste={e => pasteCells(e, bounds.top, bounds.left)}
       onKeyDown={e => {
         if (e.nativeEvent.isComposing || e.key === 'Process') return;
+        if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) { openContextMenu(e, i, j, true); return; }
         const editing = editingCell?.row === i && editingCell?.column === j;
         if (e.key === 'Escape' && editing) { e.preventDefault(); e.stopPropagation(); setEditingCell(null); return; }
         if (editing) return;
-        if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); clearCells(); }
+        if ((e.key === 'Delete' || e.key === 'Backspace') && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); clearCells(); }
         else if (e.key === 'F2' || e.key === 'Enter') { e.preventDefault(); setEditingCell({ row: i, column: j }); e.currentTarget.setSelectionRange(cell.length, cell.length); }
         else if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
           e.preventDefault(); const nextRow = Math.max(0, Math.min(rows.length - 1, selection.endRow + (e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0)));
@@ -1189,16 +1246,33 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
       }}
       onChange={e => { const value = e.target.value; setRows(previous => previous.map((r, ri) => ri === i ? r.map((v, ci) => ci === j ? value : v) : r)); }}
       className={`block h-12 w-full resize-none p-1 text-sm border rounded ${i >= bounds.top && i <= bounds.bottom && j >= bounds.left && j <= bounds.right ? 'bg-violet-100 ring-1 ring-violet-500' : 'bg-white'}`} rows={2}/></td>)}</tr>)}</tbody></table>
-          {Array.from({ length: rows[0].length + 1 }, (_, index) => insertionControl('column', index, rows[0].length, maxColumns, insertColumn))}
-          {Array.from({ length: rows.length + 1 }, (_, index) => insertionControl('row', index, rows.length, maxRows, insertRow))}
+          {Array.from({ length: rows[0].length + 1 }, (_, index) => edgeControl('column', index, rows[0].length, maxColumns, insertColumn))}
+          {Array.from({ length: rows.length + 1 }, (_, index) => edgeControl('row', index, rows.length, maxRows, insertRow))}
+          {Array.from({ length: rows[0].length }, (_, index) => edgeControl('column', index, rows[0].length, maxColumns, insertColumn, true))}
+          {Array.from({ length: rows.length }, (_, index) => edgeControl('row', index, rows.length, maxRows, insertRow, true))}
         </div>
       </div>
+      {contextMenu && <div ref={menuRef} role="menu" aria-label="表の選択範囲の操作" style={{ left: contextMenu.x, top: contextMenu.y }} className="fixed z-[200] w-64 rounded-lg border bg-white p-1 shadow-xl text-sm"
+        onKeyDown={e => {
+          if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
+            e.preventDefault(); e.stopPropagation(); const items = [...menuRef.current.querySelectorAll('[role="menuitem"]')], index = items.indexOf(document.activeElement);
+            items[e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : (index + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
+          }
+          if (e.key === 'Tab') { e.preventDefault(); e.stopPropagation(); closeMenu(); }
+        }}>
+        {[
+          ['コピー', 'Ctrl/⌘+C', copyCells],
+          ['選択行削除', 'Ctrl/⌘+Alt+Backspace', () => deleteAxis('row')],
+          ['選択列削除', 'Ctrl/⌘+Shift+Backspace', () => deleteAxis('column')],
+          ['セル内容削除', 'Delete / Backspace', clearCells]
+        ].map(([label, shortcut, action]) => <button key={label} type="button" role="menuitem" onClick={() => { action(); closeMenu(); }} className="flex w-full items-center justify-between gap-2 rounded px-2 py-2 text-left hover:bg-violet-50 focus:bg-violet-50 focus:outline-none"><span>{label}</span><span className="text-[10px] text-gray-500">{shortcut}</span></button>)}
+      </div>}
       {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
       <div className="flex justify-end gap-2"><button type="button" onClick={onClose} className="border rounded px-3 py-2">キャンセル</button><button type="button" className="bg-blue-600 text-white rounded px-3 py-2" onClick={() => { if (!rows.some(row => row.some(cell => cell.trim()))) { setError('表に内容を入力してください。'); return; } onApply(rows); }}>{initial ? '表を更新' : '表を挿入'}</button></div>
     </section>
   </div>;
 };
-const ProgressComposer = ({ text, textLinks, onChange, onPasteImages, editorRef, editing }) => {
+const ProgressComposer = ({ text, textLinks, onChange, onPasteImages, editorRef, editing, expanded = false }) => {
   const composing = useRef(false);
   const [pasteError, setPasteError] = useState('');
   const [tableDialog, setTableDialog] = useState(null);
@@ -1256,8 +1330,8 @@ const ProgressComposer = ({ text, textLinks, onChange, onPasteImages, editorRef,
     }
     if (images.length) onPasteImages(images);
   };
-  return <div className="relative">
-    <div role="toolbar" aria-label="トークの表ツール" className="flex items-center gap-2 px-2 pt-1 text-xs">
+  return <div className={`relative ${expanded ? 'flex flex-col flex-1 min-h-0' : ''}`}>
+    <div role="toolbar" aria-label="トークの表ツール" className="shrink-0 flex items-center gap-2 px-2 pt-1 text-xs">
       <button type="button" aria-label="表を作成" title="表を作成" onMouseDown={e => e.preventDefault()} onClick={() => openTable(false)} className="rounded p-1 hover:bg-slate-100"><Table2 size={18}/></button>
       <button type="button" aria-label="表を編集" title="表を編集" disabled={!tables.length} onMouseDown={e => e.preventDefault()} onClick={() => openTable(true)} className="rounded p-1 hover:bg-slate-100 disabled:opacity-30"><Pencil size={18}/></button>
       {tables.length > 1 && <select aria-label="編集する表" value={Math.min(tableIndex, tables.length - 1)} onChange={e => setTableIndex(Number(e.target.value))} className="border rounded">{tables.map((table, i) => <option key={i} value={i}>表 {i + 1}: {table.rows[0].join(' / ').slice(0, 40)}</option>)}</select>}
@@ -1267,7 +1341,7 @@ const ProgressComposer = ({ text, textLinks, onChange, onPasteImages, editorRef,
     {tableDialog && <ProgressTableDialog initial={tableDialog.table?.rows} onApply={applyTable} onClose={() => setTableDialog(null)}/>}
     <div ref={editorRef} role="textbox" aria-multiline="true" aria-label={editing ? 'コメントの編集' : '進捗コメント'} title="Enter: 改行 / Ctrl+Enter: 送信 / Alt+Enter: 相手待ち / Shift+Enter: コメント / Ctrl+Shift+Enter: 小タスク追加 / Ctrl+Alt+Enter: やるべきこと追加 / Ctrl+Shift+Alt+Enter: 前提メモ" contentEditable suppressContentEditableWarning
       onInput={emit} onPaste={paste} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; emit(); }}
-      className="w-full min-h-10 max-h-40 overflow-y-auto rounded-xl p-2 text-sm text-black whitespace-pre-wrap break-words focus:outline-none"/>
+      className={`w-full ${expanded ? 'flex-1 min-h-32' : 'min-h-10 max-h-40'} overflow-y-auto rounded-xl p-2 text-sm text-black whitespace-pre-wrap break-words focus:outline-none`}/>
     {!text && <span aria-hidden="true" className="absolute top-10 left-2 right-2 pointer-events-none text-xs text-gray-400">コメントを入力…画像・リンク貼り付け可（Ctrl+Enter で送信）</span>}
   </div>;
 };
@@ -2932,7 +3006,7 @@ const getProgressTodoThreads = (task, history) => {
 };
 const isResolvedProgressWaiting = entry => entry.status === 'waiting' && !progressEntryIsNote(entry) && !!entry.resolvedByReplyId;
 
-const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiting = true }) => {
+const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiting = true, expandedComposer = false }) => {
   const [text, setText] = useState('');
   const [textLinks, setTextLinks] = useState([]);
   const [images, setImages] = useState([]);
@@ -3445,7 +3519,8 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
   const completionHint = scopeSmall?.waiting ? '相手待ちを解除すると完了できます。'
     : scopeDependencies.length ? `タスク待ち: ${scopeDependencies.map(ref => progressDependencyTitle(task, ref)).join('、')}` : '';
   const draftTargetTitle = smallTarget?.title || selected.map(st => st.title).join('、') || task.title;
-  return <div className="flex flex-col flex-1 min-h-0" data-progress-thread="">
+  return <div className={`${expandedComposer ? 'grid gap-4' : 'flex flex-col'} flex-1 min-h-0 min-w-0`} style={expandedComposer ? { gridTemplateColumns: 'minmax(380px, 1fr) minmax(380px, 1.2fr)', gridTemplateRows: 'minmax(0, 1fr)' } : undefined} data-progress-thread="">
+    <section aria-label="トーク履歴ボード" className={`flex flex-col flex-1 min-h-0 min-w-0 overflow-hidden ${expandedComposer ? 'rounded-2xl border bg-white' : ''}`}>
     <header aria-label="トーク操作" className="flex items-center gap-2 px-3 py-2 border-b bg-white shrink-0 min-w-0">
       <h2 className="text-sm font-black shrink-0">進捗リストボード</h2>
       <label className="flex items-center gap-1 min-w-0 flex-1 border rounded-lg px-2 bg-gray-50"><Search size={13} className="text-gray-400 shrink-0"/><input aria-label="履歴を検索" placeholder="検索" value={query} onChange={e => setQuery(e.target.value)} className="py-1.5 text-xs bg-transparent min-w-0 w-full outline-none"/></label>
@@ -3477,6 +3552,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
       {[...rows].sort((a, b) => Number(!!b.entry?.assumptionMemo) - Number(!!a.entry?.assumptionMemo)).map(renderRow)}
       </div>
     </div>
+    </section>
     <form aria-label="トーク送信" onSubmit={send} onKeyDown={e => {
       if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.target === composerRef.current && (e.ctrlKey || e.altKey || e.shiftKey)) {
         e.preventDefault();
@@ -3484,7 +3560,8 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
         send(e, mode);
       }
       if (e.key === 'Escape' && (editingId || replyTo) && !e.nativeEvent.isComposing) { e.preventDefault(); resetComposer(); }
-    }} className="px-3 py-2 border-t bg-white space-y-2 shrink-0 max-h-[45%] overflow-y-auto">
+    }} className={`px-3 py-2 bg-white space-y-2 ${expandedComposer ? 'flex flex-col min-h-0 min-w-0 rounded-2xl border overflow-y-auto' : 'border-t shrink-0 max-h-[45%] overflow-y-auto'}`}>
+      {expandedComposer && <header aria-label="コメント入力パネル" className="shrink-0 border-b pb-2"><h2 className="text-sm font-black">コメント入力</h2><p className="mt-1 truncate text-xs text-gray-600" title={draftTargetTitle}>{draftTargetTitle}</p></header>}
       {!editingId && selectedEntryId && <div role="status" aria-label="コメントの送信先" className="flex items-center gap-2 text-xs font-bold"><span className="flex-1 truncate">送信先: {draftTargetTitle}</span><button type="button" className="underline" onClick={() => chooseThreadScope(filterId, filterSmallId, true)}>表示中の範囲に戻す</button></div>}
       {editingId && <div className="flex items-center gap-2 text-xs text-blue-700"><p role="status" className="flex-1 truncate" title={draftTargetTitle}>編集中: {draftTargetTitle}</p><button type="button" onClick={resetComposer} className="shrink-0 underline">編集をキャンセル</button></div>}
       {editingId && <div className="flex flex-wrap items-center gap-3 text-xs text-blue-700"><button type="button" onClick={() => { setSelectingReply(value => !value); setQuery(''); }} className="underline">返信元を変更</button>{replyContext && <button type="button" onClick={() => chooseEditedReply(null)} className="underline">返信を解除</button>}</div>}
@@ -3510,13 +3587,13 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
         {conversionPreview?.error && <p role="alert" className="text-red-700">{conversionParents.length ? conversionPreview.error : '変換先になる別のやるべきことを、先に追加してください。'}</p>}
       </div>}
       {addTodo && <label className="flex items-center gap-2 text-xs text-gray-600">追加するやるべきことの期限<input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} className="border rounded-md px-2 py-1 min-w-0" title={`未入力時: ${task.dueDate || '期限なし'}`}/></label>}
-      <div className="flex items-end gap-2">
-        <div className="flex-1 min-w-0 rounded-xl border focus-within:ring-2 focus-within:ring-blue-400">
+      <div className={`${expandedComposer ? 'flex-col flex-1 min-h-48 items-stretch' : 'items-end'} flex gap-2`}>
+        <div className={`${expandedComposer ? 'flex flex-col min-h-0' : ''} flex-1 min-w-0 rounded-xl border focus-within:ring-2 focus-within:ring-blue-400`}>
           <ProgressComposer text={text} textLinks={textLinks} onChange={draft => { setText(draft.text); setTextLinks(draft.textLinks); }}
-            onPasteImages={addImages} editorRef={composerRef} editing={!!editingId}/>
+            onPasteImages={addImages} editorRef={composerRef} editing={!!editingId} expanded={expandedComposer}/>
           {(images.length > 0 || links.length > 0) && <div className="px-2 pb-2" aria-label="本文の添付プレビュー"><ProgressAttachments images={images} links={links} onRemoveImage={id => setImages(previous => previous.filter(image => image.id !== id))} onRemoveLink={id => setLinks(previous => previous.filter(link => link.id !== id))}/></div>}
         </div>
-        <button type="submit" disabled={!canSend} className="shrink-0 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-xs font-bold">{editingId ? '編集を保存' : '送信'}</button>
+        <button type="submit" disabled={!canSend} className={`${expandedComposer ? 'self-end' : ''} shrink-0 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-xs font-bold`}>{editingId ? '編集を保存' : '送信'}</button>
       </div>
       {mediaBusy && <p role="status" className="text-xs text-gray-500">画像を読み込み中…</p>}
       {mediaError && <p role="alert" className="text-xs text-red-700">{mediaError}</p>}
@@ -3551,6 +3628,12 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
     setShowResolvedWaiting(value !== 'hide');
     try { localStorage.setItem('taskmatrix.progress.resolvedWaiting', value); } catch { /* The current view still works when storage is unavailable. */ }
   };
+  const [hideTodo, setHideTodo] = useState(() => { try { return localStorage.getItem('taskmatrix.progress.hideTodo') === 'true'; } catch { return false; } });
+  const [taskHome, setTaskHome] = useState(true);
+  const toggleTodo = () => setHideTodo(previous => {
+    const next = !previous; try { localStorage.setItem('taskmatrix.progress.hideTodo', String(next)); } catch { /* Keep the current session usable. */ }
+    return next;
+  });
   const [selectedId, setSelectedId] = useState(null);
   const [smallTaskTarget, setSmallTaskTarget] = useState(null);
   const [settings, setSettings] = useState(null);
@@ -3571,12 +3654,12 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
   const selectedTask = tracked.find(task => task.id === selectedId);
   const settingsTask = tracked.find(task => task.id === settings?.id);
   const startTask = task => setSettings({ id: task.id, starting: true });
-  const selectTask = task => { setSelectedId(task.id); setSmallTaskTarget({ taskId: task.id, filterOnly: true, clearComposer: true, requestId: createProgressId() }); };
+  const selectTask = task => { setTaskHome(false); setSelectedId(task.id); setSmallTaskTarget({ taskId: task.id, filterOnly: true, clearComposer: !(taskHome && task.id === selectedId), requestId: createProgressId() }); };
   const deleteSmallTask = (task, id) => {
     onUpdateTask(task.id, previous => removeProgressSmallTask(previous, id));
   };
   const filterThread = (task, subtaskId, smallTaskId) => {
-    setSelectedId(task.id);
+    setTaskHome(false); setSelectedId(task.id);
     setSmallTaskTarget({ taskId: task.id, subtaskId, smallTaskId, filterOnly: true, requestId: createProgressId() });
   };
   const completeSubtask = (task, id) => {
@@ -3647,6 +3730,7 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
     `}</style>
     <div className="px-4 py-2 bg-white/70 border-b flex items-center justify-between gap-3 shrink-0">
       <label className="text-xs flex items-center gap-2">返信済みの相手待ち<select aria-label="返信済みの相手待ちの表示" value={showResolvedWaiting ? 'show' : 'hide'} onChange={e => changeResolvedWaiting(e.target.value)} className="border rounded-lg bg-white px-2 py-1.5"><option value="show">青色で残す</option><option value="hide">非表示</option></select></label>
+      <button type="button" aria-label={hideTodo ? '未着手ボードを表示' : '未着手ボードを非表示'} aria-pressed={hideTodo} onClick={toggleTodo} className="rounded-lg border bg-white px-3 py-1.5 text-xs font-bold">{hideTodo ? '入力欄を下に戻す' : '入力欄を右に表示'}</button>
       <details className="relative text-xs shrink-0"><summary className="cursor-pointer text-gray-600">色の説明</summary>
         <div className="absolute right-0 top-full z-30 mt-2 w-72 rounded-xl border bg-white p-3 shadow-lg space-y-3">
           <p className="text-gray-600">ボードのカードを選ぶと、その範囲のトークを表示・入力できます。</p>
@@ -3655,14 +3739,14 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
       </details>
     </div>
     <div className="flex-1 min-h-0 overflow-x-auto p-4 md:p-6">
-      <div className="grid gap-4 h-full min-h-0" style={{ gridTemplateColumns: 'minmax(240px, 1fr) minmax(240px, 1fr) minmax(380px, 1.6fr)', minWidth: 920 }}>
-        {[{ stage: 'todo', title: '未着手ボード' }, { stage: 'doing', title: '着手中ボード' }].map(({ stage, title }) => {
+      <div className="grid gap-4 h-full min-h-0" style={{ gridTemplateColumns: hideTodo ? 'minmax(240px, 0.65fr) minmax(776px, 2.35fr)' : 'minmax(240px, 1fr) minmax(240px, 1fr) minmax(380px, 1.6fr)', minWidth: hideTodo ? 1040 : 920 }}>
+        {[{ stage: 'todo', title: '未着手ボード' }, { stage: 'doing', title: '着手中ボード' }].filter(({ stage }) => !hideTodo || stage !== 'todo').map(({ stage, title }) => {
           const items = tracked.filter(task => stage === 'doing' && showCompleted
             ? task.completed && boardMatches(task) && (!completionMonth || (Number.isFinite(reportEntryDate(task.completedAt).getTime()) && formatDate(reportEntryDate(task.completedAt)).slice(0, 7) === completionMonth))
             : !task.completed && (task.progressStage || 'todo') === stage && (stage !== 'doing' || boardMatches(task)));
           if (stage === 'doing' && showCompleted) items.sort((a, b) => (reportEntryDate(b.completedAt).getTime() || 0) - (reportEntryDate(a.completedAt).getTime() || 0));
           return <section key={stage} aria-label={title} data-progress-stage={stage} onDragOver={e => { if (stage === 'doing' && showCompleted) return; e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }} onDrop={e => { if (stage === 'doing' && showCompleted) { e.preventDefault(); return; } dropTask(e, stage); }} className={`rounded-2xl border flex flex-col min-h-0 overflow-hidden ${draggingId ? 'border-black bg-blue-50' : 'border-black bg-gray-50'}`}>
-            <header className="p-4 border-b flex items-center justify-between bg-white shrink-0"><h2 className="text-sm font-black flex items-center gap-2">{title}<span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">{items.length}</span></h2>{stage === 'todo' && <button onClick={onAddTask} aria-label="未着手タスクを追加" className="p-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100"><Plus size={18}/></button>}</header>
+            <header className="p-4 border-b flex items-center justify-between bg-white shrink-0">{stage === 'doing' && <button type="button" aria-label="大タスクのホーム" title="大タスクのタイル表示に戻る" aria-pressed={taskHome} onClick={() => setTaskHome(true)} className="mr-2 rounded-lg border bg-white p-1.5 text-blue-700"><Home size={18}/></button>}<h2 className="text-sm font-black flex items-center gap-2">{title}<span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">{items.length}</span></h2>{stage === 'todo' && <button onClick={onAddTask} aria-label="未着手タスクを追加" className="p-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100"><Plus size={18}/></button>}</header>
             {stage === 'doing' && <div className="shrink-0 border-b bg-white px-3 py-2 space-y-2">
               <div className="flex rounded-lg bg-slate-100 p-0.5 text-xs font-bold">
                 {[false, true].map(completed => <button type="button" key={String(completed)} aria-label={completed ? '完了済みタスクを表示' : '未完了タスクを表示'} aria-pressed={showCompleted === completed} onClick={() => setShowCompleted(completed)} className={`flex-1 rounded-md px-2 py-1.5 ${showCompleted === completed ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500'}`}>{completed ? '完了済み' : '未完了'}</button>)}
@@ -3677,14 +3761,17 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
               </div>}
             </div>}
             <div className="overflow-y-auto p-3 space-y-3 flex-1 min-h-0">
-              {items.map(task => <ProgressTaskCard key={task.id} task={task} selected={selectedId === task.id} onSelect={() => selectTask(task)} onSettings={() => setSettings({ id: task.id, starting: false })} onStart={() => startTask(task)} onCompleteTask={() => completeTask(task)} onReopenTask={() => reopenTask(task)} onDeleteSmallTask={id => deleteSmallTask(task, id)} onFilter={(subtaskId, smallTaskId) => filterThread(task, subtaskId, smallTaskId)} onReorderSmallTask={(parent, source, target, after) => reorderSmallTask(task.id, parent, source, target, after)} onReorderSubtask={(source, target, after) => reorderSubtask(task.id, source, target, after)} onCompleteSubtask={id => completeSubtask(task, id)} onDependency={target => setDependencyTarget({ taskId: task.id, ...target })} onWaiting={scope => setWaitingTarget({ taskId: task.id, scope })} onDragStart={(e, id) => { if (task.completed) { e.preventDefault(); return; } setDraggingId(id); e.dataTransfer.setData('application/x-taskmatrix-progress', id); e.dataTransfer.effectAllowed = 'move'; e.currentTarget.addEventListener('dragend', () => setDraggingId(null), { once: true }); }}/>) }
+              {stage === 'doing' && taskHome && <div aria-label="大タスクのタイル" className="grid grid-cols-2 gap-3">{items.map(task => <article key={task.id} data-progress-task-id={task.id} data-status={progressItemStatus(task)} className={`rounded-xl border shadow-sm ${progressStatusClasses(progressItemStatus(task))}`}><button type="button" aria-label={task.title} onClick={() => selectTask(task)} className="min-h-28 w-full rounded-xl p-3 text-left hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
+                <span className="block break-words text-sm font-bold">{task.title}</span><span className="mt-3 block text-xs">期限: {task.dueDate || '未設定'}</span>
+              </button></article>)}</div>}
+              {(stage === 'doing' && taskHome ? [] : items).map(task => <ProgressTaskCard key={task.id} task={task} selected={selectedId === task.id} onSelect={() => selectTask(task)} onSettings={() => setSettings({ id: task.id, starting: false })} onStart={() => startTask(task)} onCompleteTask={() => completeTask(task)} onReopenTask={() => reopenTask(task)} onDeleteSmallTask={id => deleteSmallTask(task, id)} onFilter={(subtaskId, smallTaskId) => filterThread(task, subtaskId, smallTaskId)} onReorderSmallTask={(parent, source, target, after) => reorderSmallTask(task.id, parent, source, target, after)} onReorderSubtask={(source, target, after) => reorderSubtask(task.id, source, target, after)} onCompleteSubtask={id => completeSubtask(task, id)} onDependency={target => setDependencyTarget({ taskId: task.id, ...target })} onWaiting={scope => setWaitingTarget({ taskId: task.id, scope })} onDragStart={(e, id) => { if (task.completed) { e.preventDefault(); return; } setDraggingId(id); e.dataTransfer.setData('application/x-taskmatrix-progress', id); e.dataTransfer.effectAllowed = 'move'; e.currentTarget.addEventListener('dragend', () => setDraggingId(null), { once: true }); }}/>) }
               {!items.length && <p className="border-2 border-dashed border-black rounded-xl p-5 text-xs text-gray-400 text-center leading-relaxed">{stage === 'todo' ? 'ボードの「進捗ページに表示」にチェックするか、＋からタスクを追加してください。' : showCompleted || query ? '条件に一致するタスクはありません。' : '未着手のカードをここへドラッグするか、「着手する」を押してください。'}</p>}
             </div>
           </section>;
         })}
-        <section aria-label="進捗リストボード" className="rounded-2xl border border-black bg-white flex flex-col min-h-0 overflow-hidden">
+        <section aria-label="進捗リストボード" className={`${hideTodo && selectedTask ? '' : 'rounded-2xl border border-black bg-white overflow-hidden'} flex flex-col min-h-0 min-w-0`}>
           {!selectedTask && <header className="px-3 py-2 border-b shrink-0"><h2 className="text-sm font-black">進捗リストボード</h2></header>}
-          {selectedTask ? <ProgressThreadBoundary key={selectedTask.id} resetKey={smallTaskTarget?.requestId}><ProgressThread task={selectedTask} onUpdateTask={onUpdateTask} smallTaskTarget={smallTaskTarget} showResolvedWaiting={showResolvedWaiting}/></ProgressThreadBoundary> : <div className="flex-1 flex flex-col items-center justify-center gap-3 text-gray-400 p-6 text-sm text-center"><List size={32}/><p>カードをクリックすると、<br/>進捗と変更履歴が表示されます。</p></div>}
+          {selectedTask ? <ProgressThreadBoundary key={selectedTask.id} resetKey={smallTaskTarget?.requestId}><ProgressThread task={selectedTask} onUpdateTask={onUpdateTask} smallTaskTarget={smallTaskTarget} showResolvedWaiting={showResolvedWaiting} expandedComposer={hideTodo}/></ProgressThreadBoundary> : <div className="flex-1 flex flex-col items-center justify-center gap-3 text-gray-400 p-6 text-sm text-center"><List size={32}/><p>カードをクリックすると、<br/>進捗と変更履歴が表示されます。</p></div>}
         </section>
       </div>
     </div>
@@ -3697,7 +3784,7 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
           : st.id === dependencyTarget.parentId ? { ...st, smallTasks: getProgressSmallTasks(st).map(small => small.id === dependencyTarget.id ? { ...small, dependencies } : small) } : st) };
       }); setDependencyTarget(null);
     }}/>}
-    {settingsTask && <ProgressSettingsModal key={`${settingsTask.id}-${settings.starting}`} task={settingsTask} starting={settings.starting} onClose={() => setSettings(null)} onSave={(patch, reason) => { onUpdateTask(settingsTask.id, previous => ({ ...previous, ...patch }), { reason }); if (settings.starting) setSelectedId(settingsTask.id); setSettings(null); }}/>}
+    {settingsTask && <ProgressSettingsModal key={`${settingsTask.id}-${settings.starting}`} task={settingsTask} starting={settings.starting} onClose={() => setSettings(null)} onSave={(patch, reason) => { onUpdateTask(settingsTask.id, previous => ({ ...previous, ...patch }), { reason }); if (settings.starting) { setTaskHome(false); setSelectedId(settingsTask.id); } setSettings(null); }}/>}
   </div>;
 };
 
