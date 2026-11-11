@@ -4529,6 +4529,144 @@ class ProgressTests(unittest.TestCase):
         self.page.get_by_role('button',name='編集をキャンセル',exact=True).click()
         self.assertNotIn('quote',next(entry for entry in self.stored()[0]['progressHistory'] if entry['id']=='root17'))
 
+    def other_talks_fixture(self):
+        item=task(progressEnabled=True,progressStage='doing')
+        item['subtasks']=[dict(id='p',title='所属する作業',smallTasks=[dict(id='a',title='小さい作業')])]
+        root=dict(id='general',kind='comment',text='全体への連絡',status='active',subtaskIds=[])
+        parent=dict(id='assigned',kind='comment',text='所属する作業の進捗',status='active',subtaskIds=['p'])
+        item['progressHistory']=[parent,root,dict(id='premise',kind='comment',text='全体の前提',status='note',assumptionMemo=True,subtaskIds=[]),dict(id='wait',kind='comment',text='全体の回答待ち',status='waiting',subtaskIds=[]),dict(id='small',kind='comment',text='小さい作業の進捗',status='active',subtaskIds=['p'],smallTaskId='a',smallTaskTitle='小さい作業'),dict(id='parent-quote',kind='comment',text='全体連絡を引用した作業の進捗',status='active',subtaskIds=['p'],quote=root),dict(id='quoted-parent',kind='comment',text='作業への返信',status='active',subtaskIds=[],quote=parent)]
+        return item
+
+    def test_other_talks_cards_are_peers_and_open_only_unassigned_talks(self):
+        self.seed([self.other_talks_fixture()]);self.progress();self.select_chat(expand_threads=False)
+        saved=self.stored();log=self.page.get_by_role('log',name='進捗履歴',exact=True)
+        card=self.card().locator('[data-progress-other-talks]')
+        group=log.get_by_role('region',name='その他のトークカード',exact=True)
+        expect(card).to_contain_text('3件');expect(group).to_be_visible()
+        self.assertTrue(group.evaluate("node=>node.parentElement===document.querySelector('[data-todo-thread-id=\"p\"]').parentElement"))
+        self.assertTrue(card.evaluate("node=>node.parentElement===document.querySelector('[data-progress-subtask-id=\"p\"]').parentElement"))
+        for id in ['general','premise','wait']:expect(group.locator('[data-progress-entry-id="'+id+'"]').first).to_be_visible()
+        for id in ['assigned','small','quoted-parent']:expect(group.locator('[data-progress-entry-id="'+id+'"]').first).to_have_count(0)
+        card.get_by_role('button',name='その他のトークを表示',exact=True).click()
+        expect(self.page.get_by_label('トークのタイトル',exact=True)).to_have_text('その他のトーク')
+        expect(log.locator('[data-todo-thread-id]')).to_have_count(0)
+        expect(log.locator('[data-other-thread-id]')).to_have_count(0)
+        for id in ['assigned','small','quoted-parent']:expect(self.entry(id)).to_have_count(0)
+        self.assertEqual(self.stored(),saved)
+        self.send('その他から新しい連絡');posted=self.stored()[0]['progressHistory'][-1]
+        self.assertEqual(posted['subtaskIds'],[])
+        self.assertEqual(self.stored()[0]['subtasks'],saved[0]['subtasks'])
+        self.select_chat(expand_threads=False)
+        expect(group.locator('[data-progress-entry-id="'+posted['id']+'"]').first).to_be_visible()
+        expect(card).to_contain_text('4件')
+        group.get_by_role('button',name='その他のトークだけを表示',exact=True).click()
+        expect(self.page.get_by_label('トークのタイトル',exact=True)).to_have_text('その他のトーク')
+        self.page.get_by_role('button',name='テーブル表示',exact=True).click()
+        expect(self.page.get_by_label('トークのタイトル',exact=True)).to_have_text('進捗テスト案件')
+        expect(self.summary_row('small:p:a')).to_be_visible()
+        card.get_by_role('button',name='その他のトークを表示',exact=True).click()
+        expect(self.page.get_by_role('region',name='進捗テーブル',exact=True)).to_be_hidden()
+        expect(self.page.get_by_label('トークのタイトル',exact=True)).to_have_text('その他のトーク')
+        self.page.screenshot(path='/tmp/schedule-other-talks.png')
+
+    def test_other_talks_collapse_search_quote_jump_and_edit_preserve_scope(self):
+        self.seed([self.other_talks_fixture()]);self.progress();self.select_chat()
+        group=self.page.get_by_role('region',name='その他のトークカード',exact=True)
+        group.get_by_role('button',name='その他のトークを折りたたむ',exact=True).click()
+        expect(self.entry('general')).to_have_count(0)
+        self.entry('parent-quote').get_by_role('button',name='引用元へ移動: 全体への連絡',exact=True).click()
+        expect(self.entry('general')).to_be_focused()
+        expect(group.get_by_role('button',name='その他のトークを折りたたむ',exact=True)).to_have_attribute('aria-expanded','true')
+        self.card().get_by_role('button',name='その他のトークを表示',exact=True).click()
+        search=self.page.get_by_label('履歴を検索',exact=True);search.fill('所属する作業の進捗')
+        expect(self.entry('assigned')).to_have_count(0);expect(self.page.get_by_text('一致する履歴はありません。',exact=True)).to_be_visible()
+        search.fill('全体への連絡');expect(self.entry('general')).to_be_visible();expect(self.entry('wait')).to_have_count(0)
+        search.fill('');self.entry('general').get_by_role('button',name='コメントを編集',exact=True).click()
+        editor=self.page.get_by_label('コメントの編集',exact=True);editor.fill('全体連絡の更新')
+        self.page.get_by_role('button',name='所属する作業のトークを表示',exact=True).click()
+        self.card().get_by_role('button',name='その他のトークを表示',exact=True).click()
+        expect(editor).to_have_text('全体連絡の更新')
+        self.page.get_by_role('button',name='編集を保存',exact=True).click()
+        actual=next(entry for entry in self.stored()[0]['progressHistory'] if entry['id']=='general')
+        self.assertEqual(actual['text'],'全体連絡の更新');self.assertEqual(actual['subtaskIds'],[])
+        self.reply('general');self.send('その他の連絡への返信')
+        reply=self.stored()[0]['progressHistory'][-1]
+        self.assertEqual(reply['quote']['id'],'general');self.assertEqual(reply['subtaskIds'],[])
+        self.page.reload();self.progress();self.card().get_by_role('button',name='その他のトークを表示',exact=True).click()
+        expect(self.entry(reply['id'])).to_be_visible()
+
+    def test_other_talks_empty_card_and_no_todos_do_not_create_virtual_tasks(self):
+        item=task(progressEnabled=True,progressStage='doing')
+        self.seed([item]);self.progress()
+        expect(self.card().locator('[data-progress-other-talks]')).to_contain_text('0件')
+        self.card().get_by_role('button',name='その他のトークを表示',exact=True).click()
+        expect(self.page.get_by_text('この範囲のコメントはまだありません。',exact=True)).to_be_visible()
+        self.send('最初の全体連絡')
+        self.assertEqual(len(self.stored()[0]['subtasks']),2)
+        item['subtasks']=[];item['progressHistory']=[dict(id='standalone',kind='comment',text='やるべきことのない全体連絡',status='active',subtaskIds=[])]
+        self.seed([item]);self.progress();self.select_chat()
+        expect(self.card().locator('[data-progress-other-talks]')).to_have_count(0)
+        expect(self.page.locator('[data-other-thread-id]')).to_have_count(0)
+        expect(self.entry('standalone')).to_be_visible()
+        self.assertEqual(self.stored()[0]['subtasks'],[])
+
+    def test_quote_three_lines_collapse_and_two_lines_stay_visible(self):
+        short=dict(id='short',kind='comment',text='一行目\n二行目',status='active',subtaskIds=[])
+        long=dict(short,id='long',text='一行目\n二行目\n三行目')
+        records=[short,long,dict(short,id='short-reply',text='短い引用の返信',quote=short),dict(short,id='long-reply',text='長い引用の返信',quote=long)]
+        item=task(progressEnabled=True,progressStage='doing',progressHistory=records);item['subtasks']=[]
+        self.seed([item]);self.progress();self.select_chat();saved=self.stored()
+        short_quote=self.entry('short-reply').get_by_role('blockquote',name='引用コメント',exact=True)
+        quote=self.entry('long-reply').get_by_role('blockquote',name='引用コメント',exact=True)
+        expect(short_quote.get_by_role('button',name='引用を展開',exact=True)).to_have_count(0)
+        expect(quote).to_have_attribute('data-quote-collapsed','true')
+        clipped=quote.bounding_box()['height']
+        quote.get_by_role('button',name='引用を展開',exact=True).press('Enter')
+        expect(quote.get_by_role('button',name='引用を折りたたむ',exact=True)).to_have_attribute('aria-expanded','true')
+        self.assertGreater(quote.bounding_box()['height'],clipped)
+        quote.get_by_role('button',name='引用を折りたたむ',exact=True).press('Space')
+        expect(quote).to_have_attribute('data-quote-collapsed','true')
+        self.assertEqual(self.stored(),saved)
+
+    def test_quote_collapse_accounts_for_wrapping_and_browser_resize(self):
+        self.page.set_viewport_size(dict(width=1900,height=1100))
+        source=dict(id='wrapped',kind='comment',text='W'*85,status='active',subtaskIds=[])
+        reply=dict(source,id='wrapped-reply',text='折り返しの確認',quote=source)
+        item=task(progressEnabled=True,progressStage='doing',progressHistory=[source,reply]);item['subtasks']=[]
+        self.seed([item]);self.progress();self.select_chat()
+        quote=self.entry('wrapped-reply').get_by_role('blockquote',name='引用コメント',exact=True)
+        expect(quote.get_by_role('button',name='引用を展開',exact=True)).to_have_count(0)
+        self.page.set_viewport_size(dict(width=1024,height=1100))
+        expect(quote.get_by_role('button',name='引用を展開',exact=True)).to_be_visible()
+        expect(quote).to_have_attribute('data-quote-collapsed','true')
+        quote.get_by_role('button',name='引用を展開',exact=True).click()
+        expect(quote).to_have_attribute('data-quote-collapsed','false')
+
+    def test_nested_quotes_are_hidden_until_expanded_and_modal_controls_work(self):
+        inner=dict(id='inner',text='さらに内側の引用',status='active',subtaskIds=[])
+        middle=dict(id='middle',text='内側の引用',status='active',subtaskIds=[],quote=inner)
+        outer=dict(id='outer',text='外側の引用',status='active',subtaskIds=[],quote=middle)
+        reply=dict(id='reply',kind='comment',text='入れ子の確認',status='active',subtaskIds=[],quote=outer)
+        item=task(progressEnabled=True,progressStage='doing',progressHistory=[reply]);item['subtasks']=[]
+        self.seed([item]);self.progress();self.select_chat();saved=self.stored()
+        quote=self.entry('reply').locator('[data-quoted-entry-id="outer"]')
+        nested=quote.locator('[data-quoted-entry-id="middle"]');deep=quote.locator('[data-quoted-entry-id="inner"]')
+        expect(nested).to_be_hidden();expect(deep).to_be_hidden()
+        quote.get_by_role('button',name='引用を展開',exact=True).click()
+        expect(nested).to_be_visible();expect(deep).to_be_hidden()
+        nested.get_by_role('button',name='引用を展開',exact=True).press('Enter')
+        expect(deep).to_be_visible()
+        quote.get_by_role('button',name='引用を折りたたむ',exact=True).first.click()
+        expect(nested).to_be_hidden();expect(deep).to_be_hidden()
+        quote.get_by_role('button',name='引用元へ移動: 外側の引用',exact=True).click()
+        modal=self.page.get_by_role('dialog',name='引用元のコメント',exact=True)
+        expect(modal.locator('[data-quoted-entry-id="middle"]')).to_be_hidden()
+        modal.get_by_role('button',name='引用元の確認を閉じる',exact=True).press('Tab')
+        expand=modal.get_by_role('button',name='引用を展開',exact=True)
+        expect(expand).to_be_focused();expand.press('Enter')
+        expect(modal.locator('[data-quoted-entry-id="middle"]')).to_be_visible()
+        self.assertEqual(self.stored(),saved)
+
     def summary_fixture(self):
         item=task(progressEnabled=True,progressStage='doing')
         item['subtasks']=[dict(id='p',title='表の親',dueDate=FUTURE,smallTasks=[dict(id=id,title=title,completed=id=='closed') for id,title in [('none','設定だけ'),('premise','前提のみ'),('active','進捗あり'),('waiting','小さい相手待ち'),('replied','返信あり'),('done','結論あり'),('closed','クローズ')]]),dict(id='other',title='別の親',dueDate=FUTURE,smallTasks=[dict(id='outside',title='別の小さいタスク')])]
