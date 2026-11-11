@@ -2699,12 +2699,15 @@ class ProgressTests(unittest.TestCase):
         expect(self.card()).to_have_class(re.compile(r'\bbg-red-50\b'))
         expect(self.page.locator('[data-progress-subtask-id="s1"]')).to_have_class(re.compile(r'\bbg-red-50\b'))
         expect(self.page.locator('[data-progress-subtask-id="s2"]')).to_have_class(re.compile(r'\bbg-yellow-50\b'))
-        for id,color in [('origin','red'),('progress','blue'),('wait','green'),('plain','gray'),('root-progress','blue'),('root-wait','green'),('blocked','yellow'),('blocked-wait','green')]:
+        for id,color in [('origin','red'),('progress','blue'),('wait','green'),('plain','gray'),('root-progress','blue'),('root-wait','green'),('blocked','blue'),('blocked-wait','green')]:
             expect(self.entry(id).locator(':scope > div')).to_have_class(re.compile(r'\bbg-'+color+r'-50\b'))
         self.page.get_by_role('button',name='既存の調査のトークを表示',exact=True).click()
-        expect(self.entry('origin').locator(':scope > div')).to_have_class(re.compile(r'\bbg-red-50\b'))
+        # The creation heading is omitted inside its own todo thread.
+        expect(self.entry('origin')).to_have_count(0)
         expect(self.entry('progress').locator(':scope > div')).to_have_class(re.compile(r'\bbg-blue-50\b'))
         expect(self.entry('wait').locator(':scope > div')).to_have_class(re.compile(r'\bbg-green-50\b'))
+        self.page.get_by_role('button',name='期限切れの確認のトークを表示',exact=True).click()
+        expect(self.entry('blocked').locator(':scope > div')).to_have_class(re.compile(r'\bbg-blue-50\b'))
 
     def test_overdue_reopened_small_task_keeps_progress_and_quotes_blue_and_waits_green(self):
         def record(id,status='active',**extra):return dict(id=id,kind='comment',text=id,status=status,createdAt='2026-11-01T01:00:00Z',subtaskIds=['s1'],subtaskTitles=['既存の調査'],smallTaskId='a',smallTaskTitle='期限超過の小さい作業',**extra)
@@ -2722,7 +2725,7 @@ class ProgressTests(unittest.TestCase):
         expect(self.page.locator('[data-progress-small-task-id="a"]')).to_have_class(re.compile(r'\bbg-red-50\b'))
 
     def test_report_default_range_is_seven_days_ago_through_today(self):
-        self.seed([task(progressEnabled=True)])
+        self.seed([task(progressEnabled=True,progressStage='doing')])
         self.page.get_by_role('button',name='レポート作成',exact=True).click()
         dialog=self.page.get_by_role('dialog',name='週報用レポート作成',exact=True)
         expect(dialog.get_by_label('レポート開始日',exact=True)).to_have_value((TODAY-timedelta(days=7)).isoformat())
@@ -2735,8 +2738,8 @@ class ProgressTests(unittest.TestCase):
             item.update(title=title,completed=True,dueDate=due)
             if at is not None: item['completedAt']=at
             return item
-        pending_old=task('pending-old',progressEnabled=True);pending_old.update(title='期限が昔でも未完了',dueDate='1999-01-01')
-        pending_future=task('pending-future',progressEnabled=True);pending_future.update(title='期限が未来でも未完了',dueDate='2099-01-01')
+        pending_old=task('pending-old',progressEnabled=True,progressStage='doing');pending_old.update(title='期限が昔でも未完了',dueDate='1999-01-01')
+        pending_future=task('pending-future',progressEnabled=True,progressStage='doing');pending_future.update(title='期限が未来でも未完了',dueDate='2099-01-01')
         items=[pending_old,pending_future,
                completed('start-done','開始日ちょうどに完了','2026-10-18T15:00:00.000Z'),
                completed('end-done','終了日の最後に完了','2026-10-25T14:59:59.999Z'),
@@ -2829,10 +2832,12 @@ class ProgressTests(unittest.TestCase):
         expect(self.page.get_by_role('heading',name='TaskMatrix Pro')).to_be_visible(timeout=15000)
         dialog=self.open_report(start=TODAY.isoformat(),end=TODAY.isoformat())
         checkbox=dialog.get_by_label(f'レポート対象: 前の週の定期タスク ({occurrence})',exact=True)
-        expect(checkbox).to_be_visible();checkbox.check()
-        _,body=self.download_report(dialog)
-        self.assertIn('タスク全体の完了日時: '+TODAY.isoformat(),body)
-        self.assertIn('うち期限日を完了日として扱ったタスク: 0件',body)
+        expect(checkbox).to_have_count(0)
+        completed=self.page.evaluate("""async()=>{const db=await new Promise(r=>{const q=indexedDB.open('TaskMatrixAppDB',1);q.onsuccess=()=>r(q.result)});return await new Promise(r=>{const q=db.transaction('appData').objectStore('appData').get('recurringCompletions');q.onsuccess=()=>{r(q.result);db.close()}})}""")
+        self.assertTrue(completed['completed-series_'+occurrence]['completed'])
+        at=completed['completed-series_'+occurrence]['completedAt']
+        self.assertEqual(datetime.fromisoformat(at.replace('Z','+00:00')).astimezone(ZoneInfo('Asia/Tokyo')).date(),TODAY)
+        dialog.get_by_role('button',name='キャンセル',exact=True).click()
         self.page.get_by_role('checkbox',name=re.compile('完了したタスク|完了を表示')).check()
         card.get_by_role('button',name='結論入力 / 完了',exact=True).click()
         self.page.get_by_role('button',name='タスク完了を取り消す',exact=True).click()
@@ -2877,9 +2882,9 @@ class ProgressTests(unittest.TestCase):
         dialog=self.open_report()
         button=dialog.get_by_role('button',name='Wordをダウンロード',exact=True)
         expect(button).to_be_disabled()
-        expect(dialog.get_by_text('対象タスクがありません。検索条件や期間を確認してください。',exact=True)).to_be_visible()
+        expect(dialog.get_by_text('対象タスクがありません。着手中ボード・検索条件・期間を確認してください。',exact=True)).to_be_visible()
         dialog.get_by_role('button',name='キャンセル',exact=True).click()
-        self.seed([task()])
+        self.seed([task(progressEnabled=True,progressStage='doing')])
         before=self.stored()
         dialog=self.open_report(start='2026-10-26',end='2026-10-20')
         expect(dialog.get_by_role('alert')).to_be_visible()
@@ -2911,7 +2916,7 @@ class ProgressTests(unittest.TestCase):
         self.assertNotIn('DO_NOT_EXPORT_BINARY',body)
         self.assertIsNone(self.page.evaluate('window.reportScriptRan'))
 
-    def test_weekly_report_selects_only_recurring_occurrence_in_date_range(self):
+    def test_weekly_report_excludes_recurring_occurrences_from_task_tiles(self):
         self.seed([])
         week_start=TODAY-timedelta(days=TODAY.weekday())
         occurrence=(week_start+timedelta(days=1)).isoformat()
@@ -2928,13 +2933,9 @@ class ProgressTests(unittest.TestCase):
         self.page.reload()
         expect(self.page.get_by_role('heading',name='TaskMatrix Pro')).to_be_visible(timeout=15000)
         dialog=self.open_report(start=week_start.isoformat(),end=(week_start+timedelta(days=6)).isoformat())
-        expect(dialog.get_by_role('checkbox')).to_have_count(1)
-        dialog.get_by_label(f'レポート対象: 定期レビュー ({occurrence})',exact=True).check()
-        _,body=self.download_report(dialog)
-        self.assertIn(f'定期予定（{occurrence} の回）',body)
-        self.assertIn('現在の状態（出力時点）: 完了',body)
-        self.assertIn('定期回の現在の結果',body)
-        self.assertNotIn(f'定期予定（{following} の回）',body)
+        expect(dialog.get_by_role('checkbox')).to_have_count(0)
+        expect(dialog.get_by_role('button',name='Wordをダウンロード',exact=True)).to_be_disabled()
+        expect(dialog.get_by_label('レポート対象の大タスクタイル',exact=True).locator('[data-report-task-id]')).to_have_count(0)
 
     def test_quote_navigation_reveals_and_focuses_existing_source(self):
         source=dict(id='jump-source',kind='comment',createdAt='2026-01-01T01:00:00.000Z',text='移動先の元コメント',status='active',subtaskIds=['s1'],subtaskTitles=['既存の調査'])
@@ -4784,5 +4785,185 @@ class ProgressTests(unittest.TestCase):
                 self.page.reload();self.progress()
                 source=self.stored()[0]['subtasks'][0] if scope=='parent' else self.stored()[0]['subtasks'][0]['smallTasks'][0]
                 self.assertEqual(source['dependencies'][-1]['id'],added['id'])
+
+    def test_grid_editor_arrows_tab_and_control_enter_confirm_without_sending(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.progress();self.select_chat()
+        self.page.get_by_role('button',name='表を作成',exact=True).click()
+        dialog=self.page.get_by_role('dialog',name='表を作成',exact=True)
+        first=dialog.get_by_label('1行1列',exact=True);first.fill('見出し');first.dblclick();first.press('ArrowDown')
+        second=dialog.get_by_label('2行1列',exact=True);expect(second).to_be_focused();second.fill('本文')
+        second.press('Tab');expect(dialog.get_by_label('2行2列',exact=True)).to_be_focused()
+        self.page.keyboard.press('Shift+Tab');expect(second).to_be_focused()
+        second.press('ArrowUp');expect(first).to_be_focused()
+        first.press('Control+Enter');expect(dialog).to_have_count(0)
+        box=self.page.get_by_label('進捗コメント',exact=True);expect(box.get_by_role('table')).to_have_count(1)
+        self.assertEqual(self.stored()[0].get('progressHistory',[]),[])
+        self.page.get_by_role('button',name='表を編集',exact=True).click()
+        dialog=self.page.get_by_role('dialog',name='表を編集',exact=True)
+        dialog.get_by_label('2行2列',exact=True).fill('変更');dialog.get_by_label('2行2列',exact=True).press('Control+Enter')
+        expect(box.get_by_role('cell',name='変更',exact=True)).to_be_visible()
+
+    def test_rich_paste_keeps_lists_styles_quotes_edit_and_backup(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.progress();self.select_chat()
+        box=self.page.get_by_label('進捗コメント',exact=True)
+        html='<p>前<strong>太字</strong><em>斜体</em></p><ul><li>項目一<strong>重要</strong></li><li>項目二</li></ul><p>後<u>下線</u><s>取消</s></p>'
+        self.paste_grid(box,'前太字斜体\n項目一重要\n項目二\n後下線取消',html)
+        expect(box.locator('strong').first).to_have_text('太字');expect(box.locator('ul li')).to_have_count(2)
+        expect(box.locator('table')).to_have_count(0);box.press('Control+Enter')
+        source=self.stored()[0]['progressHistory'][-1]
+        self.assertTrue(any(mark['type']=='bold' for mark in source['textFormats']))
+        expect(self.entry(source['id']).locator('ul li')).to_have_count(2)
+        expect(self.entry(source['id']).locator('em')).to_have_text('斜体')
+        expect(self.entry(source['id']).locator('u')).to_have_text('下線')
+        expect(self.entry(source['id']).locator('s')).to_have_text('取消')
+        self.reply(source['id']);self.send('書式付き引用')
+        reply=self.stored()[0]['progressHistory'][-1]
+        self.assertEqual(reply['quote']['textFormats'],source['textFormats'])
+        expect(self.entry(reply['id']).get_by_role('blockquote').locator('ul li')).to_have_count(2)
+        self.entry(source['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+        editor=self.page.get_by_label('コメントの編集',exact=True)
+        expect(editor.locator('strong').first).to_have_text('太字');expect(editor.locator('ul li')).to_have_count(2)
+        self.page.get_by_role('button',name='編集を保存',exact=True).click()
+        with self.page.expect_download() as event:self.page.get_by_role('button',name='エクスポート',exact=True).click()
+        backup=Path(event.value.path()).read_bytes()
+        self.seed([]);self.page.get_by_label('バックアップをインポート',exact=True).set_input_files(dict(name='rich.json',mimeType='application/json',buffer=backup))
+        self.progress();self.select_chat()
+        expect(self.entry(source['id']).locator('ul li')).to_have_count(2)
+        expect(self.entry(source['id']).locator('strong').first).to_have_text('太字')
+
+    def test_rich_toolbar_and_keyboard_bold_and_native_numbered_lists(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.progress();self.select_chat()
+        box=self.page.get_by_label('進捗コメント',exact=True);box.fill('選択部分')
+        box.press('Control+a');self.page.get_by_role('button',name='太字',exact=True).click()
+        expect(box.locator('strong,b')).to_have_text('選択部分')
+        box.press('Control+i');box.press('Control+u')
+        expect(box.locator('em,i')).to_have_text('選択部分');expect(box.locator('u')).to_have_text('選択部分')
+        box.press('Control+Enter');source=self.stored()[0]['progressHistory'][-1]
+        expect(self.entry(source['id']).locator('strong')).to_have_text('選択部分')
+        box.click();self.page.get_by_role('button',name='番号付きリスト',exact=True).click()
+        box.press_sequentially('一番');box.press('Enter');box.press_sequentially('二番')
+        expect(box.locator('ol li')).to_have_count(2)
+        box.press('Control+Enter');source=self.stored()[0]['progressHistory'][-1]
+        expect(self.entry(source['id']).locator('ol li')).to_have_count(2)
+        self.page.screenshot(path='/tmp/schedule-rich-talk.png')
+        self.entry(source['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+        editor=self.page.get_by_label('コメントの編集',exact=True);editor.press('Control+a')
+        self.page.get_by_role('button',name='番号付きリスト',exact=True).click()
+        expect(editor.locator('ol')).to_have_count(0)
+        self.page.get_by_role('button',name='編集を保存',exact=True).click()
+        current=next(entry for entry in self.stored()[0]['progressHistory'] if entry['id']==source['id'])
+        self.assertEqual(current['text'],'一番\n二番')
+
+    def test_mixed_paste_preserves_text_multiple_tables_lists_and_safe_formatting(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.progress();self.select_chat()
+        box=self.page.get_by_label('進捗コメント',exact=True)
+        html='<p><strong>表の前の文章</strong></p><table><tr><td>項目A</td><td>担当A</td></tr><tr><td>作業A</td><td>田中</td></tr></table><p>表の間の文章</p><ul><li>箇条書きの文章</li></ul><table><tr><td>項目B</td></tr><tr><td>作業B</td></tr></table><p><em>表の後の文章</em></p><script>window.badMixedPaste=1</script>'
+        self.paste_grid(box,'表の前の文章\n項目A\t担当A\n作業A\t田中\n表の間の文章\n箇条書きの文章\n項目B\n作業B\n表の後の文章',html)
+        expect(box.get_by_role('table')).to_have_count(2);expect(box.locator('strong')).to_have_text('表の前の文章')
+        expect(box.locator('li')).to_have_text('箇条書きの文章');expect(box.locator('em')).to_have_text('表の後の文章')
+        self.assertFalse(self.page.evaluate('!!window.badMixedPaste'));box.press('Control+Enter')
+        source=self.stored()[0]['progressHistory'][-1];body=source['text']
+        for text in ['表の前の文章','表の間の文章','箇条書きの文章','表の後の文章']:self.assertIn(text,body)
+        expect(self.entry(source['id']).get_by_role('table')).to_have_count(2)
+        self.assertLess(body.index('表の前'),body.index('項目A'));self.assertLess(body.index('項目A'),body.index('表の間'));self.assertLess(body.index('項目B'),body.index('表の後'))
+        self.entry(source['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+        editor=self.page.get_by_label('コメントの編集',exact=True)
+        expect(editor.get_by_role('table')).to_have_count(2);expect(editor.locator('li')).to_have_text('箇条書きの文章')
+
+    def test_plain_bullet_tabs_are_not_automatically_converted_to_tables(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.progress();self.select_chat()
+        box=self.page.get_by_label('進捗コメント',exact=True)
+        value='•\t第一の項目\n•\t第二の項目'
+        self.paste_grid(box,value)
+        expect(box.get_by_role('table')).to_have_count(0)
+        box.press('Control+Enter');self.assertEqual(self.stored()[0]['progressHistory'][-1]['text'],value)
+
+    def test_summary_nested_waiting_is_one_initial_request_and_jumps_to_comment(self):
+        item=self.summary_fixture()
+        source=next(entry for entry in item['progressHistory'] if entry['id']=='sw')
+        nested=dict(id='nested-wait',kind='comment',text='回答してさらに質問',status='waiting',subtaskIds=['p'],smallTaskId='waiting',smallTaskTitle='小さい相手待ち',quote=source)
+        result=dict(id='nested-result',kind='comment',text='最後の回答を結論に',status='active',isConclusion=True,subtaskIds=['p'],smallTaskId='waiting',smallTaskTitle='小さい相手待ち',quote=nested)
+        item['progressHistory'] += [nested,result];item['subtasks'][0]['smallTasks'][3]['progressTableSplitWaiting']=True
+        table=self.open_summary(item)
+        row=self.summary_row('waiting:sw');expect(row).to_contain_text('小さいタスク内の依頼')
+        expect(row.get_by_role('cell',name='結論済み',exact=True)).to_be_visible()
+        expect(self.summary_row('waiting:nested-wait')).to_have_count(0)
+        row.get_by_role('button',name='トークへ移動: 最後の回答を結論に',exact=True).click()
+        expect(self.page.get_by_role('button',name='トーク表示',exact=True)).to_have_attribute('aria-pressed','true')
+        expect(self.entry('nested-result')).to_be_visible();expect(self.entry('nested-result')).to_be_focused()
+
+    def test_native_copy_and_paste_mixed_post_retains_table_text_and_list(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.progress();self.select_chat()
+        box=self.page.get_by_label('進捗コメント',exact=True)
+        self.paste_grid(box,'先頭\nA\tB\nC\tD\nリスト\n末尾','<p>先頭</p><table><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></table><ul><li>リスト</li></ul><p><strong>末尾</strong></p>')
+        box.press('Control+Enter');source=self.stored()[0]['progressHistory'][-1]
+        self.ctx.grant_permissions(['clipboard-read','clipboard-write'])
+        self.entry(source['id']).locator('[data-progress-body]').first.evaluate('''node=>{const range=document.createRange();range.selectNodeContents(node);const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);}''')
+        self.page.keyboard.press('Control+c')
+        box.click();box.press('Control+v')
+        expect(box.get_by_role('table')).to_have_count(1)
+        expect(box).to_contain_text('先頭');expect(box).to_contain_text('末尾');expect(box.locator('ul li')).to_have_text('リスト')
+        expect(box.locator('strong')).to_have_text('末尾')
+        box.press('Control+Enter');copied=self.stored()[0]['progressHistory'][-1]
+        for text in ['先頭','末尾','リスト']:self.assertIn(text,copied['text'])
+
+    def test_rich_nested_lists_safe_import_and_reedit_stay_stable(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.progress();self.select_chat()
+        box=self.page.get_by_label('進捗コメント',exact=True)
+        html='<ul><li><strong>親<strong>項</strong>目</strong><ul><li>子項目</li></ul></li><li>次の項目</li></ul><ol start="3"><li>番号三</li><li>番号四</li></ol><p><span style="font-weight:700;font-style:italic" onclick="window.badRich=1">安全な書式</span></p>'
+        self.paste_grid(box,'',html)
+        expect(box.locator('ul li')).to_have_count(3);expect(box.locator('ol li')).to_have_count(2)
+        expect(box.locator('ol')).to_have_attribute('start','3');expect(box.locator('[onclick]')).to_have_count(0)
+        box.press('Control+Enter');source=self.stored()[0]['progressHistory'][-1]
+        self.assertIn('親項目\n子項目\n次の項目\n番号三\n番号四',source['text'])
+        for _ in range(2):
+            self.entry(source['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+            editor=self.page.get_by_label('コメントの編集',exact=True);expect(editor.locator('ul ul li')).to_have_text('子項目')
+            self.page.get_by_role('button',name='編集を保存',exact=True).click()
+            current=next(entry for entry in self.stored()[0]['progressHistory'] if entry['id']==source['id'])
+            self.assertEqual(current['text'],source['text']);self.assertEqual(current['textFormats'],source['textFormats'])
+
+    def test_summary_root_nested_waits_show_first_request_and_each_conclusion_jumps(self):
+        source=dict(id='req',kind='comment',text='最初の依頼',status='waiting',subtaskIds=[])
+        nested=dict(id='more',kind='comment',text='回答と追加の依頼',status='waiting',subtaskIds=[],quote=source)
+        result=dict(id='done1',kind='comment',text='最初の結論',status='active',isConclusion=True,subtaskIds=[],quote=nested)
+        final=dict(id='done2',kind='comment',text='追記の結論',status='active',isConclusion=True,subtaskIds=[],quote=result)
+        item=task(progressEnabled=True,progressStage='doing',progressHistory=[source,nested,result,final])
+        table=self.open_summary(item)
+        expect(self.summary_row('waiting:more')).to_have_count(0)
+        row=self.summary_row('waiting:req');expect(row.get_by_role('cell',name='最初の依頼',exact=True)).to_be_visible()
+        row.get_by_role('button',name='トークへ移動: 最初の結論',exact=True).click()
+        expect(self.entry('done1')).to_be_focused()
+        self.page.get_by_role('button',name='テーブル表示',exact=True).click()
+        row.get_by_role('button',name='トークへ移動: 追記の結論',exact=True).click()
+        expect(self.entry('done2')).to_be_focused()
+
+    def test_report_tiles_only_include_board_tasks_and_mix_completed_with_live(self):
+        live=task('live',progressEnabled=True,progressStage='doing');live.update(title='進行中のカード',dueDate='2099-01-01',order=2)
+        done=task('done',progressEnabled=True,progressStage='doing');done.update(title='期間内に完了したカード',completed=True,completedAt='2026-10-22T00:00:00Z',order=1)
+        todo=task('todo',progressEnabled=True,progressStage='todo');todo.update(title='未着手ボードだけのカード',order=3)
+        plain=task('plain');plain.update(title='進捗ボード対象外',order=4)
+        old=task('old',progressEnabled=True,progressStage='doing');old.update(title='期間外に完了したカード',completed=True,completedAt='2026-09-01T00:00:00Z',order=5)
+        completed_todo=task('completed-todo',progressEnabled=True,progressStage='todo');completed_todo.update(title='完了済みボードのカード',completed=True,completedAt='2026-10-23T00:00:00Z',order=6)
+        self.seed([live,done,todo,plain,old,completed_todo]);before=self.stored()
+        dialog=self.open_report();tiles=dialog.get_by_label('レポート対象の大タスクタイル',exact=True)
+        ids=tiles.locator('[data-report-task-id]').evaluate_all('(nodes)=>nodes.map(node=>node.dataset.reportTaskId)')
+        self.assertEqual(ids,['done','live','completed-todo'])
+        self.assertEqual(len(tiles.evaluate('node=>getComputedStyle(node).gridTemplateColumns.split(" ")')),2)
+        dialog.get_by_role('button',name='表示中をすべて選択',exact=True).click()
+        for title in ['進行中のカード','期間内に完了したカード','完了済みボードのカード']:expect(dialog.get_by_label('レポート対象: '+title,exact=True)).to_be_checked()
+        self.page.screenshot(path='/tmp/schedule-report-task-tiles.png')
+        dialog.get_by_role('button',name='選択を解除',exact=True).click()
+        tiles.get_by_text('進行中のカード',exact=True).click()
+        expect(dialog.get_by_label('レポート対象: 進行中のカード',exact=True)).to_be_checked()
+        _,body=self.download_report(dialog)
+        self.assertIn('進行中のカード',body);self.assertNotIn('期間内に完了したカード',body);self.assertNotIn('未着手ボードだけのカード',body)
+        self.assertEqual(self.stored(),before)
+
+    def test_report_tiles_do_not_fall_back_to_untracked_or_unstarted_tasks(self):
+        self.seed([task(progressEnabled=True,progressStage='todo'),task('plain')])
+        dialog=self.open_report(start=TODAY.isoformat(),end=TODAY.isoformat())
+        expect(dialog.get_by_role('checkbox')).to_have_count(0)
+        expect(dialog.get_by_role('button',name='Wordをダウンロード',exact=True)).to_be_disabled()
 
 if __name__=='__main__':unittest.main(verbosity=2)

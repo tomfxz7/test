@@ -782,7 +782,6 @@ const progressEntryTone = (entry, task) => {
   if (entry.resolvedByReplyId || (task?.progressHistory || []).some(item => item.id === entry.id && item.resolvedByReplyId)
     || entry.status === 'completed') return 'blue';
   if (entry.status === 'waiting') return 'green';
-  if (targets.some(item => isProgressBlocked(task, item))) return 'yellow';
   return 'blue';
 };
 const progressToneBorders = { yellow: 'border-black', gray: 'border-black', blue: 'border-black', green: 'border-black', red: 'border-black', purple: 'border-black' };
@@ -807,7 +806,7 @@ const progressMediaItems = value => Array.isArray(value)
   ? value.filter(item => item && typeof item === 'object' && !Array.isArray(item)) : [];
 
 const createProgressQuote = (entry) => ({
-  id: entry.id, text: entry.text, ...(progressMediaItems(entry.textLinks).length ? { textLinks: progressMediaItems(entry.textLinks).map(link => ({ ...link })) } : {}), createdAt: entry.createdAt, status: entry.status,
+  id: entry.id, text: entry.text, ...(progressMediaItems(entry.textLinks).length ? { textLinks: progressMediaItems(entry.textLinks).map(link => ({ ...link })) } : {}), ...(progressMediaItems(entry.textFormats).length ? {textFormats:progressMediaItems(entry.textFormats).map(mark=>({...mark}))} : {}), createdAt: entry.createdAt, status: entry.status,
   ...(entry.completedSmallTaskId ? { completedSmallTaskId: entry.completedSmallTaskId } : {}),
   ...(Array.isArray(entry.completedSubtaskIds) ? { completedSubtaskIds: [...entry.completedSubtaskIds] } : {}),
   ...(entry.plainComment ? { plainComment: true } : {}),
@@ -931,24 +930,102 @@ const progressTables = text => {
   }
   return result;
 };
-const ProgressTable = ({ rows }) => <span className="block max-w-full overflow-x-auto my-2" role="table" aria-label="トークの表">
-  {rows.map((row, i) => <span key={i} role="row" className="grid" style={{ gridTemplateColumns: `repeat(${row.length}, minmax(100px, 1fr))`, minWidth: row.length * 100 }}>
-    {row.map((cell, j) => <span key={j} role={i === 0 ? 'columnheader' : 'cell'} className={`border border-gray-400 p-2 whitespace-pre-wrap break-words ${i === 0 ? 'bg-slate-100 font-bold' : 'bg-white'}`}><ProgressText value={cell}/></span>)}
-  </span>)}
+const ProgressTable = ({ rows }) => <span className="block max-w-full overflow-x-auto my-2">
+  <table aria-label="トークの表" className="w-full border-collapse" style={{ minWidth: rows[0].length * 100 }}>
+    <tbody>{rows.map((row,i)=><tr key={i}>{row.map((cell,j)=>React.createElement(i===0?'th':'td',{key:j,className:`border border-gray-400 p-2 whitespace-pre-wrap break-words text-left align-top ${i===0?'bg-slate-100 font-bold':'bg-white'}`,style:{minWidth:100}},<ProgressText value={cell}/>))}</tr>)}</tbody>
+  </table>
 </span>;
-const ProgressText = ({ value, textLinks }) => {
+// Rich text is stored as validated ranges over plain text, never arbitrary HTML.
+const progressTextFormats = (text, formats) => {
+  const seen = new Set();
+  const valid = progressMediaItems(formats).filter(mark => ['bold','italic','underline','strike','bullet','number'].includes(mark.type)
+    && Number.isInteger(mark.start) && Number.isInteger(mark.end) && mark.start >= 0 && mark.end > mark.start && mark.end <= text.length)
+    .map(mark => ({ start: mark.start, end: mark.end, type: mark.type,
+      ...(['bullet','number'].includes(mark.type) ? { depth: Math.max(0, Math.min(5, Math.trunc(Number(mark.depth)) || 0)), index: Math.max(1, Math.min(1000000, Math.trunc(Number(mark.index)) || 1)) } : {}) }))
+    .filter(mark => { const key = JSON.stringify(mark); if (seen.has(key)) return false; seen.add(key); return true; })
+    .sort((a,b) => a.start-b.start || a.end-b.end || a.type.localeCompare(b.type));
+  const result=valid.filter(mark=>['bullet','number'].includes(mark.type));
+  ['bold','italic','underline','strike'].forEach(type=>{
+    const merged=[];
+    valid.filter(mark=>mark.type===type).forEach(mark=>{
+      const last=merged.at(-1);
+      if(last && last.end>=mark.start)last.end=Math.max(last.end,mark.end);else merged.push({...mark});
+    });
+    result.push(...merged);
+  });
+  return result.sort((a,b)=>a.start-b.start || a.end-b.end || a.type.localeCompare(b.type));
+};
+const progressSliceFormats = (text, formats, start, end, prefix = 0) => progressTextFormats(text, formats)
+  .filter(mark => mark.start < end && mark.end > start).map(mark => ({ ...mark, start: Math.max(start, mark.start)-start+prefix, end: Math.min(end, mark.end)-start+prefix }));
+const progressInlineFragment = (text, links, formats) => {
+  const fragment = document.createDocumentFragment(), boundaries = new Set([0,text.length]);
+  const marks = progressTextFormats(text, formats).filter(mark => !['bullet','number'].includes(mark.type));
+  const safeLinks = progressTextLinks(text, links);
+  [...marks,...safeLinks].forEach(mark => { boundaries.add(mark.start); boundaries.add(mark.end); });
+  const points = [...boundaries].sort((a,b) => a-b);
+  points.slice(0,-1).forEach((start,index) => {
+    const end=points[index+1]; let node=document.createTextNode(text.slice(start,end));
+    const link=safeLinks.find(link => link.start<=start && link.end>=end);
+    if(link) { const a=document.createElement('a'); a.href=link.url; a.target='_blank'; a.rel='noopener noreferrer'; a.className='text-black underline break-all'; a.contentEditable='false'; a.append(node);node=a; }
+    ['bold','italic','underline','strike'].forEach(type => {
+      if(!marks.some(mark => mark.type===type && mark.start<=start && mark.end>=end)) return;
+      const element=document.createElement(({bold:'strong',italic:'em',underline:'u',strike:'s'})[type]); element.append(node);node=element;
+    });
+    fragment.append(node);
+  });
+  return fragment;
+};
+const progressListFragment = (text, links, formats) => {
+  const marks=progressTextFormats(text,formats), lists=marks.filter(mark=>['bullet','number'].includes(mark.type));
+  if(!lists.length) return progressInlineFragment(text,links,marks);
+  const fragment=document.createDocumentFragment(); let offset=0, stack=[], previous=null;
+  const inline = (start,end) => progressInlineFragment(text.slice(start,end), progressTextLinks(text,links).filter(link=>link.start>=start && link.end<=end).map(link=>({...link,start:link.start-start,end:link.end-start})), progressSliceFormats(text,marks,start,end));
+  text.split('\n').forEach((line,index,lines) => {
+    const start=offset,end=start+line.length; offset=end+1;
+    const mark=lists.filter(mark=>mark.start<=start && mark.end>=end && end>mark.start).sort((a,b)=>(b.depth-a.depth)||(a.end-a.start)-(b.end-b.start))[0];
+    if(!mark) { stack=[];previous=null;fragment.append(inline(start,end)); if(index<lines.length-1)fragment.append(document.createTextNode('\n'));return; }
+    const depth=Math.min(Math.max(0,mark.depth-Math.min(...lists.map(item=>item.depth))),stack.length);
+    stack=stack.slice(0,depth+1);
+    let level=stack[depth];
+    if(!level || level.type!==mark.type) {
+      const list=document.createElement(mark.type==='number'?'ol':'ul'); list.setAttribute('data-progress-list-root',''); list.className=mark.type==='number'?'list-decimal pl-5':'list-disc pl-5';
+      list.style.listStyleType=mark.type==='number'?'decimal':'disc'; if(mark.type==='number')list.start=mark.index;
+      if(depth && stack[depth-1]?.last) { stack[depth-1].last.append(document.createTextNode('\n'),list); } else { if(stack[0])fragment.append(document.createTextNode('\n')); fragment.append(list); }
+      level={node:list,type:mark.type,last:null};stack[depth]=level;
+    }
+    const same=previous && previous.start===mark.start && previous.end===mark.end && previous.depth===mark.depth;
+    if(same && level.last)level.last.append(document.createElement('br'),inline(start,end));
+    else { const li=document.createElement('li'); if(mark.type==='number' && mark.index!==(level.node.start||1)+level.node.children.length)li.value=mark.index; li.append(inline(start,end));level.node.append(li);level.last=li; }
+    previous=mark;
+    const nextStart=end+1;
+    if(index<lines.length-1 && !lists.some(item=>item.start<=nextStart && item.end>nextStart)) {fragment.append(document.createTextNode('\n'));stack=[];previous=null;}
+  });
+  return fragment;
+};
+const progressFragmentReact = fragment => {
+  const convert=(node,key) => {
+    if(node.nodeType===3)return node.textContent;
+    const props={key};
+    if(node.nodeName==='A')Object.assign(props,{href:node.href,target:'_blank',rel:'noopener noreferrer',className:node.className});
+    if(node.className)props.className=node.className;
+    if(node.nodeName==='OL')props.start=node.start;
+    if(node.nodeName==='LI' && node.hasAttribute('value'))props.value=node.value;
+    return React.createElement(node.nodeName.toLowerCase(),props,...[...node.childNodes].map((child,i)=>convert(child,`${key}-${i}`)));
+  };
+  return [...fragment.childNodes].map((node,i)=>convert(node,i));
+};
+const ProgressText = ({ value, textLinks, textFormats }) => {
   if (typeof value !== 'string') return value ?? null;
   const tables = progressTables(value), parts = []; let start = 0;
-  const appendText = (from, to) => parts.push(...progressTextParts(value.slice(from, to), progressAllTextLinks(value, textLinks).filter(link => link.start >= from && link.end <= to).map(link => ({ ...link, start: link.start - from, end: link.end - from }))).map((part, i) => part.url
-    ? <a key={`${from}-${i}`} href={part.url} target="_blank" rel="noopener noreferrer" className="underline break-all" style={{ color: '#000' }}>{part.text}</a> : part.text));
+  const appendText = (from,to) => parts.push(...progressFragmentReact(progressListFragment(value.slice(from,to), progressAllTextLinks(value,textLinks).filter(link=>link.start>=from && link.end<=to).map(link=>({...link,start:link.start-from,end:link.end-from})), progressSliceFormats(value,textFormats,from,to))));
   tables.forEach((table, i) => { appendText(start, table.start); parts.push(<ProgressTable key={`table-${i}`} rows={table.rows}/>); start = table.end; });
   appendText(start, value.length);
   return <span data-progress-body style={{ color: '#000' }}>{parts}</span>;
 };
 // Read text, our serialized tables and HTTP(S) link ranges. Clipboard HTML is rebuilt from these safe values.
 const readProgressEditor = root => {
-  let text = ''; const links = [];
-  const block = node => /^(DIV|P|LI|H[1-6]|BLOCKQUOTE|PRE|TR)$/.test(node.nodeName);
+  let text = ''; const links = [], formats = [];
+  const block = node => !(/^(UL|OL)$/.test(node.nodeName) && node.hasAttribute?.('data-progress-list-root')) && /^(DIV|P|LI|H[1-6]|BLOCKQUOTE|PRE|TR|UL|OL)$/.test(node.nodeName);
   const walk = node => {
     if (node.nodeType === 3) { text += node.textContent.replace(/\u200B/g, ''); return; }
     if ((node.nodeType !== 1 && node !== root) || /^(SCRIPT|STYLE|HEAD|IFRAME|OBJECT|SVG|TEMPLATE)$/.test(node.nodeName)) return;
@@ -963,24 +1040,25 @@ const readProgressEditor = root => {
     });
     const url = node.nodeName === 'A' && progressSafeUrl(node.getAttribute('href'));
     if (url && text.length > start) links.push({ start, end: text.length, url });
+    const style=node.style;
+    const add = type => { if(text.length>start)formats.push({start,end:text.length,type}); };
+    if(/^(B|STRONG)$/.test(node.nodeName) || /^(bold|[6-9]00)$/.test(style?.fontWeight || ''))add('bold');
+    if(/^(I|EM)$/.test(node.nodeName) || style?.fontStyle==='italic')add('italic');
+    if(node.nodeName==='U' || /underline/.test(style?.textDecoration || ''))add('underline');
+    if(/^(S|STRIKE|DEL)$/.test(node.nodeName) || /line-through/.test(style?.textDecoration || ''))add('strike');
+    if(node.nodeName==='LI' && /^(UL|OL)$/.test(node.parentElement?.nodeName)) {
+      const list=node.parentElement; let ancestor=list.parentElement,depth=0;
+      while(ancestor) { if(/^(UL|OL)$/.test(ancestor.nodeName))depth++;ancestor=ancestor.parentElement; }
+      const index=node.hasAttribute('value') ? node.value : (list.start || 1)+[...list.children].filter(item=>item.nodeName==='LI').indexOf(node);
+      if(text.length>start)formats.push({start,end:text.length,type:list.nodeName==='OL'?'number':'bullet',depth,index});
+    }
   };
   walk(root);
-  return { text, textLinks: progressTextLinks(text, links) };
+  return { text, textLinks: progressTextLinks(text, links), textFormats: progressTextFormats(text,formats) };
 };
-const progressPlainEditorFragment = (text, links) => {
-  const fragment = document.createDocumentFragment();
-  progressTextParts(text, progressTextLinks(text, links)).forEach(part => {
-    if (!part.url) { fragment.append(document.createTextNode(part.text)); return; }
-    const anchor = document.createElement('a');
-    anchor.textContent = part.text; anchor.href = part.url; anchor.target = '_blank'; anchor.rel = 'noopener noreferrer';
-    anchor.className = 'text-black underline break-all'; anchor.contentEditable = 'false';
-    fragment.append(anchor);
-  });
-  return fragment;
-};
-const progressEditorFragment = (text, links) => {
+const progressEditorFragment = (text, links, formats = []) => {
   const fragment = document.createDocumentFragment(); let start = 0;
-  const appendText = (from, to) => fragment.append(progressPlainEditorFragment(text.slice(from, to), progressTextLinks(text, links).filter(link => link.start >= from && link.end <= to).map(link => ({ ...link, start: link.start - from, end: link.end - from }))));
+  const appendText = (from,to) => fragment.append(progressListFragment(text.slice(from,to),progressTextLinks(text,links).filter(link=>link.start>=from && link.end<=to).map(link=>({...link,start:link.start-from,end:link.end-from})),progressSliceFormats(text,formats,from,to)));
   progressTables(text).forEach(item => {
     appendText(start, item.start);
     const table = document.createElement('table'); table.contentEditable = 'false';
@@ -1047,15 +1125,24 @@ const progressClipboardGrid = (html, plain, cellMode = false) => {
 };
 const progressClipboardDraft = (html, plain) => {
   const plainText = plain.replace(/\u200B/g, '');
-  if (!html) return { text: plainText, textLinks: [] };
+  if (!html) return { text: plainText, textLinks: [], textFormats: [] };
   const template = document.createElement('template');
   template.innerHTML = html;
+  // Rebuild every real table in place, preserving paragraphs/lists before,
+  // between and after tables. Clipboard HTML itself is never inserted.
+  const tables=[...template.content.querySelectorAll('table')].filter(table=>!table.parentElement?.closest('table'));
+  for(const table of tables) {
+    const grid=progressClipboardGrid(table.outerHTML,'');
+    if(grid?.error)return {error:grid.error};
+    if(grid?.rows)table.replaceWith(progressEditorFragment('\n\n'+progressTableText(grid.rows)+'\n\n',[]));
+  }
+
   // Source formatting whitespace between HTML blocks is not a user line break.
   const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
   const nodes = []; while (walker.nextNode()) nodes.push(walker.currentNode);
   const block = node => node && /^(DIV|P|LI|H[1-6]|BLOCKQUOTE|PRE|TR|TABLE|UL|OL)$/.test(node.nodeName);
   nodes.forEach(node => {
-    if (node.parentElement?.closest('pre,[style*="white-space"]')) return;
+    if (node.parentElement?.closest('pre,[style*="white-space"],table[data-progress-table]')) return;
     const value = node.textContent;
     if (/^[\t\r\n ]+$/.test(value) && /[\r\n]/.test(value)) {
       if (!node.previousSibling || !node.nextSibling || block(node.previousSibling) || block(node.nextSibling)) node.remove();
@@ -1063,7 +1150,7 @@ const progressClipboardDraft = (html, plain) => {
     } else node.textContent = value.replace(/[\t\r\n ]+/g, ' ');
   });
   const rich = readProgressEditor(template.content);
-  if (!rich.text) return { text: plainText, textLinks: [] };
+  if (!rich.text) return { text: plainText, textLinks: [], textFormats: [] };
   const positions = value => {
     const result = []; for (let i = 0; i < value.length; i += 1) if (!/\s/u.test(value[i])) result.push(i);
     return result;
@@ -1077,7 +1164,12 @@ const progressClipboardDraft = (html, plain) => {
       while (last + 1 < richPositions.length && richPositions[last + 1] < link.end) last += 1;
       return first < 0 || richPositions[first] >= link.end ? [] : [{ start: plainPositions[first], end: plainPositions[last] + 1, url: link.url }];
     });
-    return { text: plainText, textLinks };
+    const textFormats = (rich.textFormats || []).flatMap(mark => {
+      const first=richPositions.findIndex(i=>i>=mark.start); let last=first;
+      while(last+1<richPositions.length && richPositions[last+1]<mark.end)last++;
+      return first<0 || richPositions[first]>=mark.end ? [] : [{...mark,start:plainPositions[first],end:plainPositions[last]+1}];
+    });
+    return { text: plainText, textLinks, textFormats };
   }
   return rich;
 };
@@ -1179,6 +1271,10 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
   const resize = (height, width) => { setRows(previous => Array.from({ length: height }, (_, i) => Array.from({ length: width }, (_, j) => previous[i]?.[j] || ''))); selectCell(0, 0); };
   const insertRow = index => setRows(previous => previous.length >= maxRows ? previous : [...previous.slice(0, index), Array(previous[0].length).fill(''), ...previous.slice(index)]);
   const insertColumn = index => setRows(previous => previous[0].length >= maxColumns ? previous : previous.map(row => [...row.slice(0, index), '', ...row.slice(index)]));
+  const confirmTable = () => {
+    if (!rows.some(row => row.some(cell => cell.trim()))) { setError('表に内容を入力してください。'); return; }
+    onApply(rows);
+  };
   const edgeControl = (axis, index, count, limit, insert, remove = false) => {
     const column = axis === 'column';
     const base = remove ? `${index + 1}${column ? '列' : '行'}目を削除`
@@ -1204,6 +1300,7 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
         e.stopPropagation();
         if (e.nativeEvent.isComposing) return;
         const command = e.ctrlKey || e.metaKey;
+        if (command && e.key === 'Enter') { e.preventDefault(); confirmTable(); return; }
         if (command && (e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'y')) {
           e.preventDefault(); historyChange(e.key.toLowerCase() === 'y' || e.shiftKey ? 'redo' : 'undo'); return;
         }
@@ -1251,10 +1348,25 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
       onKeyDown={e => {
         if (e.nativeEvent.isComposing || e.key === 'Process') return;
         if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) { openContextMenu(e, i, j, true); return; }
+        if ((e.ctrlKey || e.metaKey) && e.key==='Enter') return;
         const editing = editingCell?.row === i && editingCell?.column === j;
         if (e.key === 'Escape' && editing) { e.preventDefault(); e.stopPropagation(); setEditingCell(null); return; }
+        if (e.key === 'Tab' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          e.preventDefault(); e.stopPropagation();
+          let row = i, column = !editing && e.shiftKey && e.key !== 'Tab' ? selection.endColumn : j;
+          if (e.key === 'Tab') {
+            const position = Math.max(0, Math.min(rows.length * rows[0].length - 1, i * rows[0].length + j + (e.shiftKey ? -1 : 1)));
+            row = Math.floor(position / rows[0].length); column = position % rows[0].length;
+          } else row = Math.max(0, Math.min(rows.length - 1, (!editing && e.shiftKey ? selection.endRow : i) + (e.key === 'ArrowDown' ? 1 : -1)));
+          selectCell(row, column, e.shiftKey && e.key !== 'Tab' && !editing);
+          if (!e.shiftKey || e.key === 'Tab' || editing) {
+            const next = dialogRef.current?.querySelector(`[aria-label="${row + 1}行${column + 1}列"]`);
+            next?.focus(); next?.select();
+          }
+          return;
+        }
         if (editing) return;
-        if ((e.key === 'Delete' || e.key === 'Backspace') && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); clearCells(); }
+        if ((e.key === 'Delete'  || e.key === 'Backspace') && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); clearCells(); }
         else if (e.key === 'F2' || e.key === 'Enter') { e.preventDefault(); setEditingCell({ row: i, column: j }); e.currentTarget.setSelectionRange(cell.length, cell.length); }
         else if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
           e.preventDefault(); const nextRow = Math.max(0, Math.min(rows.length - 1, selection.endRow + (e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0)));
@@ -1290,11 +1402,11 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
         ].map(([label, shortcut, action]) => <button key={label} type="button" role="menuitem" onClick={() => { action(); closeMenu(); }} className="flex w-full items-center justify-between gap-2 rounded px-2 py-2 text-left hover:bg-violet-50 focus:bg-violet-50 focus:outline-none"><span>{label}</span><span className="text-[10px] text-gray-500">{shortcut}</span></button>)}
       </div>}
       {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
-      <div className="flex justify-end gap-2"><button type="button" onClick={onClose} className="border rounded px-3 py-2">キャンセル</button><button type="button" className="bg-blue-600 text-white rounded px-3 py-2" onClick={() => { if (!rows.some(row => row.some(cell => cell.trim()))) { setError('表に内容を入力してください。'); return; } onApply(rows); }}>{initial ? '表を更新' : '表を挿入'}</button></div>
+      <div className="flex justify-end gap-2"><button type="button" onClick={onClose} className="border rounded px-3 py-2">キャンセル</button><button type="button" className="bg-blue-600 text-white rounded px-3 py-2" onClick={confirmTable}>{initial ? '表を更新' : '表を挿入'}</button></div>
     </section>
   </div>;
 };
-const ProgressComposer = ({ text, textLinks, onChange, onPasteImages, editorRef, editing, expanded = false }) => {
+const ProgressComposer = ({ text, textLinks, textFormats = [], onChange, onPasteImages, editorRef, editing, expanded = false }) => {
   const composing = useRef(false);
   const [pasteError, setPasteError] = useState('');
   const [tableDialog, setTableDialog] = useState(null);
@@ -1311,7 +1423,7 @@ const ProgressComposer = ({ text, textLinks, onChange, onPasteImages, editorRef,
     const markdown = progressTableText(rows);
     if (tableDialog.table) {
       const { start, end } = tableDialog.table, delta = markdown.length - (end - start);
-      onChange({ text: text.slice(0, start) + markdown + text.slice(end), textLinks: progressTextLinks(text, textLinks).filter(link => link.end <= start || link.start >= end).map(link => link.start >= end ? { ...link, start: link.start + delta, end: link.end + delta } : link) });
+      onChange({ text: text.slice(0, start) + markdown + text.slice(end), textFormats: progressTextFormats(text,textFormats).filter(mark=>mark.end<=start || mark.start>=end).map(mark=>mark.start>=end?{...mark,start:mark.start+delta,end:mark.end+delta}:mark), textLinks: progressTextLinks(text, textLinks).filter(link => link.end <= start || link.start >= end).map(link => link.start >= end ? { ...link, start: link.start + delta, end: link.end + delta } : link) });
     } else {
       editorRef.current.focus();
       const selection = window.getSelection();
@@ -1328,22 +1440,26 @@ const ProgressComposer = ({ text, textLinks, onChange, onPasteImages, editorRef,
     const editor = editorRef.current;
     if (!editor || composing.current) return;
     const current = read(), wanted = progressTextLinks(text, textLinks);
-    if (current.text === text && JSON.stringify(current.textLinks) === JSON.stringify(wanted) && (text || !editor.textContent)) return;
-    editor.replaceChildren(progressEditorFragment(text, wanted));
-  }, [text, textLinks]);
+    if (current.text === text && JSON.stringify(current.textLinks) === JSON.stringify(wanted) && JSON.stringify(current.textFormats) === JSON.stringify(progressTextFormats(text,textFormats)) && (text || !editor.textContent)) return;
+    editor.replaceChildren(progressEditorFragment(text, wanted, textFormats));
+  }, [text, textLinks, textFormats]);
+  const format = command => { editorRef.current.focus(); document.execCommand(command,false,null); emit(); };
   const paste = e => {
     e.preventDefault();
     const clipboard = e.clipboardData;
     const files = [...(clipboard?.files || [])];
     const images = files.length ? files : [...(clipboard?.items || [])].filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter(Boolean);
     const plain = clipboard?.getData('text/plain') || '', html = clipboard?.getData('text/html');
-    const grid = progressClipboardGrid(html, plain);
-    if (grid?.error) { setPasteError(grid.error); return; }
-    setPasteError('');
-    const draft = grid ? { text: '\n\n' + progressTableText(grid.rows) + '\n\n', textLinks: [] } : progressClipboardDraft(html, plain);
+    const template=document.createElement('template'); template.innerHTML=html || '';
+    const semanticHtml=!!template.content.querySelector('table,ul,ol,[role="list"],[role="listitem"],[style*="mso-list"],.MsoListParagraph');
+    const lines=plain.split(/\r?\n/).filter(line=>line.trim());
+    const listText=lines.length>0 && lines.every(line=>/^\s*(?:[-*•●◦▪・]|\d+[.)])\s+/.test(line));
+    const grid=!semanticHtml && !listText ? progressClipboardGrid('',plain) : null;
+    const draft=grid?.rows ? {text:'\n\n'+progressTableText(grid.rows)+'\n\n',textLinks:[],textFormats:[]} : grid?.error ? grid : progressClipboardDraft(html,plain);
+    if(draft.error){setPasteError(draft.error);return;} setPasteError('');
     if (draft.text) {
       const container = document.createElement('div');
-      container.append(progressEditorFragment(draft.text, progressAllTextLinks(draft.text, draft.textLinks)));
+      container.append(progressEditorFragment(draft.text, progressAllTextLinks(draft.text, draft.textLinks), draft.textFormats));
       // Keep subsequent typing outside the pasted hyperlink; omit this caret marker when saving.
       if (container.lastChild?.nodeName === 'A') container.append(document.createTextNode('\u200B'));
       editorRef.current.focus();
@@ -1353,16 +1469,17 @@ const ProgressComposer = ({ text, textLinks, onChange, onPasteImages, editorRef,
     if (images.length) onPasteImages(images);
   };
   return <div className={`relative ${expanded ? 'flex flex-col flex-1 min-h-0' : ''}`}>
-    <div role="toolbar" aria-label="トークの表ツール" className="shrink-0 flex items-center gap-2 px-2 pt-1 text-xs">
+    <div role="toolbar" aria-label="トークの表ツール" className="shrink-0 flex flex-wrap items-center gap-1 px-2 pt-1 text-xs">
       <button type="button" aria-label="表を作成" title="表を作成" onMouseDown={e => e.preventDefault()} onClick={() => openTable(false)} className="rounded p-1 hover:bg-slate-100"><Table2 size={18}/></button>
       <button type="button" aria-label="表を編集" title="表を編集" disabled={!tables.length} onMouseDown={e => e.preventDefault()} onClick={() => openTable(true)} className="rounded p-1 hover:bg-slate-100 disabled:opacity-30"><Pencil size={18}/></button>
       {tables.length > 1 && <select aria-label="編集する表" value={Math.min(tableIndex, tables.length - 1)} onChange={e => setTableIndex(Number(e.target.value))} className="border rounded">{tables.map((table, i) => <option key={i} value={i}>表 {i + 1}: {table.rows[0].join(' / ').slice(0, 40)}</option>)}</select>}
-      <span className="text-gray-500">表の作成・編集</span>
+      <span className="h-4 border-l" aria-hidden="true"/>
+      {[['bold','太字','B'],['italic','斜体','I'],['underline','下線','U'],['strikeThrough','取り消し線','S'],['insertUnorderedList','箇条書き','•'],['insertOrderedList','番号付きリスト','1.']].map(([command,label,icon]) => <button key={command} type="button" aria-label={label} title={label} onMouseDown={e=>e.preventDefault()} onClick={()=>format(command)} className="rounded px-1.5 py-0.5 hover:bg-slate-100"><span style={{fontWeight:command==='bold'?'bold':undefined,fontStyle:command==='italic'?'italic':undefined,textDecoration:command==='underline'?'underline':command==='strikeThrough'?'line-through':undefined}}>{icon}</span></button>)}
     </div>
     {pasteError && <p role="alert" className="px-2 text-xs text-red-700">{pasteError}</p>}
     {tableDialog && <ProgressTableDialog initial={tableDialog.table?.rows} onApply={applyTable} onClose={() => setTableDialog(null)}/>}
     <div ref={editorRef} role="textbox" aria-multiline="true" aria-label={editing ? 'コメントの編集' : '進捗コメント'} title="Enter: 改行 / Ctrl+Enter: 送信 / Alt+Enter: 相手待ち / Shift+Enter: コメント / Ctrl+Shift+Enter: 小タスク追加 / Ctrl+Alt+Enter: やるべきこと追加 / Ctrl+Shift+Alt+Enter: 前提メモ" contentEditable suppressContentEditableWarning
-      onInput={emit} onPaste={paste} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; emit(); }}
+      onInput={emit} onPaste={paste} onKeyDown={e=>{ if(e.nativeEvent.isComposing)return; if((e.ctrlKey || e.metaKey) && ['b','i','u'].includes(e.key.toLowerCase())) { e.preventDefault(); e.stopPropagation(); format(({b:'bold',i:'italic',u:'underline'})[e.key.toLowerCase()]); } }} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; emit(); }}
       className={`w-full ${expanded ? 'flex-1 min-h-32' : 'min-h-10 max-h-40'} overflow-y-auto rounded-xl p-2 text-sm text-black whitespace-pre-wrap break-words focus:outline-none`}/>
     {!text && <span aria-hidden="true" className="absolute top-10 left-2 right-2 pointer-events-none text-xs text-gray-400">コメントを入力…画像・リンク貼り付け可（Ctrl+Enter で送信）</span>}
   </div>;
@@ -1405,7 +1522,7 @@ const ProgressQuote = ({ quote, onNavigate, task }) => <blockquote aria-label="�
     {quote.status === 'waiting' && <span>引用当時: 相手待ち</span>}
     {onNavigate && <button type="button" aria-label={`引用元へ移動: ${quote.text}`} onClick={() => onNavigate(quote)} className="text-blue-700 underline">引用元へ移動</button>}
   </div>
-  <p className="whitespace-pre-wrap break-words"><ProgressText value={quote.text} textLinks={quote.textLinks}/></p>
+  <div className="whitespace-pre-wrap break-words"><ProgressText value={quote.text} textLinks={quote.textLinks} textFormats={quote.textFormats}/></div>
   <ProgressAttachments images={quote.images} links={quote.links}/>
   {quote.smallTaskTitle && <p className="mt-1 text-gray-500 break-words">小さいタスク: {quote.smallTaskTitle}</p>}
   {quote.quote && <ProgressQuote quote={quote.quote} onNavigate={onNavigate} task={task}/>}
@@ -2831,7 +2948,7 @@ const ProgressDependencyModal = ({ task, target, onClose, onSave }) => {
               <label className="flex gap-2 items-start"><input type="checkbox" aria-label={`${group.waiting ? '解除を待つ: 相手待ち' : `完了を待つ: ${kindLabel}`} ${node?.title || ref.title}`} checked={selected.some(item => progressDependencyKey(item) === key)} onChange={e => toggle(ref, e.target.checked)}/>
               <span className="min-w-0 break-words">{node?.title || ref.title}<span className="block text-xs text-gray-500">{kindLabel}{parent ? ` / ${parent.title}` : ''} · {progressDependencyDone(task, ref) ? group.waiting ? '解除済み' : '完了' : node ? group.waiting ? '相手待ち' : '未完了' : '削除された関連先'}</span></span></label>
               {group.waiting && <div aria-label="相手待ちの内容" className="mt-2 ml-5 rounded-lg bg-green-50 p-2 text-green-900">
-                {waitingEntry ? <p className="whitespace-pre-wrap break-words"><ProgressText value={waitingEntry.text || '本文はありません。'} textLinks={waitingEntry.textLinks}/></p>
+                {waitingEntry ? <div className="whitespace-pre-wrap break-words"><ProgressText value={waitingEntry.text || '本文はありません。'} textLinks={waitingEntry.textLinks} textFormats={waitingEntry.textFormats}/></div>
                   : <p className="text-xs text-gray-500">相手待ちの内容はまだ記録されていません。</p>}
               </div>}
             </div>;
@@ -2897,7 +3014,7 @@ const ProgressWaitingModal = ({ task, scope, onClose }) => {
         {!items.length && <p className="text-sm text-gray-500">現在、相手待ちの項目はありません。</p>}
         {items.map(item => <article key={item.key} data-waiting-status-key={item.key} className="rounded-xl border border-green-300 bg-green-50 p-3 text-green-900">
           <p className="text-xs">{item.path} · 相手待ち</p><h4 className="font-bold mt-1 break-words">{item.title}</h4>
-          {item.entry ? <div className="mt-2 space-y-1"><p className="text-xs text-gray-500">直近の相手待ちトーク{(item.entry.editedAt || item.entry.createdAt) && <> · <time dateTime={item.entry.editedAt || item.entry.createdAt}>{new Date(item.entry.editedAt || item.entry.createdAt).toLocaleString('ja-JP')}</time></>}</p><p className="text-sm whitespace-pre-wrap break-words"><ProgressText value={item.entry.text} textLinks={item.entry.textLinks}/></p><ProgressAttachments images={item.entry.images} links={item.entry.links}/></div>
+          {item.entry ? <div className="mt-2 space-y-1"><p className="text-xs text-gray-500">直近の相手待ちトーク{(item.entry.editedAt || item.entry.createdAt) && <> · <time dateTime={item.entry.editedAt || item.entry.createdAt}>{new Date(item.entry.editedAt || item.entry.createdAt).toLocaleString('ja-JP')}</time></>}</p><div className="text-sm whitespace-pre-wrap break-words"><ProgressText value={item.entry.text} textLinks={item.entry.textLinks} textFormats={item.entry.textFormats}/></div><ProgressAttachments images={item.entry.images} links={item.entry.links}/></div>
             : <p className="mt-2 text-sm">相手待ちの内容はまだ記録されていません。</p>}
         </article>)}
       </div>
@@ -3037,11 +3154,21 @@ const progressSummaryRows = (task, parentId = '') => {
   history.forEach(entry => { if (entry.quote?.id) children.set(entry.quote.id, [...(children.get(entry.quote.id) || []), entry]); });
   const repliesTo = id => (children.get(id) || []).filter(entry => !entry.assumptionMemo);
   const entryText = entry => entry ? [entry.text || '', ...progressMediaItems(entry.images).map(image => `[画像: ${image.name || '添付画像'}]`), ...progressMediaItems(entry.links).map(link => `${link.label || 'リンク'}: ${link.url || ''}`)].filter(Boolean).join('\n') : '';
+  const byId = new Map(history.map(entry => [entry.id, entry]));
+  const initialWait = entry => {
+    const seen = new Set([entry.id]); let ancestor = entry.quote;
+    while (ancestor && !seen.has(ancestor.id)) {
+      seen.add(ancestor.id); const actual = byId.get(ancestor.id) || ancestor;
+      if (actual.status === 'waiting' && !progressEntryIsNote(actual)) return false;
+      ancestor = actual.quote;
+    }
+    return true;
+  };
   const result = [];
   const waitingThread = source => {
     const linked = new Set([source.id]), queue = [source.id];
     for (let index = 0; index < queue.length; index++) (children.get(queue[index]) || []).forEach(entry => {
-      if (!linked.has(entry.id)) { linked.add(entry.id); if (entry.status !== 'waiting' || progressEntryIsNote(entry)) queue.push(entry.id); }
+      if (!linked.has(entry.id)) { linked.add(entry.id); queue.push(entry.id); }
     });
     return history.filter(entry => linked.has(entry.id));
   };
@@ -3064,16 +3191,16 @@ const progressSummaryRows = (task, parentId = '') => {
       const splitEnabled = !!small.progressTableSplitWaiting;
       const context = { parentId: parent.id, parentIds: [parent.id], parentTitle: parent.title, smallId: small.id, smallTitle: small.title, canSplit: waits.length > 0 || !!small.waiting || splitEnabled, splitEnabled };
       if (splitEnabled) {
-        waits.forEach(source => {
+        waits.filter(initialWait).forEach(source => {
           const thread = waitingThread(source), replies = thread.filter(entry => entry.id !== source.id && !entry.assumptionMemo);
           const finished = closed || source.resolvedByReplyId === 'waiting-cleared-in-settings' || replies.some(entry => entry.status === 'completed' && !progressEntryIsNote(entry));
           result.push(decorate({ ...context, id: `waiting:${source.id}`, kind: 'waiting', splitSmall: true, sourceId: source.id, waitingTitle: source.text || '本文なし' }, thread, finished, !replies.length && !finished));
         });
-        if (!waits.length) result.push(decorate({ ...context, id: `waiting-scope:small:${small.id}`, kind: 'waiting', splitSmall: true, waitingScope: `small:${small.id}`, waitingTitle: small.waiting ? `${small.title}（相手待ち）` : '相手待ちトークなし（分割設定中）' }, entries, closed, !!small.waiting && !entries.some(meaningful)));
+        if (!waits.filter(initialWait).length) result.push(decorate({ ...context, id: `waiting-scope:small:${small.id}`, kind: 'waiting', splitSmall: true, waitingScope: `small:${small.id}`, waitingTitle: small.waiting ? `${small.title}（相手待ち）` : '相手待ちトークなし（分割設定中）' }, entries, closed, !!small.waiting && !entries.some(meaningful)));
       } else result.push(decorate({ ...context, id: `small:${parent.id}:${small.id}`, kind: 'small', waitingTitle: '' }, entries, closed, entries.some(meaningful) && pending && !hasReply));
     });
   });
-  const waits = history.filter(entry => entry.status === 'waiting' && !progressEntryIsNote(entry) && !entry.smallTaskId && !entry.completedSmallTaskId && (!parentId || entry.subtaskIds?.includes(parentId)));
+  const waits = history.filter(entry => entry.status === 'waiting' && !progressEntryIsNote(entry) && !entry.smallTaskId && !entry.completedSmallTaskId && (!parentId || entry.subtaskIds?.includes(parentId)) && initialWait(entry));
   waits.forEach(source => {
     const entries = waitingThread(source);
     const replies = entries.filter(entry => entry.id !== source.id && !entry.assumptionMemo);
@@ -3131,7 +3258,7 @@ const setProgressTableSplitWaiting = (task, parentId, smallId, enabled) => ({
   ...task, subtasks: getProgressSubtasks(task).map(parent => parent.id === parentId
     ? { ...parent, smallTasks: getProgressSmallTasks(parent).map(small => small.id === smallId ? { ...small, progressTableSplitWaiting: enabled } : small) } : parent)
 });
-const ProgressSummaryTable = ({ task, parentId, query, onUpdateTask, active = true }) => {
+const ProgressSummaryTable = ({ task, parentId, query, onUpdateTask, active = true, onNavigate }) => {
   const [status, setStatus] = useState('all'), [sort, setSort] = useState('default'), [descending, setDescending] = useState(false);
   const [checked, setChecked] = useState([]), [onlyChecked, setOnlyChecked] = useState(false);
   const [notice, setNotice] = useState(''), [draft, setDraft] = useState(null), [conclusionText, setConclusionText] = useState('');
@@ -3186,7 +3313,7 @@ const ProgressSummaryTable = ({ task, parentId, query, onUpdateTask, active = tr
         <td className="border p-2 align-top"><input type="checkbox" aria-label={`行を選択: ${row.smallTitle || row.waitingTitle}`} checked={checked.includes(row.id)} onChange={() => toggle(row.id)}/></td>
         <td className="border p-2 align-top min-w-24">{row.parentTitle}</td><td className="border p-2 align-top min-w-28"><span>{row.smallTitle}</span>{row.canSplit && <button type="button" aria-label={`行設定: ${row.smallTitle}`} title="相手待ちへの分割を設定" onClick={() => setRowSettings(row)} className="ml-1 rounded border bg-white p-1"><Settings size={13}/></button>}{row.splitSmall && <span className="mt-1 block text-[10px] text-gray-500">相手待ちに分割中</span>}</td><td className="border p-2 align-top min-w-28 whitespace-pre-wrap">{row.waitingTitle}</td>
         <td className="border p-2 align-top min-w-48">
-          <div data-summary-conclusion={row.conclusions.length ? 'confirmed' : 'latest'} className={`whitespace-pre-wrap break-words ${row.conclusions.length ? 'text-black' : 'text-gray-400'}`}>{row.text || (row.latest && (row.latest.images?.length || row.latest.links?.length) ? '添付のみのトーク' : 'トークなし')}</div>
+          <div data-summary-conclusion={row.conclusions.length ? 'confirmed' : 'latest'} className={`whitespace-pre-wrap break-words ${row.conclusions.length ? 'text-black' : 'text-gray-400'}`}>{(row.conclusions.length ? row.conclusions : row.latest ? [row.latest] : []).map((entry, index) => <button key={entry.id} type="button" aria-label={`トークへ移動: ${entry.text || '添付のみのトーク'}`} onClick={() => onNavigate(entry)} className="block w-full text-left hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">{index > 0 && '\n'}{entry.text || '添付のみのトーク'}</button>)}{!row.conclusions.length && !row.latest && 'トークなし'}</div>
           {!row.conclusions.length && <div className="mt-2 flex flex-wrap gap-2"><button type="button" disabled={!row.latest} onClick={() => onUpdateTask(task.id, previous => applyProgressTableConclusion(previous, row.id, '', true))} className="rounded border px-2 py-1 text-blue-700 disabled:opacity-30">このトークを結論にする</button><button type="button" onClick={() => { setConclusionText(''); setDraft(row); }} className="rounded border px-2 py-1 text-blue-700">別の結論を記入</button></div>}
         </td><td className="border p-2 align-top whitespace-nowrap"><span className={`rounded px-2 py-1 ${row.status === '結論済み' ? 'bg-blue-50 text-blue-700' : row.status === '相手待ち' ? 'bg-green-50 text-green-700' : row.status === '進捗中' ? 'bg-purple-50 text-purple-700' : 'bg-gray-100 text-gray-600'}`}>{row.status}</span></td>
       </tr>)}</tbody></table>
@@ -3205,6 +3332,7 @@ const ProgressSummaryTable = ({ task, parentId, query, onUpdateTask, active = tr
 const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiting = true, expandedComposer = false, tableView = false, onTableViewChange }) => {
   const [text, setText] = useState('');
   const [textLinks, setTextLinks] = useState([]);
+  const [textFormats, setTextFormats] = useState([]);
   const [images, setImages] = useState([]);
   const [links, setLinks] = useState([]);
   const [mediaError, setMediaError] = useState('');
@@ -3318,7 +3446,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
     return () => clearTimeout(timer);
   }, [jumpRequest]);
   const revealEntryGroups = entry => {
-    const smallIds = [entry.smallTaskId, entry.completedSmallTaskId].filter(id => id && getCompletedProgressSmallIds(task).has(id));
+    const smallIds = [entry.smallTaskId, entry.completedSmallTaskId].filter(Boolean);
     if (smallIds.length) setExpandedSmallIds(ids => [...new Set([...ids, ...smallIds])]);
     const todoGroups = getProgressTodoThreads(task, history);
     const parentIds = progressEntryParentIds(entry).filter(id => todoGroups.has(id));
@@ -3340,7 +3468,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
     mediaVersion.current += 1; mediaPending.current = 0; setImages([]); setLinks([]); setMediaError(''); setMediaBusy(false);
     const retained = !editingId && !replyTo && selectedEntryId ? selectedEntryRef.current : null;
     const parentId = retained?.subtaskIds?.[0] || filterId;
-    setPlainComment(false); setAssumptionMemo(false); setText(''); setTextLinks([]); setSelectedIds(parentId ? [parentId] : []); setAddTodo(false); setAddSmall(false);
+    setPlainComment(false); setAssumptionMemo(false); setText(''); setTextLinks([]); setTextFormats([]); setSelectedIds(parentId ? [parentId] : []); setAddTodo(false); setAddSmall(false);
     setSmallTarget(scopeSmallTarget(parentId, retained ? retained.smallTaskId : filterSmallId));
     setDueDate(''); setWaiting(false); setIsConclusion(false); setEditingId(null); setConversionParentId(''); setEditingStatusChanged(false); setReplyTo(null); setEditedReply(undefined); setSelectingReply(false);
   };
@@ -3380,7 +3508,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
     const draftLinks = todo ? (titleMatch?.[1] === draftText || entry.text === draftText
       ? progressAllTextLinks(entry.text, entry.textLinks).filter(link => link.start >= titleOffset && link.end <= titleOffset + draftText.length).map(link => ({ ...link, start: link.start - titleOffset, end: link.end - titleOffset }))
       : progressAllTextLinks(draftText, [])) : progressAllTextLinks(entry.text, entry.textLinks);
-    setEditingId(entry.id); setText(draftText); setTextLinks(draftLinks); setPlainComment(!!entry.plainComment && !entry.assumptionMemo); setAssumptionMemo(!!entry.assumptionMemo);
+    setEditingId(entry.id); setText(draftText); setTextLinks(draftLinks); setTextFormats(entry.text.slice(titleOffset,titleOffset+draftText.length)===draftText ? progressSliceFormats(entry.text,entry.textFormats,titleOffset,titleOffset+draftText.length) : []); setPlainComment(!!entry.plainComment && !entry.assumptionMemo); setAssumptionMemo(!!entry.assumptionMemo);
     setSelectedIds(entry.subtaskIds || []);
     setWaiting(entry.status === 'waiting' && !entry.resolvedByReplyId); setIsConclusion(!!entry.isConclusion); setEditingStatusChanged(false);
     setAddTodo(!!todo); setAddSmall(false); setDueDate(todo?.dueDate || entry.dueDate || '');
@@ -3484,6 +3612,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
       if (convertTodo) {
         const timestamp = new Date().toISOString(), trimStart = text.length - text.trimStart().length;
         const edited = { ...original, text: commentText, editedAt: timestamp,
+          textFormats: progressSliceFormats(text,textFormats,trimStart,text.trimEnd().length),
           textLinks: progressTextLinks(text, textLinks).filter(link => link.start >= trimStart && link.end <= text.trimEnd().length).map(link => ({ ...link, start: link.start - trimStart, end: link.end - trimStart })),
           images: images.map(image => ({ ...image })), links: links.map(link => ({ ...link })), plainComment, assumptionMemo,
           isConclusion: isConclusion && hasDraftContent, status: editingStatusChanged ? waiting ? 'waiting' : 'active' : original.status,
@@ -3542,6 +3671,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
       const entry = { ...(original || {}), id: original?.id || createProgressId(), kind: 'comment', createdAt: original?.createdAt || timestamp,
         ...(original ? { editedAt: timestamp } : {}), text: addTodo ? progressTodoOriginText(text.trim(), dueDate || previous.dueDate) : commentText,
         ...(savedTextLinks.length || original?.textLinks ? { textLinks: savedTextLinks } : {}),
+        textFormats: progressSliceFormats(text,textFormats,trimStart,text.trimEnd().length,prefix),
         ...(images.length || original?.images ? { images: images.map(image => ({ ...image })) } : {}),
         ...(links.length || original?.links ? { links: links.map(link => ({ ...link })) } : {}),
         subtaskIds: addTodo ? [addedId] : sameSelection ? original.subtaskIds : sameReplySelection ? replySource.subtaskIds : currentSelected.map(st => st.id),
@@ -3643,7 +3773,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
         <div className={`progress-talk-bubble w-full rounded-xl border px-3 py-2 text-sm shadow-sm ${tone ? progressToneClasses(tone) : progressEntryClasses(entry, task)}`}>
           <p className="text-[10px] font-bold text-gray-400 mb-1">{entry.kind === 'comment' ? (entry.assumptionMemo ? '前提メモ' : progressEntryIsNote(entry) ? 'コメント' : entry.addedSubtask ? 'やるべきことの追加' : entry.addedSmallTask ? '小さいタスクの追加' : '進捗記録') : '期限変更'}</p>
           {entry.quote && <ProgressQuote quote={entry.quote} onNavigate={navigateQuote} task={task}/>}
-          <p className="whitespace-pre-wrap break-words"><ProgressText value={entry.text} textLinks={entry.textLinks}/></p>
+          <div className="whitespace-pre-wrap break-words"><ProgressText value={entry.text} textLinks={entry.textLinks} textFormats={entry.textFormats}/></div>
           <ProgressAttachments images={entry.images} links={entry.links}/>
           {entry.isConclusion && <p className="mt-1 text-xs font-bold">結論</p>}
           {progressEntrySubtaskTitles(task, entry).length > 0 && <div className="flex flex-wrap gap-1 mt-2">{progressEntrySubtaskTitles(task, entry).map((title, i) => <span key={`${entry.subtaskIds?.[i]}-${i}`} data-progress-subtask-label={entry.subtaskIds?.[i]} className="text-[10px] rounded px-1.5 py-0.5 bg-black/10 break-all">{title}</span>)}</div>}
@@ -3666,7 +3796,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
   const renderConclusions = (group, kind) => group.conclusions.length > 0 && <section aria-label="結論のまとめ" className="space-y-2">
     <p className="text-xs font-bold">結論</p>
     <div data-small-task-conclusion={kind === 'small' ? group.id : undefined} data-todo-task-conclusion={kind === 'todo' ? group.id : undefined} className="whitespace-pre-wrap break-words">
-      {group.conclusions.map((entry, index) => <React.Fragment key={entry.id}>{index > 0 && '\n'}<ProgressText value={entry.text} textLinks={entry.textLinks}/><ProgressAttachments images={entry.images} links={entry.links}/></React.Fragment>)}
+      {group.conclusions.map((entry, index) => <React.Fragment key={entry.id}>{index > 0 && '\n'}<ProgressText value={entry.text} textLinks={entry.textLinks} textFormats={entry.textFormats}/><ProgressAttachments images={entry.images} links={entry.links}/></React.Fragment>)}
     </div>
     <div className="flex flex-wrap gap-3 text-xs">{group.conclusions.map((entry, index) => <button key={entry.id} type="button" onClick={() => editComment(entry)} className="underline">{group.conclusions.length === 1 ? '結論を編集' : `結論${index + 1}を編集`}</button>)}</div>
   </section>;
@@ -3752,7 +3882,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
       <button type="button" aria-pressed={tableView} onClick={() => { if (filterSmallId) chooseThreadScope(scopeParent?.id || '', ''); setSelectingReply(false); onTableViewChange(true); }} className={`rounded border px-2 py-0.5 ${tableView ? 'bg-blue-50 text-blue-700' : ''}`}>テーブル表示</button>
     </div>
     </div>
-    <ProgressSummaryTable active={tableView} task={task} parentId={filterId} query={query} onUpdateTask={onUpdateTask}/>
+    <ProgressSummaryTable active={tableView} task={task} parentId={filterId} query={query} onUpdateTask={onUpdateTask} onNavigate={entry => { onTableViewChange(false); navigateQuote(entry); }}/>
     {selectingReply && <section aria-label="返信元の選択" className="shrink-0 flex flex-wrap items-center gap-2 border-b bg-blue-50 px-3 py-2 text-xs text-blue-800"><p className="flex-1">表示中のトークの「返信元にする」を押してください。</p><button type="button" className="rounded border bg-white px-2 py-1" onClick={() => setSelectingReply(false)}>選択を終了</button></section>}
     <div ref={historyRef} role="log" aria-label="進捗履歴" onScroll={e => { const el = e.currentTarget; if (el.scrollHeight - el.clientHeight - el.scrollTop <= 8) followLatestRef.current = true; }} onWheel={e => { if (e.deltaY < 0) followLatestRef.current = false; }} onPointerDown={() => { followLatestRef.current = false; }} onTouchStart={() => { followLatestRef.current = false; }} onKeyDown={e => { if (['ArrowUp', 'PageUp', 'Home'].includes(e.key)) followLatestRef.current = false; }} onLoadCapture={() => { if (followLatestRef.current && allowFollowRef.current) scrollHistory(true); }} className={`${tableView ? 'hidden' : ''} flex-1 overflow-y-auto min-h-0 p-4 bg-slate-100`}>
       <div ref={historyContentRef} className="space-y-4">
@@ -3797,7 +3927,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
       {addTodo && <label className="flex items-center gap-2 text-xs text-gray-600">追加するやるべきことの期限<input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} className="border rounded-md px-2 py-1 min-w-0" title={`未入力時: ${task.dueDate || '期限なし'}`}/></label>}
       <div className={`${expandedComposer ? 'flex-col flex-1 min-h-48 items-stretch' : 'items-end'} flex gap-2`}>
         <div className={`${expandedComposer ? 'flex flex-col min-h-0' : ''} flex-1 min-w-0 rounded-xl border focus-within:ring-2 focus-within:ring-blue-400`}>
-          <ProgressComposer text={text} textLinks={textLinks} onChange={draft => { setText(draft.text); setTextLinks(draft.textLinks); }}
+          <ProgressComposer text={text} textLinks={textLinks} textFormats={textFormats} onChange={draft => { setText(draft.text); setTextLinks(draft.textLinks || []); setTextFormats(draft.textFormats || []); }}
             onPasteImages={addImages} editorRef={composerRef} editing={!!editingId} expanded={expandedComposer}/>
           {(images.length > 0 || links.length > 0) && <div className="px-2 pb-2" aria-label="本文の添付プレビュー"><ProgressAttachments images={images} links={links} onRemoveImage={id => setImages(previous => previous.filter(image => image.id !== id))} onRemoveLink={id => setLinks(previous => previous.filter(link => link.id !== id))}/></div>}
         </div>
@@ -4259,6 +4389,7 @@ const buildWeeklyWordReport = async options => {
   return reportZip(files);
 };
 
+const reportTaskOnProgressBoard = task => !!task.progressEnabled && !task.isSubtask && !task.isRecurringOccurrence && (!!task.completed || task.progressStage === 'doing');
 const WeeklyReportModal = ({ tasks, onClose, onCreated }) => {
   const [format, setFormat] = useState('docx');
   const [busy, setBusy] = useState(false);
@@ -4266,16 +4397,13 @@ const WeeklyReportModal = ({ tasks, onClose, onCreated }) => {
   const [startDate, setStartDate] = useState(() => formatDate(addDays(new Date(), -7)));
   const [endDate, setEndDate] = useState(() => formatDate(new Date()));
   const [query, setQuery] = useState('');
-  const [selectedIds, setSelectedIds] = useState(() => {
-    const regular = tasks.filter(task => !task.isRecurringOccurrence && reportTaskIsEligible(task, startDate, endDate));
-    const tracked = regular.filter(task => task.progressEnabled);
-    return (tracked.length ? tracked : regular).map(task => task.id);
-  });
+  const [selectedIds, setSelectedIds] = useState(() => tasks.filter(task => reportTaskOnProgressBoard(task) && reportTaskIsEligible(task,startDate,endDate)).map(task=>task.id));
   const formRef = useRef(null);
   const searchRef = useRef(null);
   const validRange = reportDateIsValid(startDate) && reportDateIsValid(endDate) && startDate <= endDate;
-  const available = tasks.filter(task => reportTaskIsEligible(task, startDate, endDate));
-  const undatedCompletedCount = tasks.filter(task => task.completed && !Number.isFinite(reportCompletionDate(task).getTime())).length;
+  const boardTasks=tasks.filter(reportTaskOnProgressBoard);
+  const available = boardTasks.filter(task => reportTaskIsEligible(task, startDate, endDate));
+  const undatedCompletedCount = boardTasks.filter(task => task.completed && !Number.isFinite(reportCompletionDate(task).getTime())).length;
   const visible = available.filter(task => task.title.toLowerCase().includes(query.trim().toLowerCase()));
   const selected = available.filter(task => selectedIds.includes(task.id));
   const count = validRange ? selected.reduce((total, task) => total + reportPeriodEntries(task, startDate, endDate).length, 0) : 0;
@@ -4337,14 +4465,16 @@ const WeeklyReportModal = ({ tasks, onClose, onCreated }) => {
           <div className="flex gap-3"><button type="button" className="text-blue-700 underline" onClick={() => setSelectedIds(previous => [...new Set([...previous, ...visible.map(task => task.id)])])}>表示中をすべて選択</button>
             <button type="button" className="text-gray-600 underline" onClick={() => setSelectedIds([])}>選択を解除</button></div>
         </div>
-        <fieldset className="space-y-2"><legend className="text-sm font-bold mb-2">対象タスク</legend>
-          {visible.map(task => <label key={task.id} className="flex gap-3 items-start rounded-lg border p-3 cursor-pointer hover:bg-gray-50">
-            <input type="checkbox" aria-label={`レポート対象: ${task.title}${task.isRecurringOccurrence ? ` (${task.date})` : ''}`} checked={selectedIds.includes(task.id)} onChange={e => setSelectedIds(previous => e.target.checked ? [...previous, task.id] : previous.filter(id => id !== task.id))} className="mt-1"/>
-            <span className="min-w-0"><span className="block text-sm font-bold break-words">{task.title}</span><span className="text-xs text-gray-500">{task.isRecurringOccurrence ? `定期予定 ${task.date} / ` : ''}期限: {task.dueDate || '未設定'}{task.completed ? ` / 完了日: ${formatDate(reportCompletionDate(task))}${reportCompletionUsesDueDate(task) ? '（期限日を代用）' : ''}` : ''}</span></span>
-          </label>)}
-          {!visible.length && <p className="text-sm text-gray-500">対象タスクがありません。検索条件や期間を確認してください。</p>}
+        <fieldset><legend className="text-sm font-bold mb-2">対象の大タスク</legend>
+          <div aria-label="レポート対象の大タスクタイル" className="grid grid-cols-2 gap-3">
+            {visible.map(task => <label key={task.id} data-report-task-id={task.id} className={`relative min-h-28 rounded-xl border p-3 cursor-pointer shadow-sm hover:shadow-md ${progressStatusClasses(progressItemStatus(task))} ${selectedIds.includes(task.id) ? 'ring-2 ring-blue-500' : ''}`}>
+              <input type="checkbox" aria-label={`レポート対象: ${task.title}`} checked={selectedIds.includes(task.id)} onChange={e=>setSelectedIds(previous=>e.target.checked?[...new Set([...previous,task.id])]:previous.filter(id=>id!==task.id))} className="absolute top-3 right-3"/>
+              <span className="block pr-6 text-sm font-bold break-words">{task.title}</span><span className="mt-3 block text-xs">期限: {task.dueDate || '未設定'}</span>
+            </label>)}
+          </div>
+          {!visible.length && <p className="text-sm text-gray-500">対象タスクがありません。着手中ボード・検索条件・期間を確認してください。</p>}
         </fieldset>
-        <p className="text-xs text-gray-500">定期予定の未完了分は指定期間内の回、完了分は完了日時で判定します。期間内の進捗記録がないタスクも現在の情報を出力します。</p>
+        <p className="text-xs text-gray-500">着手中ボードの大タスクが対象です。未完了・完了済みを分けずに並べ、期間内の進捗記録がないタスクも現在の情報を出力します。</p>
       </div>
       <footer className="border-t p-4 flex justify-end gap-2 shrink-0">
         <button type="button" onClick={onClose} className="border rounded-lg px-4 py-2 text-sm">キャンセル</button>
