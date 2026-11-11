@@ -3091,7 +3091,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
   const scopeSmall = getProgressSmallTasks(scopeParent).find(small => small.id === filterSmallId);
   const scopeDependencies = scopeSmall ? pendingProgressDependencies(task, scopeSmall) : [];
   const showEntry = entry => showResolvedWaiting || !isResolvedProgressWaiting(entry);
-  const visibleHistory = history.filter(entry => (selectingReply || (!(filterSmallId && entry.addedSmallTask && entry.smallTaskId === filterSmallId) && !(filterId && !filterSmallId && entry.addedSubtask && entry.subtaskIds?.includes(filterId)) && showEntry(entry) && (!filterSmallId || entry.smallTaskId === filterSmallId || entry.completedSmallTaskId === filterSmallId || entry.quote?.smallTaskId === filterSmallId || (entry.isConclusion && progressConclusionTarget(entry).smallTaskId === filterSmallId)) && (!filterId || progressEntryParentIds(entry).includes(filterId)))) && (!query.trim() || [entry.text, ...progressMediaItems(entry.textLinks).map(link => link.url), ...(entry.subtaskTitles || []), ...progressEntrySubtaskTitles(task, entry), entry.smallTaskTitle, ...progressMediaItems(entry.images).map(image => image.name), ...progressMediaItems(entry.links).flatMap(link => [link.label, link.url]), entry.createdAt, entry.dueDate, progressQuoteSearchText(entry.quote)].filter(Boolean).join(' ').toLowerCase().includes(query.trim().toLowerCase())));
+  const visibleHistory = history.filter(entry => (!(filterSmallId && entry.addedSmallTask && entry.smallTaskId === filterSmallId) && !(filterId && !filterSmallId && entry.addedSubtask && entry.subtaskIds?.includes(filterId)) && showEntry(entry) && (!filterSmallId || entry.smallTaskId === filterSmallId || entry.completedSmallTaskId === filterSmallId || entry.quote?.smallTaskId === filterSmallId || (entry.isConclusion && progressConclusionTarget(entry).smallTaskId === filterSmallId)) && (!filterId || progressEntryParentIds(entry).includes(filterId))) && (!query.trim() || [entry.text, ...progressMediaItems(entry.textLinks).map(link => link.url), ...(entry.subtaskTitles || []), ...progressEntrySubtaskTitles(task, entry), entry.smallTaskTitle, ...progressMediaItems(entry.images).map(image => image.name), ...progressMediaItems(entry.links).flatMap(link => [link.label, link.url]), entry.createdAt, entry.dueDate, progressQuoteSearchText(entry.quote)].filter(Boolean).join(' ').toLowerCase().includes(query.trim().toLowerCase())));
   const scrollHistory = bottom => {
     followLatestRef.current = bottom;
     const element = historyRef.current;
@@ -3203,6 +3203,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
     composerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   };
   const chooseEditedReply = entry => {
+    entry = entry ? history.find(saved => saved.id === entry.id) || entry : null;
     if (entry && progressReplyWouldCycle(task, editingId, entry)) return;
     setEditedReply(entry ? createProgressQuote(entry) : null);
     if (!editingEntry?.addedSubtask && !editingEntry?.addedSmallTask) {
@@ -3414,8 +3415,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
   const memoFirst = entries => [...entries].sort((a, b) => Number(!!b.assumptionMemo) - Number(!!a.assumptionMemo));
   const rows = [];
   const seenGroups = new Set();
-  if (selectingReply) rows.push(...visibleHistory.map(entry => ({ entry })));
-  else if (filterId && !filterSmallId) rows.push(...smallRows(visibleHistory, filterId));
+  if (filterId && !filterSmallId) rows.push(...smallRows(visibleHistory, filterId));
   else visibleHistory.forEach(entry => {
     const parentId = entry.subtaskIds?.find(id => todoThreads.has(id));
     const todoGroup = !filterSmallId && todoThreads.get(parentId);
@@ -3423,7 +3423,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
       if (!seenGroups.has(`todo:${todoGroup.id}`)) { seenGroups.add(`todo:${todoGroup.id}`); rows.push({ todoGroup }); }
     } else rows.push({ entry });
   });
-  if (!selectingReply && !filterId && !filterSmallId) todoThreads.forEach(group => {
+  if (!filterId && !filterSmallId) todoThreads.forEach(group => {
     if (!seenGroups.has(`todo:${group.id}`) && (!filterId || group.id === filterId)
       && (!query.trim() || group.title.toLowerCase().includes(query.trim().toLowerCase()))) rows.push({ todoGroup: group });
   });
@@ -3439,7 +3439,6 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
   const renderHistoryEntry = (entry, { extra = null, virtual = false, tone = null, synthetic = false } = {}) => <div key={entry.id} data-progress-entry-id={synthetic ? undefined : entry.id} tabIndex={0} onClick={e => selectCommentTarget(entry, e)} onKeyDown={e => { if (e.key === 'Enter' && e.target === e.currentTarget) { e.preventDefault(); selectCommentTarget(entry, e); } }} aria-current={selectedEntryId === entry.id ? 'true' : undefined} className={`flex flex-col items-stretch ${selectedEntryId === entry.id ? 'ring-2 ring-slate-300 ring-offset-2 rounded-xl' : ''} ${highlightedId === entry.id ? 'ring-2 ring-blue-400 rounded-xl' : ''}`}>
         {Number.isFinite(Date.parse(entry.createdAt)) ? <time dateTime={entry.createdAt} className="text-[10px] text-gray-500 px-1 mb-1">{new Date(entry.createdAt).toLocaleString('ja-JP')}</time> : <span className="text-[10px] text-gray-500 px-1 mb-1">日時未記録</span>}
         <div className={`progress-talk-bubble w-full rounded-xl border px-3 py-2 text-sm shadow-sm ${tone ? progressToneClasses(tone) : progressEntryClasses(entry, task)}`}>
-          {selectingReply && entry.kind === 'comment' && !virtual && <label className="mb-2 flex items-center gap-2 text-xs text-slate-700"><input type="checkbox" aria-label={`返信元に選択: ${entry.text || '本文なし'}`} disabled={progressReplyWouldCycle(task, editingId, entry)} checked={replyContext?.id === entry.id} onChange={e => chooseEditedReply(e.target.checked ? entry : null)}/>返信元にする{progressReplyWouldCycle(task, editingId, entry) && <span className="text-slate-400">（自分自身・このコメントへの返信は選択不可）</span>}</label>}
           <p className="text-[10px] font-bold text-gray-400 mb-1">{entry.kind === 'comment' ? (entry.assumptionMemo ? '前提メモ' : progressEntryIsNote(entry) ? 'コメント' : entry.addedSubtask ? 'やるべきことの追加' : entry.addedSmallTask ? '小さいタスクの追加' : '進捗記録') : '期限変更'}</p>
           {entry.quote && <ProgressQuote quote={entry.quote} onNavigate={navigateQuote} task={task}/>}
           <p className="whitespace-pre-wrap break-words"><ProgressText value={entry.text} textLinks={entry.textLinks}/></p>
@@ -3452,7 +3451,9 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
             {entry.kind === 'comment' && <>
               {entry.editedAt && <span title={`編集日時: ${new Date(entry.editedAt).toLocaleString('ja-JP')}`}>編集済み</span>}
               <label className="flex items-center gap-1"><input type="checkbox" aria-label="このコメントを結論にする" checked={!!entry.isConclusion} onChange={e => toggleConclusion(entry, e.target.checked)}/>結論</label>
-              <button type="button" aria-label="コメントに返信" onClick={() => replyToComment(entry)} className="rounded px-2 py-1 text-blue-700 hover:bg-blue-50 underline">返信</button>
+              <button type="button" aria-label={selectingReply ? `返信元に選択: ${entry.text || '本文なし'}` : 'コメントに返信'} disabled={selectingReply && progressReplyWouldCycle(task, editingId, entry)}
+                title={selectingReply && progressReplyWouldCycle(task, editingId, entry) ? '自分自身・このコメントへの返信は選択できません' : undefined}
+                onClick={() => { if (selectingReply) { chooseEditedReply(entry); setSelectingReply(false); } else replyToComment(entry); }} className="rounded px-2 py-1 text-blue-700 hover:bg-blue-50 underline disabled:opacity-40">{selectingReply ? '返信元にする' : '返信'}</button>
               <button type="button" aria-label="コメントを編集" onClick={() => editComment(entry)} className="rounded px-2 py-1 text-blue-700 hover:bg-blue-50 underline">編集</button>
             </>}
             <button type="button" aria-label="コメントを削除" title={entry.status === 'completed' && !progressEntryIsNote(entry) ? 'この完了記録を削除し、完了した対象を未完了に戻します。保存済みの引用は残ります。' : entry.addedSmallTask ? 'この追加コメントと、ひも付く小さいタスクを削除します。保存済みの引用は残ります。' : 'コメントだけを削除します。保存済みの引用は残ります。'} onClick={() => deleteComment(entry.id)} className="rounded px-2 py-1 text-red-700 hover:bg-red-50 underline">削除</button>
@@ -3545,7 +3546,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
     <div aria-label="トークのタイトル" className="px-3 py-2 border-b bg-white shrink-0">
       <h3 className="text-sm font-bold text-gray-900 truncate" title={threadTitle}>{threadTitle}</h3>
     </div>
-    {selectingReply && <section aria-label="返信元の選択" className="shrink-0 flex flex-wrap items-center gap-2 border-b bg-blue-50 px-3 py-2 text-xs text-blue-800"><p className="flex-1">同じ大タスク内のトークから、返信元を1つ選んでください。</p><button type="button" className="rounded border bg-white px-2 py-1" onClick={() => { setSelectingReply(false); setQuery(''); }}>選択を終了</button></section>}
+    {selectingReply && <section aria-label="返信元の選択" className="shrink-0 flex flex-wrap items-center gap-2 border-b bg-blue-50 px-3 py-2 text-xs text-blue-800"><p className="flex-1">表示中のトークの「返信元にする」を押してください。</p><button type="button" className="rounded border bg-white px-2 py-1" onClick={() => setSelectingReply(false)}>選択を終了</button></section>}
     <div ref={historyRef} role="log" aria-label="進捗履歴" onScroll={e => { const el = e.currentTarget; if (el.scrollHeight - el.clientHeight - el.scrollTop <= 8) followLatestRef.current = true; }} onWheel={e => { if (e.deltaY < 0) followLatestRef.current = false; }} onPointerDown={() => { followLatestRef.current = false; }} onTouchStart={() => { followLatestRef.current = false; }} onKeyDown={e => { if (['ArrowUp', 'PageUp', 'Home'].includes(e.key)) followLatestRef.current = false; }} onLoadCapture={() => { if (followLatestRef.current && allowFollowRef.current) scrollHistory(true); }} className="flex-1 overflow-y-auto min-h-0 p-4 bg-slate-100">
       <div ref={historyContentRef} className="space-y-4">
       {!rows.length && <p className="text-center text-sm text-gray-400 py-8">{query.trim() ? '一致する履歴はありません。' : 'この範囲のコメントはまだありません。'}</p>}
@@ -3564,7 +3565,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
       {expandedComposer && <header aria-label="コメント入力パネル" className="shrink-0 border-b pb-2"><h2 className="text-sm font-black">コメント入力</h2><p className="mt-1 truncate text-xs text-gray-600" title={draftTargetTitle}>{draftTargetTitle}</p></header>}
       {!editingId && selectedEntryId && <div role="status" aria-label="コメントの送信先" className="flex items-center gap-2 text-xs font-bold"><span className="flex-1 truncate">送信先: {draftTargetTitle}</span><button type="button" className="underline" onClick={() => chooseThreadScope(filterId, filterSmallId, true)}>表示中の範囲に戻す</button></div>}
       {editingId && <div className="flex items-center gap-2 text-xs text-blue-700"><p role="status" className="flex-1 truncate" title={draftTargetTitle}>編集中: {draftTargetTitle}</p><button type="button" onClick={resetComposer} className="shrink-0 underline">編集をキャンセル</button></div>}
-      {editingId && <div className="flex flex-wrap items-center gap-3 text-xs text-blue-700"><button type="button" onClick={() => { setSelectingReply(value => !value); setQuery(''); }} className="underline">返信元を変更</button>{replyContext && <button type="button" onClick={() => chooseEditedReply(null)} className="underline">返信を解除</button>}</div>}
+      {editingId && <div className="flex flex-wrap items-center gap-3 text-xs text-blue-700"><button type="button" onClick={() => setSelectingReply(value => !value)} className="underline">返信元を変更</button>{replyContext && <button type="button" onClick={() => chooseEditedReply(null)} className="underline">返信を解除</button>}</div>}
       {replyContext && <section role="region" aria-label="返信先" className="max-h-24 overflow-y-auto rounded-lg border border-black px-2 py-1 text-xs">
         <ProgressQuote quote={replyContext} onNavigate={navigateQuote} task={task}/>
         {replyTo && <button type="button" aria-label="返信をキャンセル" onClick={() => { setReplyTo(null); setSelectedIds(filterId ? [filterId] : []); setSmallTarget(scopeSmallTarget(filterId, filterSmallId)); setWaiting(false); if (!filterId) setAddSmall(false); }} className="text-blue-700 underline">返信をキャンセル</button>}
@@ -3635,6 +3636,22 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
     return next;
   });
   const [selectedId, setSelectedId] = useState(null);
+  const doingListRef = useRef(null);
+  const tileScrollTargetRef = useRef(null);
+  React.useLayoutEffect(() => {
+    if (taskHome || !tileScrollTargetRef.current) return;
+    // Wait for detail cards to replace the tile grid, then move this board only.
+    const frame = requestAnimationFrame(() => {
+      const list = doingListRef.current;
+      const card = list && [...list.querySelectorAll('[data-progress-task-id]')].find(item => item.dataset.progressTaskId === tileScrollTargetRef.current);
+      if (card) {
+        const padding = parseFloat(getComputedStyle(list).paddingTop) || 0;
+        list.scrollTop += card.getBoundingClientRect().top - list.getBoundingClientRect().top - padding;
+      }
+      tileScrollTargetRef.current = null;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [taskHome, selectedId]);
   const [smallTaskTarget, setSmallTaskTarget] = useState(null);
   const [settings, setSettings] = useState(null);
   const [dependencyTarget, setDependencyTarget] = useState(null);
@@ -3760,8 +3777,8 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
                 <button type="button" disabled={!completionMonth} onClick={() => setCompletionMonth('')} className="underline text-slate-500 disabled:opacity-40">年月指定を解除</button>
               </div>}
             </div>}
-            <div className="overflow-y-auto p-3 space-y-3 flex-1 min-h-0">
-              {stage === 'doing' && taskHome && <div aria-label="大タスクのタイル" className="grid grid-cols-2 gap-3">{items.map(task => <article key={task.id} data-progress-task-id={task.id} data-status={progressItemStatus(task)} className={`rounded-xl border shadow-sm ${progressStatusClasses(progressItemStatus(task))}`}><button type="button" aria-label={task.title} onClick={() => selectTask(task)} className="min-h-28 w-full rounded-xl p-3 text-left hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
+            <div ref={stage === 'doing' ? doingListRef : undefined} className="overflow-y-auto p-3 space-y-3 flex-1 min-h-0">
+              {stage === 'doing' && taskHome && <div aria-label="大タスクのタイル" className="grid grid-cols-2 gap-3">{items.map(task => <article key={task.id} data-progress-task-id={task.id} data-status={progressItemStatus(task)} className={`rounded-xl border shadow-sm ${progressStatusClasses(progressItemStatus(task))}`}><button type="button" aria-label={task.title} onClick={() => { tileScrollTargetRef.current = task.id; selectTask(task); }} className="min-h-28 w-full rounded-xl p-3 text-left hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
                 <span className="block break-words text-sm font-bold">{task.title}</span><span className="mt-3 block text-xs">期限: {task.dueDate || '未設定'}</span>
               </button></article>)}</div>}
               {(stage === 'doing' && taskHome ? [] : items).map(task => <ProgressTaskCard key={task.id} task={task} selected={selectedId === task.id} onSelect={() => selectTask(task)} onSettings={() => setSettings({ id: task.id, starting: false })} onStart={() => startTask(task)} onCompleteTask={() => completeTask(task)} onReopenTask={() => reopenTask(task)} onDeleteSmallTask={id => deleteSmallTask(task, id)} onFilter={(subtaskId, smallTaskId) => filterThread(task, subtaskId, smallTaskId)} onReorderSmallTask={(parent, source, target, after) => reorderSmallTask(task.id, parent, source, target, after)} onReorderSubtask={(source, target, after) => reorderSubtask(task.id, source, target, after)} onCompleteSubtask={id => completeSubtask(task, id)} onDependency={target => setDependencyTarget({ taskId: task.id, ...target })} onWaiting={scope => setWaitingTarget({ taskId: task.id, scope })} onDragStart={(e, id) => { if (task.completed) { e.preventDefault(); return; } setDraggingId(id); e.dataTransfer.setData('application/x-taskmatrix-progress', id); e.dataTransfer.effectAllowed = 'move'; e.currentTarget.addEventListener('dragend', () => setDraggingId(null), { once: true }); }}/>) }

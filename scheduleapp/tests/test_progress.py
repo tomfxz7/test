@@ -358,7 +358,9 @@ class ProgressTests(unittest.TestCase):
         self.page.get_by_role('button',name='返信元を変更',exact=True).click()
         expect(self.page.get_by_label('返信元に選択: 保存してある返信',exact=True)).to_be_disabled()
         expect(self.page.get_by_label('返信元に選択: 変更前の返信を引用したメモ',exact=True)).to_be_disabled()
-        self.page.get_by_label('返信元に選択: 変更先の相手待ち',exact=True).check()
+        expect(self.page.get_by_role('button',name='返信元に選択: 変更先の相手待ち',exact=True)).to_have_count(0)
+        self.page.get_by_role('button',name='期限切れの確認のトークを表示',exact=True).click()
+        self.page.get_by_role('button',name='返信元に選択: 変更先の相手待ち',exact=True).click()
         self.assertEqual(self.stored(),before)
         expect(self.page.get_by_role('region',name='返信先',exact=True)).to_contain_text('変更先の相手待ち')
         self.page.get_by_role('button',name='編集を保存',exact=True).click()
@@ -383,12 +385,11 @@ class ProgressTests(unittest.TestCase):
         self.entry('reply').get_by_role('button',name='コメントを編集',exact=True).click()
         before=self.stored()
         self.page.get_by_role('button',name='返信元を変更',exact=True).click()
-        self.page.get_by_label('返信元に選択: 変更先の相手待ち',exact=True).check()
+        self.page.get_by_role('button',name='返信元に選択: 変更先の相手待ち',exact=True).click()
         self.page.get_by_role('button',name='編集をキャンセル',exact=True).click();self.assertEqual(self.stored(),before)
         self.entry('reply').get_by_role('button',name='コメントを編集',exact=True).click()
         self.page.get_by_role('button',name='返信元を変更',exact=True).click()
-        self.page.get_by_label('返信元に選択: 変更先の相手待ち',exact=True).check()
-        self.page.get_by_role('button',name='選択を終了',exact=True).click()
+        self.page.get_by_role('button',name='返信元に選択: 変更先の相手待ち',exact=True).click()
         self.page.get_by_role('button',name='編集を保存',exact=True).click()
         saved=self.stored()[0];first=next(entry for entry in saved['progressHistory'] if entry['id']=='w1')
         self.assertEqual(first['resolvedByReplyId'],'other-reply');self.assertFalse(saved['subtasks'][0]['smallTasks'][0].get('waiting',False))
@@ -432,7 +433,7 @@ class ProgressTests(unittest.TestCase):
                 self.seed([original]);self.progress();self.select_chat()
                 self.entry('entry').get_by_role('button',name='コメントを編集',exact=True).click()
                 self.page.get_by_role('button',name='返信元を変更',exact=True).click()
-                self.page.get_by_label('返信元に選択: 返信先にする依頼',exact=True).check()
+                self.page.get_by_role('button',name='返信元に選択: 返信先にする依頼',exact=True).click()
                 self.page.get_by_role('button',name='編集を保存',exact=True).click()
                 saved=self.stored()[0];edited=next(item for item in saved['progressHistory'] if item['id']=='entry')
                 self.assertEqual(edited['quote']['id'],'wait');self.assertEqual(len(saved['subtasks']),len(original['subtasks']))
@@ -4440,5 +4441,91 @@ class ProgressTests(unittest.TestCase):
         table=self.stored()[0]['progressHistory'][-1]
         expect(self.entry(table['id']).get_by_role('table')).to_be_visible()
         expect(self.page.get_by_role('heading',name='コメント入力',exact=True)).to_be_visible()
+
+    def test_task_tile_opens_detail_at_selected_card_scroll_position(self):
+        fixtures=[]
+        for i in range(9):
+            item=task(id='jump'+str(i),progressEnabled=True,progressStage='doing')
+            item['title']='スクロール対象'+str(i)
+            fixtures.append(item)
+        self.seed(fixtures);self.progress(home=True)
+        board=self.page.get_by_role('region',name='着手中ボード',exact=True)
+        def open_tile(index):
+            card=self.card('jump'+str(index))
+            card.get_by_role('button',name='スクロール対象'+str(index),exact=True).click()
+            expect(card.get_by_role('button',name='スクロール対象'+str(index)+'の設定',exact=True)).to_be_visible()
+            self.page.wait_for_function("""id => {
+                const list=document.querySelector('[data-progress-stage="doing"] [data-progress-task-id]').parentElement;
+                const card=[...list.querySelectorAll('[data-progress-task-id]')].find(node=>node.dataset.progressTaskId===id);
+                const top=card.getBoundingClientRect().top-list.getBoundingClientRect().top;
+                return list.scrollTop>0 && top>=0 && top<24;
+            }""",arg='jump'+str(index))
+            expect(card.get_by_role('button',name='スクロール対象'+str(index),exact=True)).to_be_in_viewport()
+            expect(self.page.get_by_label('トークのタイトル',exact=True)).to_have_text('スクロール対象'+str(index))
+        open_tile(6)
+        self.page.get_by_label('進捗コメント',exact=True).fill('スクロールしても保持')
+        board.locator('article[data-progress-task-id]').first.evaluate('node=>node.parentElement.scrollTop=0')
+        self.page.get_by_label('進捗コメント',exact=True).press_sequentially('追記')
+        self.assertEqual(board.locator('article[data-progress-task-id]').first.evaluate('node=>node.parentElement.scrollTop'),0)
+        for index in [2,2]:
+            self.page.get_by_role('button',name='大タスクのホーム',exact=True).click()
+            open_tile(index)
+
+    def test_reply_source_selection_keeps_small_scope_search_and_hidden_waits(self):
+        original=self.reply_edit_task()
+        original['subtasks'][0]['smallTasks'].append(dict(id='b',title='別の小さい作業'))
+        source=dict(id='visible-source',kind='comment',text='表示中の依頼',status='waiting',subtaskIds=['s1'],smallTaskId='a',smallTaskTitle='返信を移す作業')
+        original['progressHistory'] += [source,
+            dict(id='other-small',kind='comment',text='表示中と同じ検索語の別小作業',status='active',subtaskIds=['s1'],smallTaskId='b',smallTaskTitle='別の小さい作業'),
+            dict(id='other-parent',kind='comment',text='表示中と同じ検索語の別やるべきこと',status='active',subtaskIds=['s2'])]
+        self.seed([original]);self.progress()
+        self.page.get_by_label('返信済みの相手待ちの表示',exact=True).select_option('hide')
+        self.page.get_by_role('button',name='返信を移す作業のトークを表示',exact=True).click()
+        self.entry('reply').get_by_role('button',name='コメントを編集',exact=True).click()
+        editor=self.page.get_by_label('コメントの編集',exact=True);editor.fill('本文の編集中データ')
+        search=self.page.get_by_label('履歴を検索',exact=True);search.fill('表示中')
+        log=self.page.get_by_role('log',name='進捗履歴',exact=True)
+        before=log.locator('[data-progress-entry-id]').evaluate_all('(nodes)=>nodes.map(node=>node.dataset.progressEntryId)')
+        saved=self.stored()
+        self.page.get_by_role('button',name='返信元を変更',exact=True).click()
+        expect(search).to_have_value('表示中')
+        self.assertEqual(log.locator('[data-progress-entry-id]').evaluate_all('(nodes)=>nodes.map(node=>node.dataset.progressEntryId)'),before)
+        expect(self.entry('other-small')).to_have_count(0);expect(self.entry('other-parent')).to_have_count(0);expect(self.entry('w1')).to_have_count(0)
+        expect(self.page.get_by_label('トークのタイトル',exact=True)).to_have_text('返信を移す作業')
+        self.page.get_by_role('button',name='返信元に選択: 表示中の依頼',exact=True).click()
+        expect(self.page.get_by_role('region',name='返信元の選択',exact=True)).to_have_count(0)
+        expect(editor).to_have_text('本文の編集中データ');expect(search).to_have_value('表示中')
+        expect(self.page.get_by_role('region',name='返信先',exact=True)).to_contain_text('表示中の依頼')
+        self.assertEqual(self.stored(),saved)
+        self.page.get_by_role('button',name='編集を保存',exact=True).click()
+        edited=next(entry for entry in self.stored()[0]['progressHistory'] if entry['id']=='reply')
+        self.assertEqual(edited['text'],'本文の編集中データ');self.assertEqual(edited['quote']['id'],'visible-source')
+
+    def test_reply_source_selection_keeps_collapsed_groups_and_scroll(self):
+        original=task(progressEnabled=True,progressStage='doing')
+        original['progressHistory']=[dict(id='inside',kind='comment',text='折りたたまれた依頼',status='active',subtaskIds=['s1'])]
+        original['progressHistory'] += [dict(id='root'+str(i),kind='comment',text='表示中のコメント'+str(i),status='active',subtaskIds=[],createdAt='2026-11-01T03:00:00Z') for i in range(18)]
+        self.seed([original]);self.progress();self.select_chat(expand_threads=False)
+        self.page.get_by_role('button',name='未着手ボードを非表示',exact=True).click()
+        self.page.get_by_role('button',name='既存の調査のトークを折りたたむ',exact=True).click()
+        self.entry('root17').get_by_role('button',name='コメントを編集',exact=True).click()
+        log=self.page.get_by_role('log',name='進捗履歴',exact=True)
+        collapsed=self.page.get_by_role('button',name='既存の調査のトークを展開',exact=True)
+        expect(collapsed).to_have_attribute('aria-expanded','false');expect(self.entry('inside')).to_have_count(0)
+        log.evaluate('node=>node.scrollTop=120')
+        before=log.locator('[data-progress-entry-id]').evaluate_all('(nodes)=>nodes.map(node=>node.dataset.progressEntryId)')
+        self.page.get_by_role('button',name='返信元を変更',exact=True).click()
+        expect(collapsed).to_have_attribute('aria-expanded','false');expect(self.entry('inside')).to_have_count(0)
+        self.assertEqual(log.locator('[data-progress-entry-id]').evaluate_all('(nodes)=>nodes.map(node=>node.dataset.progressEntryId)'),before)
+        self.assertAlmostEqual(log.evaluate('node=>node.scrollTop'),120,delta=2)
+        self.page.get_by_role('button',name='選択を終了',exact=True).click()
+        expect(collapsed).to_have_attribute('aria-expanded','false')
+        self.page.get_by_role('button',name='返信元を変更',exact=True).click()
+        collapsed.click()
+        expect(self.entry('inside')).to_be_visible()
+        self.page.get_by_role('button',name='返信元に選択: 折りたたまれた依頼',exact=True).click()
+        expect(self.page.get_by_role('region',name='返信先',exact=True)).to_contain_text('折りたたまれた依頼')
+        self.page.get_by_role('button',name='編集をキャンセル',exact=True).click()
+        self.assertNotIn('quote',next(entry for entry in self.stored()[0]['progressHistory'] if entry['id']=='root17'))
 
 if __name__=='__main__':unittest.main(verbosity=2)
