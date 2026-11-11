@@ -26,7 +26,8 @@ import {
   FileSpreadsheet,
   MonitorPlay,
   FileText,
-  Repeat
+  Repeat,
+  Table2
 } from 'lucide-react';
 
 // --- IndexedDB Configuration & Utils ---
@@ -877,18 +878,57 @@ const progressTextParts = (text, links) => {
   if (start < text.length) parts.push({ text: text.slice(start) });
   return parts;
 };
+// Store tables as portable Markdown in the existing text field, so history,
+// quotes, search and JSON backups retain them without a parallel data model.
+const progressTableCell = value => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\r?\n/g, '<br>');
+const progressTableText = rows => rows.map((row, i) => '| ' + row.map(progressTableCell).join(' | ') + ' |' + (i === 0 ? '\n| ' + row.map(() => '---').join(' | ') + ' |' : '')).join('\n');
+const progressTableRows = line => {
+  const cells = []; let cell = '', escaped = false;
+  for (const c of line.trim().slice(1, -1)) {
+    if (escaped) { cell += c; escaped = false; }
+    else if (c === '\\') escaped = true;
+    else if (c === '|') { cells.push(cell.replace(/^ | $/g, '').replace(/<br>/g, '\n').replace(/&lt;/g, '<').replace(/&amp;/g, '&')); cell = ''; }
+    else cell += c;
+  }
+  cells.push(cell.replace(/^ | $/g, '').replace(/<br>/g, '\n').replace(/&lt;/g, '<').replace(/&amp;/g, '&')); return cells;
+};
+const progressTables = text => {
+  const result = [], lines = text.split('\n'); let offset = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i], start = offset;
+    if (/^\s*\|.*\|\s*$/.test(line) && /^\s*\|(?:\s*:?-{3,}:?\s*\|)+\s*$/.test(lines[i + 1] || '')) {
+      const rows = [progressTableRows(line)]; let end = start + line.length + 1 + lines[i + 1].length;
+      i += 2;
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) { rows.push(progressTableRows(lines[i])); end += 1 + lines[i].length; i += 1; }
+      i -= 1;
+      if (rows.every(row => row.length === rows[0].length)) result.push({ start, end, rows });
+      offset = end + 1;
+    } else offset += line.length + 1;
+  }
+  return result;
+};
+const ProgressTable = ({ rows }) => <span className="block max-w-full overflow-x-auto my-2" role="table" aria-label="トークの表">
+  {rows.map((row, i) => <span key={i} role="row" className="grid" style={{ gridTemplateColumns: `repeat(${row.length}, minmax(100px, 1fr))`, minWidth: row.length * 100 }}>
+    {row.map((cell, j) => <span key={j} role={i === 0 ? 'columnheader' : 'cell'} className={`border border-gray-400 p-2 whitespace-pre-wrap break-words ${i === 0 ? 'bg-slate-100 font-bold' : 'bg-white'}`}><ProgressText value={cell}/></span>)}
+  </span>)}
+</span>;
 const ProgressText = ({ value, textLinks }) => {
   if (typeof value !== 'string') return value ?? null;
-  return <span data-progress-body style={{ color: '#000' }}>{progressTextParts(value, progressAllTextLinks(value, textLinks)).map((part, i) => part.url
-    ? <a key={i} href={part.url} target="_blank" rel="noopener noreferrer" className="underline break-all" style={{ color: '#000' }}>{part.text}</a> : part.text)}</span>;
+  const tables = progressTables(value), parts = []; let start = 0;
+  const appendText = (from, to) => parts.push(...progressTextParts(value.slice(from, to), progressAllTextLinks(value, textLinks).filter(link => link.start >= from && link.end <= to).map(link => ({ ...link, start: link.start - from, end: link.end - from }))).map((part, i) => part.url
+    ? <a key={`${from}-${i}`} href={part.url} target="_blank" rel="noopener noreferrer" className="underline break-all" style={{ color: '#000' }}>{part.text}</a> : part.text));
+  tables.forEach((table, i) => { appendText(start, table.start); parts.push(<ProgressTable key={`table-${i}`} rows={table.rows}/>); start = table.end; });
+  appendText(start, value.length);
+  return <span data-progress-body style={{ color: '#000' }}>{parts}</span>;
 };
-// Read only text and HTTP(S) link ranges. Clipboard markup is never inserted as HTML.
+// Read text, our serialized tables and HTTP(S) link ranges. Clipboard HTML is rebuilt from these safe values.
 const readProgressEditor = root => {
   let text = ''; const links = [];
   const block = node => /^(DIV|P|LI|H[1-6]|BLOCKQUOTE|PRE|TR)$/.test(node.nodeName);
   const walk = node => {
     if (node.nodeType === 3) { text += node.textContent.replace(/\u200B/g, ''); return; }
     if ((node.nodeType !== 1 && node !== root) || /^(SCRIPT|STYLE|HEAD|IFRAME|OBJECT|SVG|TEMPLATE)$/.test(node.nodeName)) return;
+    if (node.nodeName === 'TABLE' && node.hasAttribute('data-progress-table')) { text += node.getAttribute('data-progress-table'); return; }
     if (node.nodeName === 'BR') { text += '\n'; return; }
     const start = text.length;
     const children = [...node.childNodes].filter(child => child.nodeType === 1 || child.nodeType === 3);
@@ -903,7 +943,7 @@ const readProgressEditor = root => {
   walk(root);
   return { text, textLinks: progressTextLinks(text, links) };
 };
-const progressEditorFragment = (text, links) => {
+const progressPlainEditorFragment = (text, links) => {
   const fragment = document.createDocumentFragment();
   progressTextParts(text, progressTextLinks(text, links)).forEach(part => {
     if (!part.url) { fragment.append(document.createTextNode(part.text)); return; }
@@ -913,6 +953,73 @@ const progressEditorFragment = (text, links) => {
     fragment.append(anchor);
   });
   return fragment;
+};
+const progressEditorFragment = (text, links) => {
+  const fragment = document.createDocumentFragment(); let start = 0;
+  const appendText = (from, to) => fragment.append(progressPlainEditorFragment(text.slice(from, to), progressTextLinks(text, links).filter(link => link.start >= from && link.end <= to).map(link => ({ ...link, start: link.start - from, end: link.end - from }))));
+  progressTables(text).forEach(item => {
+    appendText(start, item.start);
+    const table = document.createElement('table'); table.contentEditable = 'false';
+    table.setAttribute('data-progress-table', text.slice(item.start, item.end)); table.setAttribute('aria-label', '下書きの表');
+    table.style.cssText = 'border-collapse:collapse;margin:8px 0;max-width:100%;color:black';
+    item.rows.forEach((row, i) => { const tr = table.insertRow(); row.forEach(value => {
+      const cell = document.createElement(i === 0 ? 'th' : 'td'); cell.textContent = value;
+      cell.style.cssText = 'border:1px solid #9ca3af;padding:6px;min-width:80px;white-space:pre-wrap;overflow-wrap:anywhere'; tr.append(cell);
+    }); });
+    fragment.append(table); start = item.end;
+  });
+  appendText(start, text.length); return fragment;
+};
+const PROGRESS_GRID_ROWS = 500, PROGRESS_GRID_COLUMNS = 100, PROGRESS_GRID_CELLS = 20000;
+const progressGridError = (height, width) => height > PROGRESS_GRID_ROWS || width > PROGRESS_GRID_COLUMNS || height * width > PROGRESS_GRID_CELLS
+  ? '一度に扱える表は500行・100列、合計20,000セルまでです。範囲を分けて貼り付けてください。' : '';
+const progressGridTsv = rows => rows.map(row => row.map(value => /[\t\r\n"]/.test(value) ? '"' + value.replace(/"/g, '""') + '"' : value).join('\t')).join('\r\n');
+const progressClipboardGrid = (html, plain, cellMode = false) => {
+  const rectangular = rows => {
+    const width = Math.max(1, ...rows.map(row => row.length));
+    const error = progressGridError(rows.length, width);
+    return error ? { error } : { rows: rows.map(row => Array.from({ length: width }, (_, j) => row[j] ?? '')) };
+  };
+  if (html) {
+    const template = document.createElement('template'); template.innerHTML = html;
+    const table = template.content.querySelector('table');
+    if (table) {
+      const rows = [];
+      const source = [...table.querySelectorAll('tr')].filter(row => row.closest('table') === table);
+      if (source.length > PROGRESS_GRID_ROWS) return { error: progressGridError(source.length, 1) };
+      for (let i = 0; i < source.length; i += 1) {
+        rows[i] ||= []; let column = 0;
+        for (const cell of [...source[i].cells]) {
+          while (rows[i][column] !== undefined) column += 1;
+          const height = Math.max(1, cell.rowSpan), width = Math.max(1, cell.colSpan);
+          const error = progressGridError(i + height, column + width);
+          if (error) return { error };
+          for (let y = 0; y < height; y += 1) {
+            rows[i + y] ||= [];
+            for (let x = 0; x < width; x += 1) rows[i + y][column + x] = y === 0 && x === 0 ? readProgressEditor(cell).text : '';
+          }
+          column += width;
+        }
+      }
+      if (rows.length) return rectangular(rows);
+    }
+  }
+  if (!plain.includes('\t') && !(cellMode && (/[\r\n]/.test(plain) || /^"[\s\S]*"$/.test(plain)))) return null;
+  const rows = []; let row = [], value = '', quoted = false;
+  const input = plain.replace(/\r\n?/g, '\n');
+  for (let i = 0; i < input.length; i += 1) {
+    const char = input[i];
+    if (char === '"' && (quoted || value === '')) {
+      if (quoted && input[i + 1] === '"') { value += '"'; i += 1; } else quoted = !quoted;
+    } else if (!quoted && (char === '\t' || char === '\n')) {
+      row.push(value); value = '';
+      if (char === '\n') { rows.push(row); row = []; }
+      const error = progressGridError(rows.length + (char === '\n' && i === input.length - 1 ? 0 : 1), row.length + 1);
+      if (error) return { error };
+    } else value += char;
+  }
+  if (value || row.length || !rows.length || !input.endsWith('\n')) { row.push(value); rows.push(row); }
+  return rectangular(rows);
 };
 const progressClipboardDraft = (html, plain) => {
   const plainText = plain.replace(/\u200B/g, '');
@@ -950,8 +1057,175 @@ const progressClipboardDraft = (html, plain) => {
   }
   return rich;
 };
+const ProgressTableDialog = ({ initial, onApply, onClose }) => {
+  const [rows, setRows] = useState(initial || [['', ''], ['', '']]);
+  const [error, setError] = useState('');
+  const dialogRef = useRef(null);
+  useEffect(() => {
+    const previous = document.activeElement;
+    dialogRef.current?.querySelector('textarea')?.focus();
+    return () => previous?.focus();
+  }, []);
+  const [selection, setSelection] = useState({ row: 0, column: 0, endRow: 0, endColumn: 0 });
+  const [editingCell, setEditingCell] = useState(null);
+  const [notice, setNotice] = useState('');
+  const dragging = useRef(false);
+  const bounds = {
+    top: Math.min(selection.row, selection.endRow), bottom: Math.max(selection.row, selection.endRow),
+    left: Math.min(selection.column, selection.endColumn), right: Math.max(selection.column, selection.endColumn)
+  };
+  useEffect(() => {
+    const stop = () => { dragging.current = false; };
+    window.addEventListener('pointerup', stop); window.addEventListener('pointercancel', stop);
+    return () => { window.removeEventListener('pointerup', stop); window.removeEventListener('pointercancel', stop); };
+  }, []);
+  const selectCell = (row, column, extend = false) => {
+    setNotice(''); setError(''); setEditingCell(null);
+    setSelection(previous => extend ? { ...previous, endRow: row, endColumn: column } : { row, column, endRow: row, endColumn: column });
+  };
+  const clearCells = () => {
+    setRows(previous => previous.map((row, i) => row.map((value, j) => i >= bounds.top && i <= bounds.bottom && j >= bounds.left && j <= bounds.right ? '' : value)));
+    setEditingCell(null); setNotice('選択セルの内容を削除しました。');
+  };
+  const selectedTsv = () => progressGridTsv(rows.slice(bounds.top, bounds.bottom + 1).map(row => row.slice(bounds.left, bounds.right + 1)));
+  const copyCells = async () => {
+    try { await navigator.clipboard.writeText(selectedTsv()); setNotice('選択セルをコピーしました。'); }
+    catch { setError('コピーできませんでした。セルを選択してCtrl+C（Macは⌘C）を使ってください。'); }
+  };
+  const deleteAxis = axis => {
+    const row = axis === 'row', start = row ? bounds.top : bounds.left, end = row ? bounds.bottom : bounds.right;
+    setRows(previous => row
+      ? (previous.filter((_, i) => i < start || i > end).length ? previous.filter((_, i) => i < start || i > end) : [Array(previous[0].length).fill('')])
+      : previous.map(values => { const retained = values.filter((_, j) => j < start || j > end); return retained.length ? retained : ['']; }));
+    selectCell(0, 0); setNotice(row ? '選択行を削除しました。' : '選択列を削除しました。');
+  };
+  const pasteCells = (event, row, column) => {
+    const plain = event.clipboardData?.getData('text/plain') || '';
+    const grid = progressClipboardGrid(event.clipboardData?.getData('text/html') || '', plain, true)
+      || (!editingCell && event.clipboardData?.types.includes('text/plain') ? { rows: [[plain]] } : null);
+    if (!grid) return;
+    event.preventDefault(); event.stopPropagation();
+    if (grid.error) { setError(grid.error); return; }
+    const height = Math.max(rows.length, row + grid.rows.length), width = Math.max(rows[0].length, column + grid.rows[0].length);
+    const error = progressGridError(height, width);
+    if (error) { setError(error); return; }
+    setRows(previous => Array.from({ length: height }, (_, i) => Array.from({ length: width }, (_, j) =>
+      i >= row && i < row + grid.rows.length && j >= column && j < column + grid.rows[0].length ? grid.rows[i - row][j - column] : previous[i]?.[j] || '')));
+    setSelection({ row, column, endRow: row + grid.rows.length - 1, endColumn: column + grid.rows[0].length - 1 });
+    setEditingCell(null); setError(''); setNotice(`${grid.rows.length}行・${grid.rows[0].length}列を貼り付けました。`);
+  };
+  const maxRows = Math.min(PROGRESS_GRID_ROWS, Math.floor(PROGRESS_GRID_CELLS / rows[0].length));
+  const maxColumns = Math.min(PROGRESS_GRID_COLUMNS, Math.floor(PROGRESS_GRID_CELLS / rows.length));
+  const resize = (height, width) => { setRows(previous => Array.from({ length: height }, (_, i) => Array.from({ length: width }, (_, j) => previous[i]?.[j] || ''))); selectCell(0, 0); };
+  const insertRow = index => setRows(previous => previous.length >= maxRows ? previous : [...previous.slice(0, index), Array(previous[0].length).fill(''), ...previous.slice(index)]);
+  const insertColumn = index => setRows(previous => previous[0].length >= maxColumns ? previous : previous.map(row => [...row.slice(0, index), '', ...row.slice(index)]));
+  const insertionControl = (axis, index, count, limit, insert) => {
+    const column = axis === 'column';
+    const label = index === 0 ? `先頭に${column ? '列' : '行'}を追加` : index === count ? `末尾に${column ? '列' : '行'}を追加` : `${index + 1}${column ? '列' : '行'}目の前に${column ? '列' : '行'}を追加`;
+    return <div key={`${axis}-${index === count ? 'end' : index}`} data-table-boundary={axis} className={`group absolute ${column ? 'top-0 bottom-0 z-20 w-4 -translate-x-1/2' : 'left-0 right-0 z-10 h-4 -translate-y-1/2'}`}
+      style={column ? { left: `${index / count * 100}%` } : { top: `${index / count * 100}%` }}>
+      <span aria-hidden="true" className={`pointer-events-none absolute bg-violet-500 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 ${column ? 'left-1/2 top-0 bottom-0 w-0.5' : 'top-1/2 left-0 right-0 h-0.5'}`}/>
+      <button type="button" data-progress-table-insert aria-label={label} title={count >= limit ? `${column ? '列' : '行'}は最大${limit}までです` : label} disabled={count >= limit}
+        onClick={() => insert(index)}
+        className={`absolute z-10 flex h-5 w-5 items-center justify-center rounded-full border border-violet-500 bg-white text-violet-600 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:text-gray-400 disabled:border-gray-300 ${column ? '-top-5 left-1/2 -translate-x-1/2' : '-left-5 top-1/2 -translate-y-1/2'}`}><Plus size={14}/></button>
+    </div>;
+  };
+  return <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-3" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+    <section ref={dialogRef} role="dialog" aria-modal="true" aria-label={initial ? '表を編集' : '表を作成'} className="bg-white rounded-xl shadow-xl p-4 w-full max-w-3xl max-h-[85vh] overflow-auto text-black space-y-3"
+      onCopy={e => { if (editingCell) return; e.preventDefault(); e.clipboardData.setData('text/plain', selectedTsv()); }}
+      onKeyDown={e => {
+        e.stopPropagation();
+        if (e.key === 'Escape' && !e.nativeEvent.isComposing) { e.preventDefault(); onClose(); }
+        if (e.key === 'Tab') {
+          const items = [...dialogRef.current.querySelectorAll('button:not(:disabled), textarea, select')];
+          if (e.shiftKey && e.target === items[0]) { e.preventDefault(); items[items.length - 1].focus(); }
+          else if (!e.shiftKey && e.target === items[items.length - 1]) { e.preventDefault(); items[0].focus(); }
+        }
+      }}>
+      <div className="flex justify-between items-center"><h3 className="font-bold">{initial ? '表を編集' : '表を作成'}</h3><button type="button" aria-label="表の画面を閉じる" onClick={onClose}><X size={18}/></button></div>
+      <p className="text-xs text-gray-600">先頭行は見出しです。各セルに入力してください。行・列を減らすと、削除されるセルの内容は失われます。</p>
+      <div className="flex flex-wrap gap-3 text-sm">
+        <label>行数（見出しを含む）<select aria-label="表の行数" value={rows.length} onChange={e => resize(Number(e.target.value), rows[0].length)} className="border rounded p-1 ml-2">{Array.from({ length: maxRows }, (_, i) => <option key={i} value={i + 1}>{i + 1}</option>)}</select></label>
+        <label>列数<select aria-label="表の列数" value={rows[0].length} onChange={e => resize(rows.length, Number(e.target.value))} className="border rounded p-1 ml-2">{Array.from({ length: maxColumns }, (_, i) => <option key={i} value={i + 1}>{i + 1}</option>)}</select></label>
+      </div>
+      <p className="text-xs text-gray-600">セルをドラッグして範囲選択。ダブルクリック・Enterでセル内を編集できます。Excelの範囲を貼り付けると、必要な行・列を自動で追加します。</p>
+      <div className="flex flex-wrap gap-2 text-xs" role="toolbar" aria-label="表の範囲操作">
+        <button type="button" className="border rounded px-2 py-1" onClick={copyCells}>選択セルをコピー</button>
+        <button type="button" className="border rounded px-2 py-1" onClick={clearCells}>選択セルの内容を削除</button>
+        <button type="button" className="border rounded px-2 py-1" onClick={() => deleteAxis('row')}>選択行を削除</button>
+        <button type="button" className="border rounded px-2 py-1" onClick={() => deleteAxis('column')}>選択列を削除</button>
+        <span role="status">{notice || `${bounds.bottom - bounds.top + 1}行・${bounds.right - bounds.left + 1}列を選択中`}</span>
+      </div>
+      <p className="text-xs text-gray-600">行・列の境界にマウスを合わせると「＋」が現れます。クリックすると、その位置に挿入します。</p>
+      <style>{`[data-progress-page] [data-progress-table-insert]:not(:disabled) { border-color: #8b5cf6 !important; } @media (hover: none) { [data-progress-table-insert] { opacity: 1; } }`}</style>
+      <div className="overflow-x-auto p-6">
+        <div className="relative" style={{ minWidth: rows[0].length * 144 }}>
+          <table role="grid" aria-label="表のセル編集" aria-rowcount={rows.length} aria-colcount={rows[0].length} className="w-full border-collapse table-fixed" style={{ height: rows.length * 64 }}><tbody>{rows.map((row, i) => <tr key={i} className="h-16">{row.map((cell, j) => <td key={j} role="gridcell" aria-selected={i >= bounds.top && i <= bounds.bottom && j >= bounds.left && j <= bounds.right} className={`border p-1 ${i === 0 ? 'bg-slate-100' : ''}`}><textarea aria-label={`${i + 1}行${j + 1}列`} value={cell}
+      onPointerDown={e => {
+        if (e.button !== 0 || (editingCell?.row === i && editingCell?.column === j)) return;
+        e.preventDefault(); e.currentTarget.focus(); e.currentTarget.select(); dragging.current = true; selectCell(i, j, e.shiftKey);
+      }}
+      onPointerEnter={() => { if (dragging.current) setSelection(previous => ({ ...previous, endRow: i, endColumn: j })); }}
+      onCompositionStart={() => setEditingCell({ row: i, column: j })}
+      onDoubleClick={e => { selectCell(i, j); setEditingCell({ row: i, column: j }); e.currentTarget.focus(); }}
+      onFocus={() => { if (!dragging.current && !(i >= bounds.top && i <= bounds.bottom && j >= bounds.left && j <= bounds.right)) selectCell(i, j); }}
+      onPaste={e => pasteCells(e, bounds.top, bounds.left)}
+      onKeyDown={e => {
+        if (e.nativeEvent.isComposing || e.key === 'Process') return;
+        const editing = editingCell?.row === i && editingCell?.column === j;
+        if (e.key === 'Escape' && editing) { e.preventDefault(); e.stopPropagation(); setEditingCell(null); return; }
+        if (editing) return;
+        if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); clearCells(); }
+        else if (e.key === 'F2' || e.key === 'Enter') { e.preventDefault(); setEditingCell({ row: i, column: j }); e.currentTarget.setSelectionRange(cell.length, cell.length); }
+        else if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+          e.preventDefault(); const nextRow = Math.max(0, Math.min(rows.length - 1, selection.endRow + (e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0)));
+          const nextColumn = Math.max(0, Math.min(rows[0].length - 1, selection.endColumn + (e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0)));
+          selectCell(nextRow, nextColumn, e.shiftKey);
+          if (!e.shiftKey) dialogRef.current?.querySelector(`[aria-label="${nextRow + 1}行${nextColumn + 1}列"]`)?.focus();
+        } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          setEditingCell({ row: i, column: j });
+          setRows(previous => previous.map((r, ri) => ri === i ? r.map((v, ci) => ci === j ? e.key : v) : r)); e.preventDefault();
+        }
+      }}
+      onChange={e => { const value = e.target.value; setRows(previous => previous.map((r, ri) => ri === i ? r.map((v, ci) => ci === j ? value : v) : r)); }}
+      className={`block h-12 w-full resize-none p-1 text-sm border rounded ${i >= bounds.top && i <= bounds.bottom && j >= bounds.left && j <= bounds.right ? 'bg-violet-100 ring-1 ring-violet-500' : 'bg-white'}`} rows={2}/></td>)}</tr>)}</tbody></table>
+          {Array.from({ length: rows[0].length + 1 }, (_, index) => insertionControl('column', index, rows[0].length, maxColumns, insertColumn))}
+          {Array.from({ length: rows.length + 1 }, (_, index) => insertionControl('row', index, rows.length, maxRows, insertRow))}
+        </div>
+      </div>
+      {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
+      <div className="flex justify-end gap-2"><button type="button" onClick={onClose} className="border rounded px-3 py-2">キャンセル</button><button type="button" className="bg-blue-600 text-white rounded px-3 py-2" onClick={() => { if (!rows.some(row => row.some(cell => cell.trim()))) { setError('表に内容を入力してください。'); return; } onApply(rows); }}>{initial ? '表を更新' : '表を挿入'}</button></div>
+    </section>
+  </div>;
+};
 const ProgressComposer = ({ text, textLinks, onChange, onPasteImages, editorRef, editing }) => {
   const composing = useRef(false);
+  const [pasteError, setPasteError] = useState('');
+  const [tableDialog, setTableDialog] = useState(null);
+  const [tableIndex, setTableIndex] = useState(0);
+  const tables = progressTables(text);
+  const selectionRef = useRef(null);
+  const openTable = edit => {
+    const selection = window.getSelection();
+    selectionRef.current = selection?.rangeCount && editorRef.current.contains(selection.anchorNode) ? selection.getRangeAt(0).cloneRange() : null;
+    const table = tables[Math.min(tableIndex, tables.length - 1)];
+    setTableDialog(edit ? { table } : {});
+  };
+  const applyTable = rows => {
+    const markdown = progressTableText(rows);
+    if (tableDialog.table) {
+      const { start, end } = tableDialog.table, delta = markdown.length - (end - start);
+      onChange({ text: text.slice(0, start) + markdown + text.slice(end), textLinks: progressTextLinks(text, textLinks).filter(link => link.end <= start || link.start >= end).map(link => link.start >= end ? { ...link, start: link.start + delta, end: link.end + delta } : link) });
+    } else {
+      editorRef.current.focus();
+      const selection = window.getSelection();
+      if (selectionRef.current) { selection.removeAllRanges(); selection.addRange(selectionRef.current); }
+      else { const range = document.createRange(); range.selectNodeContents(editorRef.current); range.collapse(false); selection.removeAllRanges(); selection.addRange(range); }
+      const container = document.createElement('div'); container.append(progressEditorFragment('\n\n' + markdown + '\n\n', []));
+      document.execCommand('insertHTML', false, container.innerHTML); emit();
+    }
+    setTableDialog(null);
+  };
   const read = () => readProgressEditor(editorRef.current);
   const emit = () => onChange(read());
   React.useLayoutEffect(() => {
@@ -967,7 +1241,10 @@ const ProgressComposer = ({ text, textLinks, onChange, onPasteImages, editorRef,
     const files = [...(clipboard?.files || [])];
     const images = files.length ? files : [...(clipboard?.items || [])].filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter(Boolean);
     const plain = clipboard?.getData('text/plain') || '', html = clipboard?.getData('text/html');
-    const draft = progressClipboardDraft(html, plain);
+    const grid = progressClipboardGrid(html, plain);
+    if (grid?.error) { setPasteError(grid.error); return; }
+    setPasteError('');
+    const draft = grid ? { text: '\n\n' + progressTableText(grid.rows) + '\n\n', textLinks: [] } : progressClipboardDraft(html, plain);
     if (draft.text) {
       const container = document.createElement('div');
       container.append(progressEditorFragment(draft.text, progressAllTextLinks(draft.text, draft.textLinks)));
@@ -980,10 +1257,18 @@ const ProgressComposer = ({ text, textLinks, onChange, onPasteImages, editorRef,
     if (images.length) onPasteImages(images);
   };
   return <div className="relative">
+    <div role="toolbar" aria-label="トークの表ツール" className="flex items-center gap-2 px-2 pt-1 text-xs">
+      <button type="button" aria-label="表を作成" title="表を作成" onMouseDown={e => e.preventDefault()} onClick={() => openTable(false)} className="rounded p-1 hover:bg-slate-100"><Table2 size={18}/></button>
+      <button type="button" aria-label="表を編集" title="表を編集" disabled={!tables.length} onMouseDown={e => e.preventDefault()} onClick={() => openTable(true)} className="rounded p-1 hover:bg-slate-100 disabled:opacity-30"><Pencil size={18}/></button>
+      {tables.length > 1 && <select aria-label="編集する表" value={Math.min(tableIndex, tables.length - 1)} onChange={e => setTableIndex(Number(e.target.value))} className="border rounded">{tables.map((table, i) => <option key={i} value={i}>表 {i + 1}: {table.rows[0].join(' / ').slice(0, 40)}</option>)}</select>}
+      <span className="text-gray-500">表の作成・編集</span>
+    </div>
+    {pasteError && <p role="alert" className="px-2 text-xs text-red-700">{pasteError}</p>}
+    {tableDialog && <ProgressTableDialog initial={tableDialog.table?.rows} onApply={applyTable} onClose={() => setTableDialog(null)}/>}
     <div ref={editorRef} role="textbox" aria-multiline="true" aria-label={editing ? 'コメントの編集' : '進捗コメント'} title="Enter: 改行 / Ctrl+Enter: 送信 / Alt+Enter: 相手待ち / Shift+Enter: コメント / Ctrl+Shift+Enter: 小タスク追加 / Ctrl+Alt+Enter: やるべきこと追加 / Ctrl+Shift+Alt+Enter: 前提メモ" contentEditable suppressContentEditableWarning
       onInput={emit} onPaste={paste} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; emit(); }}
-      className="w-full min-h-14 max-h-40 overflow-y-auto rounded-xl p-2 text-sm text-black whitespace-pre-wrap break-words focus:outline-none"/>
-    {!text && <span aria-hidden="true" className="absolute top-2 left-2 right-2 pointer-events-none text-xs text-gray-400">コメントを入力…画像・リンク貼り付け可（Ctrl+Enter で送信）</span>}
+      className="w-full min-h-10 max-h-40 overflow-y-auto rounded-xl p-2 text-sm text-black whitespace-pre-wrap break-words focus:outline-none"/>
+    {!text && <span aria-hidden="true" className="absolute top-10 left-2 right-2 pointer-events-none text-xs text-gray-400">コメントを入力…画像・リンク貼り付け可（Ctrl+Enter で送信）</span>}
   </div>;
 };
 
