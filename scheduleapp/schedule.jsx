@@ -3148,13 +3148,26 @@ const isResolvedProgressWaiting = entry => entry.status === 'waiting' && !progre
 const progressTableStatuses = ['未進捗', '進捗中', '相手待ち', '結論済み'];
 const progressSummaryHistory = task => (task.progressHistory || []).filter(entry => entry.kind === 'comment' && !(task.deletedProgressEntryIds || []).includes(entry.id));
 const progressSummaryRows = (task, parentId = '') => {
-  const history = progressSummaryHistory(task), parents = getProgressSubtasks(task), completed = getCompletedProgressSmallIds(task);
+  const parents = getProgressSubtasks(task), completed = getCompletedProgressSmallIds(task);
+  const savedHistory = progressSummaryHistory(task), byId = new Map(savedHistory.map(entry => [entry.id, entry]));
+  const taskReplies = new Set();
+  const history = savedHistory.map(entry => {
+    const source = byId.get(entry.quote?.id) || entry.quote;
+    if (!(entry.addedSmallTask || entry.addedSubtask) || progressEntryIsNote(entry)
+      || source?.status !== 'waiting' || progressEntryIsNote(source)) return entry;
+    const added = entry.addedSmallTask ? parents.flatMap(getProgressSmallTasks).find(small => small.id === entry.smallTaskId)
+      : parents.find(parent => entry.subtaskIds?.includes(parent.id));
+    const title = added?.title || (entry.addedSmallTask ? entry.smallTaskTitle : entry.subtaskTitles?.[0])
+      || (entry.addedSubtask ? entry.text?.match(/【([\s\S]*)】$/)?.[1] : '') || entry.text;
+    taskReplies.add(entry.id);
+    // Creating follow-up work concludes the request in this table, not the new task.
+    return { ...entry, text: title, images: [], links: [], isConclusion: true, conclusionTarget: progressConclusionTarget(entry) };
+  });
   const meaningful = entry => !entry.assumptionMemo && !entry.addedSmallTask && !entry.addedSubtask;
   const children = new Map();
   history.forEach(entry => { if (entry.quote?.id) children.set(entry.quote.id, [...(children.get(entry.quote.id) || []), entry]); });
-  const repliesTo = id => (children.get(id) || []).filter(entry => !entry.assumptionMemo);
+  const pendingWait = entry => entry.status === 'waiting' && !progressEntryIsNote(entry) && !entry.resolvedByReplyId && !taskReplies.has(entry.id);
   const entryText = entry => entry ? [entry.text || '', ...progressMediaItems(entry.images).map(image => `[画像: ${image.name || '添付画像'}]`), ...progressMediaItems(entry.links).map(link => `${link.label || 'リンク'}: ${link.url || ''}`)].filter(Boolean).join('\n') : '';
-  const byId = new Map(history.map(entry => [entry.id, entry]));
   const initialWait = entry => {
     const seen = new Set([entry.id]); let ancestor = entry.quote;
     while (ancestor && !seen.has(ancestor.id)) {
@@ -3185,38 +3198,36 @@ const progressSummaryRows = (task, parentId = '') => {
     getProgressSmallTasks(parent).forEach(small => {
       const entries = history.filter(entry => entry.smallTaskId === small.id || entry.completedSmallTaskId === small.id || (entry.isConclusion && progressConclusionTarget(entry).smallTaskId === small.id));
       const waits = entries.filter(entry => entry.status === 'waiting' && !progressEntryIsNote(entry));
-      const hasReply = waits.some(entry => repliesTo(entry.id).length > 0);
-      const pending = waits.some(entry => entry.resolvedByReplyId !== 'waiting-cleared-in-settings' && !repliesTo(entry.id).length);
+      const pending = !!small.waiting || waits.some(pendingWait);
       const closed = task.completed || parent.completed || small.completed || completed.has(small.id);
       const splitEnabled = !!small.progressTableSplitWaiting;
       const context = { parentId: parent.id, parentIds: [parent.id], parentTitle: parent.title, smallId: small.id, smallTitle: small.title, canSplit: waits.length > 0 || !!small.waiting || splitEnabled, splitEnabled };
       if (splitEnabled) {
         waits.filter(initialWait).forEach(source => {
-          const thread = waitingThread(source), replies = thread.filter(entry => entry.id !== source.id && !entry.assumptionMemo);
+          const thread = waitingThread(source), replies = thread.filter(entry => entry.id !== source.id && !progressEntryIsNote(entry));
           const finished = closed || source.resolvedByReplyId === 'waiting-cleared-in-settings' || replies.some(entry => entry.status === 'completed' && !progressEntryIsNote(entry));
-          result.push(decorate({ ...context, id: `waiting:${source.id}`, kind: 'waiting', splitSmall: true, sourceId: source.id, waitingTitle: source.text || '本文なし' }, thread, finished, !replies.length && !finished));
+          result.push(decorate({ ...context, id: `waiting:${source.id}`, kind: 'waiting', splitSmall: true, sourceId: source.id, waitingTitle: source.text || '本文なし' }, thread, finished, thread.some(pendingWait)));
         });
-        if (!waits.filter(initialWait).length) result.push(decorate({ ...context, id: `waiting-scope:small:${small.id}`, kind: 'waiting', splitSmall: true, waitingScope: `small:${small.id}`, waitingTitle: small.waiting ? `${small.title}（相手待ち）` : '相手待ちトークなし（分割設定中）' }, entries, closed, !!small.waiting && !entries.some(meaningful)));
-      } else result.push(decorate({ ...context, id: `small:${parent.id}:${small.id}`, kind: 'small', waitingTitle: '' }, entries, closed, entries.some(meaningful) && pending && !hasReply));
+        if (!waits.filter(initialWait).length) result.push(decorate({ ...context, id: `waiting-scope:small:${small.id}`, kind: 'waiting', splitSmall: true, waitingScope: `small:${small.id}`, waitingTitle: small.waiting ? `${small.title}（相手待ち）` : '相手待ちトークなし（分割設定中）' }, entries, closed, pending));
+      } else result.push(decorate({ ...context, id: `small:${parent.id}:${small.id}`, kind: 'small', waitingTitle: '' }, entries, closed, pending));
     });
   });
   const waits = history.filter(entry => entry.status === 'waiting' && !progressEntryIsNote(entry) && !entry.smallTaskId && !entry.completedSmallTaskId && (!parentId || entry.subtaskIds?.includes(parentId)) && initialWait(entry));
   waits.forEach(source => {
     const entries = waitingThread(source);
-    const replies = entries.filter(entry => entry.id !== source.id && !entry.assumptionMemo);
+    const replies = entries.filter(entry => entry.id !== source.id && !progressEntryIsNote(entry));
     const owner = parents.find(parent => source.subtaskIds?.includes(parent.id));
     const manuallyClosed = source.resolvedByReplyId === 'waiting-cleared-in-settings';
     const closed = task.completed || (owner?.completed && (source.subtaskIds || []).every(id => parents.find(parent => parent.id === id)?.completed)) || manuallyClosed || replies.some(entry => entry.status === 'completed' && !progressEntryIsNote(entry));
-    result.push(decorate({ id: `waiting:${source.id}`, kind: 'waiting', sourceId: source.id, parentId: owner?.id || '', parentIds: source.subtaskIds || [], parentTitle: (source.subtaskIds || []).map(id => parents.find(parent => parent.id === id)?.title).filter(Boolean).join('、') || 'タスク全体', smallTitle: '', waitingTitle: source.text || '本文なし' }, entries, closed, !replies.length && !closed));
+    result.push(decorate({ id: `waiting:${source.id}`, kind: 'waiting', sourceId: source.id, parentId: owner?.id || '', parentIds: source.subtaskIds || [], parentTitle: (source.subtaskIds || []).map(id => parents.find(parent => parent.id === id)?.title).filter(Boolean).join('、') || 'タスク全体', smallTitle: '', waitingTitle: source.text || '本文なし' }, entries, closed, entries.some(pendingWait)));
   });
-  // Settings can mark a scope as waiting before a request message is posted.
-  [{ node: task, parent: null }, ...parents.map(parent => ({ node: parent, parent }))].forEach(({ node, parent }) => {
-    if (parentId && parent?.id !== parentId) return;
-    const scope = parent ? `subtask:${parent.id}` : 'task';
+  // A parent can be waiting before a request is posted; the big task itself is never a row.
+  parents.filter(parent => !parentId || parent.id === parentId).forEach(parent => {
+    const scope = `subtask:${parent.id}`;
     const entries = history.filter(entry => entry.tableWaitingScope === scope);
     const hasRequest = history.some(entry => entry.status === 'waiting' && !progressEntryIsNote(entry) && !entry.smallTaskId && progressWaitingScope(task, entry) === scope);
-    if (hasRequest || (!node.waiting && !entries.length)) return;
-    result.push(decorate({ id: `waiting-scope:${scope}`, kind: 'waiting', waitingScope: scope, parentId: parent?.id || '', parentIds: parent ? [parent.id] : [], parentTitle: parent?.title || 'タスク全体', smallTitle: '', waitingTitle: `${node.title}（相手待ち）` }, entries, task.completed || node.completed || !node.waiting, !entries.some(meaningful)));
+    if (hasRequest || (!parent.waiting && !entries.length)) return;
+    result.push(decorate({ id: `waiting-scope:${scope}`, kind: 'waiting', waitingScope: scope, parentId: parent.id, parentIds: [parent.id], parentTitle: parent.title, smallTitle: '', waitingTitle: `${parent.title}（相手待ち）` }, entries, task.completed || parent.completed || !parent.waiting, !!parent.waiting));
   });
   return result;
 };
@@ -3852,7 +3863,9 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
   const completionHint = scopeSmall?.waiting ? '相手待ちを解除すると完了できます。'
     : scopeDependencies.length ? `タスク待ち: ${scopeDependencies.map(ref => progressDependencyTitle(task, ref)).join('、')}` : '';
   const draftTargetTitle = smallTarget?.title || selected.map(st => st.title).join('、') || task.title;
-  return <div className={`${expandedComposer ? 'grid gap-4' : 'flex flex-col'} flex-1 min-h-0 min-w-0`} style={expandedComposer ? { gridTemplateColumns: 'minmax(380px, 1fr) minmax(380px, 1.2fr)', gridTemplateRows: 'minmax(0, 1fr)' } : undefined} data-progress-thread="">
+  const tableOnly = expandedComposer && tableView;
+  const sideComposer = expandedComposer && !tableView;
+  return <div className={`${sideComposer ? 'grid gap-4' : 'flex flex-col'} flex-1 min-h-0 min-w-0`} style={sideComposer ? { gridTemplateColumns: 'minmax(380px, 1fr) minmax(380px, 1.2fr)', gridTemplateRows: 'minmax(0, 1fr)' } : undefined} data-progress-thread="">
     <section aria-label="トーク履歴ボード" className={`flex flex-col flex-1 min-h-0 min-w-0 overflow-hidden ${expandedComposer ? 'rounded-2xl border bg-white' : ''}`}>
     <header aria-label="トーク操作" className="flex items-center gap-2 px-3 py-2 border-b bg-white shrink-0 min-w-0">
       <h2 className="text-sm font-black shrink-0">進捗リストボード</h2>
@@ -3898,7 +3911,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
         send(e, mode);
       }
       if (e.key === 'Escape' && (editingId || replyTo) && !e.nativeEvent.isComposing) { e.preventDefault(); resetComposer(); }
-    }} className={`px-3 py-2 bg-white space-y-2 ${expandedComposer ? 'flex flex-col min-h-0 min-w-0 rounded-2xl border overflow-y-auto' : 'border-t shrink-0 max-h-[45%] overflow-y-auto'}`}>
+    }} hidden={tableOnly} className={`px-3 py-2 bg-white space-y-2 ${tableOnly ? 'hidden' : expandedComposer ? 'flex flex-col min-h-0 min-w-0 rounded-2xl border overflow-y-auto' : 'border-t shrink-0 max-h-[45%] overflow-y-auto'}`}>
       {expandedComposer && <header aria-label="コメント入力パネル" className="shrink-0 border-b pb-2"><h2 className="text-sm font-black">コメント入力</h2><p className="mt-1 truncate text-xs text-gray-600" title={draftTargetTitle}>{draftTargetTitle}</p></header>}
       {!editingId && selectedEntryId && <div role="status" aria-label="コメントの送信先" className="flex items-center gap-2 text-xs font-bold"><span className="flex-1 truncate">送信先: {draftTargetTitle}</span><button type="button" className="underline" onClick={() => chooseThreadScope(filterId, filterSmallId, true)}>表示中の範囲に戻す</button></div>}
       {editingId && <div className="flex items-center gap-2 text-xs text-blue-700"><p role="status" className="flex-1 truncate" title={draftTargetTitle}>編集中: {draftTargetTitle}</p><button type="button" onClick={resetComposer} className="shrink-0 underline">編集をキャンセル</button></div>}
@@ -4086,7 +4099,7 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
     `}</style>
     <div className="px-4 py-2 bg-white/70 border-b flex items-center justify-between gap-3 shrink-0">
       <label className="text-xs flex items-center gap-2">返信済みの相手待ち<select aria-label="返信済みの相手待ちの表示" value={showResolvedWaiting ? 'show' : 'hide'} onChange={e => changeResolvedWaiting(e.target.value)} className="border rounded-lg bg-white px-2 py-1.5"><option value="show">青色で残す</option><option value="hide">非表示</option></select></label>
-      <button type="button" aria-label={hideTodo ? '未着手ボードを表示' : '未着手ボードを非表示'} aria-pressed={hideTodo} onClick={toggleTodo} className="rounded-lg border bg-white px-3 py-1.5 text-xs font-bold">{hideTodo ? '入力欄を下に戻す' : '入力欄を右に表示'}</button>
+      <button type="button" aria-label={hideTodo ? '未着手ボードを表示' : '未着手ボードを非表示'} aria-pressed={hideTodo} onClick={toggleTodo} className="rounded-lg border bg-white px-3 py-1.5 text-xs font-bold">{tableView ? hideTodo ? '通常の幅に戻す' : 'テーブルを拡大表示' : hideTodo ? '入力欄を下に戻す' : '入力欄を右に表示'}</button>
       <details className="relative text-xs shrink-0"><summary className="cursor-pointer text-gray-600">色の説明</summary>
         <div className="absolute right-0 top-full z-30 mt-2 w-72 rounded-xl border bg-white p-3 shadow-lg space-y-3">
           <p className="text-gray-600">ボードのカードを選ぶと、その範囲のトークを表示・入力できます。</p>

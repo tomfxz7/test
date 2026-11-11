@@ -4562,6 +4562,190 @@ class ProgressTests(unittest.TestCase):
         self.page.get_by_role('button',name='テーブル表示',exact=True).click()
         return self.page.get_by_role('region',name='進捗テーブル',exact=True)
 
+    def test_summary_waiting_reply_new_todo_is_named_conclusion_and_keeps_new_work_open(self):
+        source=dict(id='request',kind='comment',text='追加調査の判断待ち',status='waiting',subtaskIds=['s1'],subtaskTitles=['既存の調査'])
+        item=task(progressEnabled=True,progressStage='doing',progressHistory=[source])
+        self.seed([item]);self.progress();self.select_chat();self.reply('request')
+        self.page.get_by_label('やるべきことの追加',exact=True).check();self.send('回答に基づく次の調査')
+        saved=self.stored()[0];added=saved['subtasks'][-1];reply=saved['progressHistory'][-1]
+        self.assertFalse(added['completed']);self.assertFalse(added['waiting'])
+        self.assertFalse(saved['subtasks'][0]['completed'])
+        self.page.get_by_role('button',name='テーブル表示',exact=True).click()
+        row=self.summary_row('waiting:request')
+        expect(row.get_by_role('cell',name='結論済み',exact=True)).to_be_visible()
+        expect(row.locator('[data-summary-conclusion="confirmed"]')).to_have_text(added['title'])
+        expect(row).not_to_contain_text('までに【')
+        row.get_by_role('button',name='トークへ移動: '+added['title'],exact=True).click()
+        expect(self.entry(reply['id']).first).to_be_focused()
+        self.entry(reply['id']).first.get_by_role('button',name='コメントを編集',exact=True).click()
+        self.page.get_by_label('コメントの編集',exact=True).fill('改訂した追加調査')
+        self.page.get_by_role('button',name='編集を保存',exact=True).click()
+        self.page.get_by_role('button',name='テーブル表示',exact=True).click()
+        expect(row.locator('[data-summary-conclusion="confirmed"]')).to_have_text('改訂した追加調査')
+        self.page.get_by_role('button',name='既存の調査のトークを表示',exact=True).click()
+        expect(row.get_by_role('cell',name='結論済み',exact=True)).to_be_visible()
+        self.page.reload();self.progress();self.select_chat();self.page.get_by_role('button',name='テーブル表示',exact=True).click()
+        expect(row.locator('[data-summary-conclusion="confirmed"]')).to_have_text('改訂した追加調査')
+
+    def test_summary_waiting_reply_new_small_concludes_only_its_request_when_split(self):
+        source=dict(id='request',kind='comment',text='最初の依頼',status='waiting',subtaskIds=['p'],smallTaskId='old',smallTaskTitle='元の作業')
+        other=dict(source,id='other-request',text='独立した未回答依頼')
+        item=task(progressEnabled=True,progressStage='doing',progressHistory=[source,other])
+        item['subtasks']=[dict(id='p',title='依頼の親',smallTasks=[dict(id='old',title='元の作業')])]
+        self.seed([item]);self.progress();self.select_chat();self.reply('request')
+        self.page.get_by_label('小さいタスクの追加',exact=True).check();self.send('回答に沿った新しい作業')
+        saved=self.stored()[0];added=saved['subtasks'][0]['smallTasks'][-1];reply=saved['progressHistory'][-1]
+        self.assertFalse(added['completed']);self.assertFalse(added['waiting'])
+        self.assertFalse(saved['subtasks'][0]['smallTasks'][0].get('completed'))
+        self.page.get_by_role('button',name='テーブル表示',exact=True).click()
+        old_row=self.summary_row('small:p:old');new_row=self.summary_row('small:p:'+added['id'])
+        expect(old_row.get_by_role('cell',name='結論済み',exact=True)).to_be_visible()
+        expect(old_row.locator('[data-summary-conclusion="confirmed"]')).to_have_text(added['title'])
+        expect(new_row.get_by_role('cell',name='未進捗',exact=True)).to_be_visible()
+        old_row.get_by_role('button',name='行設定: 元の作業',exact=True).click()
+        settings=self.page.get_by_role('dialog',name='進捗テーブルの行設定',exact=True)
+        settings.get_by_label('相手待ちタスクに分割',exact=True).check();settings.get_by_role('button',name='閉じる',exact=True).click()
+        row=self.summary_row('waiting:request')
+        expect(row.get_by_role('cell',name='結論済み',exact=True)).to_be_visible()
+        expect(row.locator('[data-summary-conclusion="confirmed"]')).to_have_text(added['title'])
+        expect(self.summary_row('waiting:other-request').get_by_role('cell',name='相手待ち',exact=True)).to_be_visible()
+        expect(new_row.get_by_role('cell',name='未進捗',exact=True)).to_be_visible()
+        row.get_by_role('button',name='トークへ移動: '+added['title'],exact=True).click()
+        expect(self.entry(reply['id']).first).to_be_focused()
+        self.page.reload();self.progress();self.select_chat();self.page.get_by_role('button',name='テーブル表示',exact=True).click()
+        expect(row.get_by_role('cell',name='結論済み',exact=True)).to_be_visible()
+        expect(new_row.get_by_role('cell',name='未進捗',exact=True)).to_be_visible()
+
+    def test_summary_existing_task_replies_use_current_names_in_conclusions_copy_and_excel(self):
+        import zipfile
+        import xml.etree.ElementTree as ET
+        root=dict(id='root',kind='comment',text='全体の依頼',status='waiting',subtaskIds=[])
+        parent=dict(id='parent',kind='comment',text='親の依頼',status='waiting',subtaskIds=['p'])
+        old=dict(id='old-request',kind='comment',text='小さい作業の依頼',status='waiting',subtaskIds=['p'],smallTaskId='old',smallTaskTitle='元の作業')
+        active=dict(id='active',kind='comment',text='通常の進捗',status='active',subtaskIds=['p'],smallTaskId='active-small',smallTaskTitle='通常作業')
+        new_small=dict(id='root-reply',kind='comment',text='以前の作業名',status='active',addedSmallTask=True,smallTaskId='new',smallTaskTitle='以前の作業名',subtaskIds=['p'],quote=root)
+        new_todo=dict(id='parent-reply',kind='comment',text=FUTURE+'までに【以前のやるべきこと】',status='active',addedSubtask=True,subtaskIds=['next'],subtaskTitles=['以前のやるべきこと'],quote=parent)
+        old_reply=dict(new_todo,id='old-reply',subtaskIds=['small-next'],subtaskTitles=['小さい作業から追加'],quote=old)
+        normal_reply=dict(new_small,id='normal-reply',smallTaskId='normal-new',smallTaskTitle='通常の追加作業',text='通常の追加作業',quote=active)
+        item=task(progressEnabled=True,progressStage='doing',progressHistory=[root,parent,old,active,new_small,new_todo,old_reply,normal_reply])
+        item['subtasks']=[dict(id='p',title='依頼の親',smallTasks=[dict(id='old',title='元の作業',progressTableSplitWaiting=True),dict(id='active-small',title='通常作業'),dict(id='new',title='現在の作業名'),dict(id='normal-new',title='通常の追加作業')]),dict(id='next',title='現在のやるべきこと'),dict(id='small-next',title='小さい作業から追加')]
+        table=self.open_summary(item);saved=self.stored()
+        for id,title in [('waiting:root','現在の作業名'),('waiting:parent','現在のやるべきこと'),('waiting:old-request','小さい作業から追加')]:
+            row=self.summary_row(id)
+            expect(row.get_by_role('cell',name='結論済み',exact=True)).to_be_visible()
+            expect(row.locator('[data-summary-conclusion="confirmed"]')).to_have_text(title)
+        expect(self.summary_row('small:p:new').get_by_role('cell',name='未進捗',exact=True)).to_be_visible()
+        expect(self.summary_row('small:p:active-small').get_by_role('cell',name='進捗中',exact=True)).to_be_visible()
+        expect(self.summary_row('small:p:normal-new').get_by_role('cell',name='未進捗',exact=True)).to_be_visible()
+        table.get_by_label('進捗テーブルのステータス',exact=True).select_option('結論済み')
+        self.ctx.grant_permissions(['clipboard-read','clipboard-write'])
+        table.get_by_role('button',name='テーブルをコピー',exact=True).click()
+        expect(table.get_by_role('status')).to_contain_text('3行をコピー')
+        copied=self.page.evaluate('navigator.clipboard.readText()')
+        self.assertIn('現在のやるべきこと',copied);self.assertIn('現在の作業名',copied);self.assertNotIn('までに【',copied)
+        with self.page.expect_download() as event:table.get_by_role('button',name='Excel出力',exact=True).click()
+        with zipfile.ZipFile(event.value.path()) as archive:sheet=ET.fromstring(archive.read('xl/worksheets/sheet1.xml'))
+        ns={'s':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+        rows=sheet.findall('s:sheetData/s:row',ns)[1:]
+        conclusions=[row.findall('s:c',ns)[3].find('s:is/s:t',ns).text for row in rows]
+        self.assertCountEqual(conclusions,['現在の作業名','現在のやるべきこと','小さい作業から追加'])
+        self.assertEqual(self.stored(),saved)
+
+    def test_summary_excludes_big_task_status_rows_from_display_copy_and_excel(self):
+        import zipfile
+        import xml.etree.ElementTree as ET
+        item=task(progressEnabled=True,progressStage='doing',waiting=True)
+        item['subtasks']=[dict(id='p',title='親の手動依頼',waiting=True,smallTasks=[dict(id='a',title='一覧に残す小さい作業')])]
+        item['progressHistory']=[dict(id='root-talk',kind='comment',text='大タスク全体の進捗',status='active',subtaskIds=[],tableWaitingScope='task')]
+        table=self.open_summary(item)
+        expect(self.summary_row('waiting-scope:task')).to_have_count(0)
+        expect(table).not_to_contain_text(item['title'])
+        expect(self.summary_row('small:p:a')).to_be_visible()
+        expect(self.summary_row('waiting-scope:subtask:p')).to_be_visible()
+        self.ctx.grant_permissions(['clipboard-read','clipboard-write'])
+        table.get_by_role('button',name='テーブルをコピー',exact=True).click()
+        expect(table.get_by_role('status')).to_contain_text('2行をコピー')
+        copied=self.page.evaluate('navigator.clipboard.readText()')
+        self.assertNotIn(item['title'],copied);self.assertIn('一覧に残す小さい作業',copied)
+        with self.page.expect_download() as event:table.get_by_role('button',name='Excel出力',exact=True).click()
+        with zipfile.ZipFile(event.value.path()) as archive:
+            sheet=ET.fromstring(archive.read('xl/worksheets/sheet1.xml'))
+        ns={'s':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+        values=[node.text or '' for node in sheet.findall('.//s:t',ns)]
+        self.assertNotIn(item['title']+'（相手待ち）',values);self.assertEqual(len(sheet.findall('s:sheetData/s:row',ns)),3)
+        self.page.get_by_role('button',name='トーク表示',exact=True).click()
+        box=self.page.get_by_label('進捗コメント',exact=True);box.fill('全体の個別依頼');box.press('Alt+Enter')
+        source=self.stored()[0]['progressHistory'][-1]
+        self.page.get_by_role('button',name='テーブル表示',exact=True).click()
+        expect(self.summary_row('waiting:'+source['id'])).to_contain_text('全体の個別依頼')
+        expect(self.summary_row('waiting-scope:task')).to_have_count(0)
+
+    def test_summary_pending_waits_ignore_note_replies_and_prior_answers(self):
+        item=task(progressEnabled=True,progressStage='doing')
+        item['subtasks']=[dict(id='p',title='依頼の親',smallTasks=[dict(id='a',title='複数の依頼'),dict(id='manual',title='設定による相手待ち',waiting=True)]),dict(id='manual-parent',title='手動の相手待ち',waiting=True)]
+        records=[]
+        def entry(id,text,parent='',small='',**extra):
+            value=dict(id=id,kind='comment',text=text,status='active',subtaskIds=[parent] if parent else [])
+            if small:value.update(smallTaskId=small,smallTaskTitle=small)
+            value.update(extra);records.append(value);return value
+        root=entry('root','最初の全体依頼',status='waiting')
+        followup=entry('followup','全体の追加依頼',status='waiting',quote=root)
+        entry('root-note','返信ではない通常コメント',status='note',plainComment=True,quote=followup)
+        parent=entry('parent','親への未解決依頼',parent='p',status='waiting')
+        entry('parent-note','依頼を引用したメモ',parent='p',status='note',plainComment=True,quote=parent)
+        answered=entry('answered','回答済みの依頼',parent='p',small='a',status='waiting')
+        entry('answer','回答を受領した',parent='p',small='a',quote=answered)
+        pending=entry('pending','別件の未回答依頼',parent='p',small='a',status='waiting')
+        entry('small-note','未回答のまま残すメモ',parent='p',small='a',status='note',plainComment=True,quote=pending)
+        entry('manual-talk','設定した相手待ち中の進捗',parent='p',small='manual')
+        entry('manual-note','手動依頼への参考メモ',parent='manual-parent',status='note',plainComment=True,tableWaitingScope='subtask:manual-parent')
+        item['progressHistory']=records
+        table=self.open_summary(item)
+        for id in ['waiting:root','waiting:parent','small:p:a','small:p:manual','waiting-scope:subtask:manual-parent']:
+            expect(self.summary_row(id).get_by_role('cell',name='相手待ち',exact=True)).to_be_visible()
+        expect(self.summary_row('waiting:followup')).to_have_count(0)
+        self.page.get_by_role('button',name='トーク表示',exact=True).click()
+        self.expand_talks()
+        for id in ['followup','parent','pending']:
+            expect(self.entry(id).locator(':scope > div')).to_have_class(re.compile(r'\bbg-green-50\b'))
+        self.page.get_by_role('button',name='テーブル表示',exact=True).click()
+        table.get_by_label('進捗テーブルのステータス',exact=True).select_option('相手待ち')
+        expect(self.summary_row('small:p:a')).to_be_visible()
+        expect(self.summary_row('waiting:root')).to_be_visible()
+
+    def test_summary_waiting_chain_status_tracks_replies_before_and_after_split(self):
+        source=dict(id='request',kind='comment',text='最初の依頼',status='waiting',subtaskIds=['p'],smallTaskId='a',smallTaskTitle='返信の確認')
+        item=task(progressEnabled=True,progressStage='doing',progressHistory=[source])
+        item['subtasks']=[dict(id='p',title='依頼の親',smallTasks=[dict(id='a',title='返信の確認')])]
+        table=self.open_summary(item)
+        row=self.summary_row('small:p:a')
+        expect(row.get_by_role('cell',name='相手待ち',exact=True)).to_be_visible()
+        self.page.get_by_role('button',name='トーク表示',exact=True).click()
+        self.reply('request')
+        box=self.page.get_by_label('進捗コメント',exact=True);box.fill('回答に続く再確認依頼');box.press('Alt+Enter')
+        followup=self.stored()[0]['progressHistory'][-1]
+        expect(self.entry(followup['id']).locator(':scope > div')).to_have_class(re.compile(r'\bbg-green-50\b'))
+        self.page.get_by_role('button',name='テーブル表示',exact=True).click()
+        expect(row.get_by_role('cell',name='相手待ち',exact=True)).to_be_visible()
+        row.get_by_role('button',name='行設定: 返信の確認',exact=True).click()
+        settings=self.page.get_by_role('dialog',name='進捗テーブルの行設定',exact=True)
+        settings.get_by_label('相手待ちタスクに分割',exact=True).check();settings.get_by_role('button',name='閉じる',exact=True).click()
+        row=self.summary_row('waiting:request')
+        expect(row.get_by_role('cell',name='相手待ち',exact=True)).to_be_visible()
+        expect(self.summary_row('waiting:'+followup['id'])).to_have_count(0)
+        row.get_by_role('button',name='トークへ移動: 回答に続く再確認依頼',exact=True).click()
+        self.reply(followup['id']);box.fill('状況を記録するだけのメモ');box.press('Shift+Enter')
+        self.page.get_by_role('button',name='テーブル表示',exact=True).click()
+        expect(row.get_by_role('cell',name='相手待ち',exact=True)).to_be_visible()
+        row.get_by_role('button',name='トークへ移動: 状況を記録するだけのメモ',exact=True).click()
+        self.reply(followup['id']);self.send('再確認の回答を受領')
+        self.page.get_by_role('button',name='テーブル表示',exact=True).click()
+        expect(row.get_by_role('cell',name='進捗中',exact=True)).to_be_visible()
+        row.get_by_role('button',name='このトークを結論にする',exact=True).click()
+        expect(row.get_by_role('cell',name='結論済み',exact=True)).to_be_visible()
+        self.page.reload();self.progress();self.select_chat();self.page.get_by_role('button',name='テーブル表示',exact=True).click()
+        expect(row.get_by_role('cell',name='結論済み',exact=True)).to_be_visible()
+
     def test_summary_statuses_scope_and_small_task_scope_is_disabled(self):
         table=self.open_summary()
         expected={'none':'未進捗','premise':'未進捗','active':'進捗中','waiting':'相手待ち','replied':'進捗中','done':'結論済み','closed':'結論済み'}
