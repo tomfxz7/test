@@ -30,7 +30,8 @@ import {
   Table2,
   Minus,
   Home,
-  MessageSquare
+  MessageSquare,
+  Filter
 } from 'lucide-react';
 
 // --- IndexedDB Configuration & Utils ---
@@ -930,6 +931,23 @@ const progressTables = text => {
     } else offset += line.length + 1;
   }
   return result;
+};
+const progressTalkTypes = [['all','すべて'],['image','画像あり'],['link','リンクあり'],['table','表あり']];
+const progressTalkStatuses = [['all','すべて'],['progress','進捗'],['waiting','相手待ち'],['replied','返信済み'],['conclusion','結論・完了'],['comment','ただのコメント'],['premise','前提メモ'],['blocked','タスク待ち'],['overdue','期限超過']];
+const progressTalkMatchesFilters = (entry, task, type, status) => {
+  if (type !== 'all') {
+    const text = typeof entry.text === 'string' ? entry.text : '';
+    const matches = type === 'image' ? progressMediaItems(entry.images).some(image => typeof image.src === 'string' && image.src.trim())
+      : type === 'link' ? progressMediaItems(entry.links).some(link => progressSafeUrl(link.url)) || progressAllTextLinks(text, entry.textLinks).length > 0
+      : type === 'table' && progressTables(text).length > 0;
+    if (!matches) return false;
+  }
+  if (status === 'all') return true;
+  if (status === 'premise') return !!entry.assumptionMemo;
+  if (status === 'comment') return !!entry.plainComment && !entry.assumptionMemo;
+  if (status === 'conclusion') return !!entry.isConclusion || (!progressEntryIsNote(entry) && progressEntryLabel(entry, task) === '完了');
+  if (progressEntryIsNote(entry) || (status === 'progress' && entry.isConclusion)) return false;
+  return ({ progress: '進捗', waiting: '相手待ち', replied: '返信済み', blocked: 'タスク待ち', overdue: '期限超過' })[status] === progressEntryLabel(entry, task);
 };
 const ProgressTable = ({ rows }) => <span className="block max-w-full overflow-x-auto my-2">
   <table aria-label="トークの表" className="w-full border-collapse" style={{ minWidth: rows[0].length * 100 }}>
@@ -3423,6 +3441,9 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
   const neutralComment = plainComment || assumptionMemo;
   const [isConclusion, setIsConclusion] = useState(false);
   const [query, setQuery] = useState('');
+  const [talkType, setTalkType] = useState('all');
+  const [talkStatus, setTalkStatus] = useState('all');
+  const filteringTalks = talkType !== 'all' || talkStatus !== 'all';
   const [filterId, setFilterId] = useState('');
   const [filterSmallId, setFilterSmallId] = useState('');
   const [filterOther, setFilterOther] = useState(false);
@@ -3471,13 +3492,13 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
   const scopeSmall = getProgressSmallTasks(scopeParent).find(small => small.id === filterSmallId);
   const scopeDependencies = scopeSmall ? pendingProgressDependencies(task, scopeSmall) : [];
   const showEntry = entry => showResolvedWaiting || !isResolvedProgressWaiting(entry);
-  const visibleHistory = history.filter(entry => ((!filterOther || otherIds.has(entry.id)) && !(filterSmallId && entry.addedSmallTask && entry.smallTaskId === filterSmallId) && !(filterId && !filterSmallId && entry.addedSubtask && entry.subtaskIds?.includes(filterId)) && showEntry(entry) && (!filterSmallId || entry.smallTaskId === filterSmallId || entry.completedSmallTaskId === filterSmallId || entry.quote?.smallTaskId === filterSmallId || (entry.isConclusion && progressConclusionTarget(entry).smallTaskId === filterSmallId)) && (!filterId || progressEntryParentIds(entry).includes(filterId))) && (!query.trim() || [entry.text, ...progressMediaItems(entry.textLinks).map(link => link.url), ...(entry.subtaskTitles || []), ...progressEntrySubtaskTitles(task, entry), entry.smallTaskTitle, ...progressMediaItems(entry.images).map(image => image.name), ...progressMediaItems(entry.links).flatMap(link => [link.label, link.url]), entry.createdAt, entry.dueDate, progressQuoteSearchText(entry.quote)].filter(Boolean).join(' ').toLowerCase().includes(query.trim().toLowerCase())));
+  const visibleHistory = history.filter(entry => ((!filterOther || otherIds.has(entry.id)) && (filteringTalks || (!(filterSmallId && entry.addedSmallTask && entry.smallTaskId === filterSmallId) && !(filterId && !filterSmallId && entry.addedSubtask && entry.subtaskIds?.includes(filterId)))) && showEntry(entry) && (!filterSmallId || entry.smallTaskId === filterSmallId || entry.completedSmallTaskId === filterSmallId || entry.quote?.smallTaskId === filterSmallId || (entry.isConclusion && progressConclusionTarget(entry).smallTaskId === filterSmallId)) && (!filterId || progressEntryParentIds(entry).includes(filterId))) && (!query.trim() || [entry.text, ...progressMediaItems(entry.textLinks).map(link => link.url), ...(entry.subtaskTitles || []), ...progressEntrySubtaskTitles(task, entry), entry.smallTaskTitle, ...progressMediaItems(entry.images).map(image => image.name), ...progressMediaItems(entry.links).flatMap(link => [link.label, link.url]), entry.createdAt, entry.dueDate, progressQuoteSearchText(entry.quote)].filter(Boolean).join(' ').toLowerCase().includes(query.trim().toLowerCase())) && progressTalkMatchesFilters(entry, task, talkType, talkStatus));
   const scrollHistory = bottom => {
     followLatestRef.current = bottom;
     const element = historyRef.current;
     if (element) element.scrollTop = bottom ? element.scrollHeight : 0;
   };
-  React.useLayoutEffect(() => { scrollHistory(true); }, [task.id, filterId, filterSmallId, filterOther, smallTaskTarget?.requestId]);
+  React.useLayoutEffect(() => { scrollHistory(true); }, [task.id, filterId, filterSmallId, filterOther, talkType, talkStatus, smallTaskTarget?.requestId]);
   React.useLayoutEffect(() => {
     if (followLatestRef.current && allowFollowRef.current) scrollHistory(true);
   }, [history.length, history[history.length - 1]?.id]);
@@ -3511,6 +3532,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
   };
   const navigateQuote = quote => {
     if (history.some(entry => entry.id === quote.id)) {
+      setTalkType('all'); setTalkStatus('all');
       chooseThreadScope();
       revealEntryGroups(history.find(entry => entry.id === quote.id));
       setJumpRequest({ id: quote.id, requestId: createProgressId() });
@@ -3807,9 +3829,10 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
   const rows = [];
   const seenGroups = new Set();
   const otherEntries = visibleHistory.filter(entry => otherIds.has(entry.id));
-  const groupOther = !filterId && !filterSmallId && !filterOther && todoThreads.size > 0;
+  const groupOther = !filteringTalks && !filterId && !filterSmallId && !filterOther && todoThreads.size > 0;
   if (groupOther && (!query.trim() || otherEntries.length)) rows.push({ otherGroup: true });
-  if (filterId && !filterSmallId) rows.push(...smallRows(visibleHistory, filterId));
+  if (filteringTalks) rows.push(...visibleHistory.map(entry => ({ entry })));
+  else if (filterId && !filterSmallId) rows.push(...smallRows(visibleHistory, filterId));
   else visibleHistory.forEach(entry => {
     const parentId = progressEntryParentIds(entry).find(id => todoThreads.has(id));
     const todoGroup = !filterSmallId && todoThreads.get(parentId);
@@ -3817,7 +3840,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
       if (!seenGroups.has(`todo:${todoGroup.id}`)) { seenGroups.add(`todo:${todoGroup.id}`); rows.push({ todoGroup }); }
     } else if (!groupOther || !otherIds.has(entry.id)) rows.push({ entry });
   });
-  if (!filterId && !filterSmallId && !filterOther) todoThreads.forEach(group => {
+  if (!filteringTalks && !filterId && !filterSmallId && !filterOther) todoThreads.forEach(group => {
     if (!seenGroups.has(`todo:${group.id}`) && (!filterId || group.id === filterId)
       && (!query.trim() || group.title.toLowerCase().includes(query.trim().toLowerCase()))) rows.push({ todoGroup: group });
   });
@@ -3956,6 +3979,16 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
     <div className="flex items-center justify-between gap-2 px-3 py-2 border-b bg-white shrink-0 min-w-0">
       <div aria-label="トークのタイトル" className="min-w-0 flex-1"><h3 className="text-sm font-bold text-gray-900 truncate" title={threadTitle}>{threadTitle}</h3></div>
     <div role="group" aria-label="進捗リストの表示切替" className="flex gap-1 shrink-0 text-xs">
+      {!tableView && <details data-talk-filters className="relative" onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); e.currentTarget.open = false; e.currentTarget.querySelector('summary')?.focus(); } }}>
+        <summary aria-label="トークの絞り込みを開閉" className={`flex cursor-pointer list-none items-center gap-1 rounded border px-2 py-0.5 ${filteringTalks ? 'bg-blue-50 text-blue-700' : ''}`}><Filter size={12}/>絞り込み{filteringTalks && <span aria-label="絞り込み中" className="h-1.5 w-1.5 rounded-full bg-blue-600"/>}</summary>
+        <div role="group" aria-label="トークの絞り込み" className="absolute right-0 top-full z-40 mt-2 w-72 max-w-[calc(100vw-2rem)] rounded-lg border bg-white p-3 shadow-lg space-y-3">
+          <label className="flex items-center gap-2">内容<select aria-label="トークの内容で絞り込み" value={talkType} onChange={e => setTalkType(e.target.value)} className="min-w-0 flex-1 rounded border bg-white px-2 py-1">{progressTalkTypes.map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          <label className="flex items-center gap-2">ステータス<select aria-label="トークのステータスで絞り込み" value={talkStatus} onChange={e => setTalkStatus(e.target.value)} className="min-w-0 flex-1 rounded border bg-white px-2 py-1">{progressTalkStatuses.map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          <div className="flex flex-wrap justify-between gap-2"><span role="status" aria-label="絞り込み対象のトーク件数" className="text-gray-500">{visibleHistory.length}件</span>
+            {filteringTalks && <button type="button" onClick={() => { setTalkType('all'); setTalkStatus('all'); }} className="text-blue-700 underline">種類・ステータスを解除</button>}
+          </div>
+        </div>
+      </details>}
       <button type="button" aria-pressed={!tableView} onClick={() => onTableViewChange(false)} className={`rounded border px-2 py-0.5 ${!tableView ? 'bg-blue-50 text-blue-700' : ''}`}>トーク表示</button>
       <button type="button" aria-pressed={tableView} onClick={() => { if (filterOther) chooseThreadScope(); else if (filterSmallId) chooseThreadScope(scopeParent?.id || '', ''); setSelectingReply(false); onTableViewChange(true); }} className={`rounded border px-2 py-0.5 ${tableView ? 'bg-blue-50 text-blue-700' : ''}`}>テーブル表示</button>
     </div>
@@ -3964,7 +3997,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
     {selectingReply && <section aria-label="返信元の選択" className="shrink-0 flex flex-wrap items-center gap-2 border-b bg-blue-50 px-3 py-2 text-xs text-blue-800"><p className="flex-1">表示中のトークの「返信元にする」を押してください。</p><button type="button" className="rounded border bg-white px-2 py-1" onClick={() => setSelectingReply(false)}>選択を終了</button></section>}
     <div ref={historyRef} role="log" aria-label="進捗履歴" onScroll={e => { const el = e.currentTarget; if (el.scrollHeight - el.clientHeight - el.scrollTop <= 8) followLatestRef.current = true; }} onWheel={e => { if (e.deltaY < 0) followLatestRef.current = false; }} onPointerDown={() => { followLatestRef.current = false; }} onTouchStart={() => { followLatestRef.current = false; }} onKeyDown={e => { if (['ArrowUp', 'PageUp', 'Home'].includes(e.key)) followLatestRef.current = false; }} onLoadCapture={() => { if (followLatestRef.current && allowFollowRef.current) scrollHistory(true); }} className={`${tableView ? 'hidden' : ''} flex-1 overflow-y-auto min-h-0 p-4 bg-slate-100`}>
       <div ref={historyContentRef} className="space-y-4">
-      {!rows.length && <p className="text-center text-sm text-gray-400 py-8">{query.trim() ? '一致する履歴はありません。' : 'この範囲のコメントはまだありません。'}</p>}
+      {!rows.length && <p className="text-center text-sm text-gray-400 py-8">{filteringTalks ? '条件に一致するトークはありません。' : query.trim() ? '一致する履歴はありません。' : 'この範囲のコメントはまだありません。'}</p>}
       {[...rows].sort((a, b) => Number(!!b.entry?.assumptionMemo) - Number(!!a.entry?.assumptionMemo)).map(renderRow)}
       </div>
     </div>
@@ -4267,6 +4300,76 @@ const reportRichText = html => {
   template.content.querySelectorAll('p,div,li,h1,h2,h3,h4,tr').forEach(el => el.append('\n'));
   return template.content.textContent.replace(/\u00a0/g, ' ').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 };
+const reportWritingPrompt = [
+  '以下の記録を素材に、対象期間の週報を日本語で作成してください。読み手は課長です。',
+  '課長が短時間で「何のための案件か」「どういう結論・現状か」「何が残り、いつ何をするか」を把握できる文章にしてください。',
+  '案件名を見出しにし、結論や現状を先に示してください。記録にある前提・背景は理解に必要な範囲で1文程度に要約し、関連する結論の補足として添えてください。経緯の羅列やトークの逐語転載は避けてください。',
+  '1つの箇条書きは1つの要点に絞り、決定事項・方針変更・主要な期限や数値・重大な懸念など、判断に直結する箇所だけを太字にしてください。全文を太字にはしません。',
+  'Wordに貼り付ける本文は、実際の箇条書き・階層・太字で読みやすくしてください。Markdownで返す場合は階層付き箇条書きと **太字** を使ってください。', '',
+  '### 案件ごとに書き方を自動選択',
+  '以下の4パターンから、AIが案件の目的と実際の記録内容を見て最も適した1つを選んでください。タスク名だけで判断せず、案件ごとに選び、週報全体を同じ型に統一する必要はありません。',
+  '判断の軸が異なる話題が1案件に混在するときだけ話題を分け、それぞれに適した型を使ってください。同じ情報を複数の型で重複掲載しないでください。',
+  '部品・評価結果の比較や移行可否が主題なら1、進め方や意思決定・プロジェクト全体の進捗が主題なら2、単純な作業なら3、複数の依頼先への連絡・確認の管理が主題なら4を選んでください。',
+  '複数社が登場しても、主題が部品評価なら1、意思決定なら2を優先し、依頼先別に整理することが読み手の理解に役立つ場合に4を使ってください。パターン名・番号・分類理由は週報本文に載せず、完成した週報本文を出力してください。', '',
+  '### 1. 部品・評価系',
+  '部品や評価ごとにまとめ、色・仕様・評価条件によって結果が異なる場合は、その違いが分かる単位に分けてください。',
+  '各項目は「現在のステータス・結論 → 残件 → 予定」の順に、短い箇条書きで記載してください。合否・量産移行可否・承認やGOの発行／取り消しなど、判断結果があれば現状の先頭に示してください。',
+  '不具合は現象、判明している原因または未特定であること、対策、再評価後の判断事項を必要な範囲で残してください。残件と予定は対応させ、記録がある日付・担当・判定条件を添えてください。',
+  '構成例（角括弧の中は記録で置き換え、例の内容を事実として使わない）：',
+  '・[部品名／評価項目]',
+  '  ・現状・結論：[現在の判定・確認結果・重要な変更]',
+  '  ・残件：[未解決の確認事項・対策・再評価の要否]',
+  '  ・予定：[実施日・次の作業・結果確認後に判断する内容]', '',
+  '### 2. 進め方確認・プロジェクト進捗系',
+  '冒頭は「結論」の箇条書きから始めてください。上位の箇条書きは決まったこと・確認できたこと・現在の方針とし、背景・理由・条件・補足は、その結論の下位の箇条書きにしてください。',
+  '重要な決定、変更点、主要な期日・数値、未解決で判断や日程に影響する事項は、該当する要点を太字にしてください。未合意・未確認の事項を決定済みの結論として書かないでください。',
+  '主な残課題や懸念がある場合は、結論の後に簡潔にまとめ、次の対応・担当・期限を記録の範囲で添えてください。課長への判断依頼が記録されている場合は、依頼内容と必要時期を明示してください。',
+  '自分側と相手側の両方にTodoがある場合は、結論の後に「自分側のTodo」「相手側のTodo」の見出しを設け、それぞれ独立した別の表にまとめてください。会社・部署名が記録から分かる場合は、その名称を見出しに使ってください。',
+  '相手先が複数ある場合は、相手先ごとにTodoの表を分けてください。Todoを1行ずつ記載し、現在の状況・次の対応・担当・期限など、記録にある必要な情報を簡潔に添えてください。対応主体が不明なものは「担当未確認」と明示し、推測で振り分けないでください。',
+  '構成例：',
+  '【結論】',
+  '・[結論・決定事項・現在の方針]',
+  '  ・[その背景・理由・条件・補足]',
+  '【主な残課題／Todo】（該当する場合）',
+  '自分側と相手側の両方にTodoがある場合：',
+  '【自分側のTodo】',
+  '[自分側のTodoを1行ずつまとめた表]',
+  '【相手側：[相手先名]のTodo】',
+  '[その相手先のTodoを1行ずつまとめた別の表。相手先が複数なら表を分ける]',
+  '対応主体が1つの場合は、その残課題を簡潔にまとめてください。',
+  '【懸念】（該当する場合）',
+  '・[判断や日程への影響・対応方針]', '',
+  '### 3. シンプルなタスク系',
+  '「進捗」と「予定」だけのシンプルな構成にし、それぞれ短い箇条書きで記載してください。背景が必要なら進捗の最初の箇条書きに短く織り込み、独立した背景・結論・課題の見出しを増やさないでください。',
+  '進捗には今回実施したことと到達点、予定には残作業と次の実施日・期限を記録の範囲で記載してください。',
+  '構成例：',
+  '【進捗】',
+  '・[目的に必要な短い背景と、実施内容・到達点]',
+  '【予定】',
+  '・[残作業・次の対応・実施日や期限]', '',
+  '### 4. 複数パートナーへの依頼・確認系',
+  '複数の依頼先がある案件は、パートナーごとに見出しを分けてください。各パートナーへの依頼事項・確認事項・進捗を短い箇条書きでまとめ、依頼済み・受領済み・回答待ち・確認中などの違いを明確にしてください。',
+  '回答で解消した依頼と、まだ回答が必要な事項を整理し、次の対応や回答予定日が記録されていれば同じ項目に添えてください。共通事項を各社の欄へ重複転載しないでください。',
+  '構成例：',
+  '【[パートナー名]】',
+  '・[依頼／確認事項と、その現在の進捗]',
+  '・[次の確認・対応・回答予定日や期限（記録がある場合）]', '',
+  '### 画像・図・リンクの活用（全パターン共通）',
+  '提供された画像・図・資料リンクは、週報を分かりやすくする材料として積極的に活用してください。本文だけでも結論と次の対応が分かる短い要約を残し、画像や資料で具体的な理解を補ってください。',
+  '画像・図は、対応する部品・評価結果・不具合・変更点・結論・Todoの説明のすぐ近くに挿入してください。記録にある対象や確認箇所、何を説明する画像かが分かる短いキャプションを添えてください。',
+  'リンクは、提供された資料名と正しいURLを保持し、資料の内容や用途が分かる名称のクリック可能なハイパーリンクとして、関連する結論・確認事項・Todoの近くに添えてください。根拠資料や評価結果へ読み手がすぐたどれるようにしてください。',
+  '判断に役立つ画像・資料を選び、同じ画像やリンクの重複掲載は避けてください。提供されていない画像・資料・URLを作らず、画像だけから未記録の原因や合否を断定しないでください。', '',
+  '### 根拠・期間・予定の扱い（全パターン共通）',
+  '実施内容・成果は「期間内の記録」を根拠にしてください。記録のない実施・完了・理由は推測せず、必要な箇所で未記録としてください。書式例の内容を実際の案件の事実として使わないでください。',
+  '「現在の状態」は出力時点の参考情報で、対象期間末の状態や期間内の実績とは限りません。日時のない結果メモも同様です。参照する場合は期間内の実績と区別してください。',
+  '「タスク全体の完了日／日時」が対象期間内の場合は、その完了記録を参照してください。過去の完了日時未記録タスクは、利用者の指定により期限日を完了日として扱います。代用である旨は残してください。',
+  '記録は投稿日時で抽出します。編集済みの本文は現在の保存内容であり、期間当時の本文を復元したものではありません。',
+  '前提メモは目的・背景・仮定です。進捗・成果・完了の実績として数えず、記載された前提が検証済みとも推測しないでください。期間外の前提メモは背景資料として参照し、未来の日付のメモは含めません。',
+  '引用は背景資料です。引用元の日付が対象期間外でも記載しますが、期間内の新規実績として二重計上しないでください。',
+  '完了記録は関連する項目の完了です。小さいタスクの完了を親タスク全体の完了と解釈しないでください。作業の追加や依頼の送付だけで、実施・評価・完了済みとも判断しないでください。',
+  '予定は記録された日付・担当・作業を優先し、未完了項目と期限から整理する場合は候補と明示してください。確定予定・目標・未定を区別し、記録にない日付や担当を補わないでください。次週に限らず、残件に対応する重要な直近の予定・期限を記載してください。',
+  '残件がないと明記された項目は「残件なし」と書けます。記録が見当たらないことを「残件なし」「問題なし」「完了」と解釈しないでください。空の見出しや不要な重複は増やさないでください。'
+];
 const buildWeeklyReport = ({ tasks, startDate, endDate, now = new Date(), onImage }) => {
   const reportTasks = tasks.filter(task => reportTaskIsEligible(task, startDate, endDate));
   const entriesByTask = reportTasks.map(task => ({ task, entries: reportPeriodEntries(task, startDate, endDate) }));
@@ -4279,16 +4382,7 @@ const buildWeeklyReport = ({ tasks, startDate, endDate, now = new Date(), onImag
     `時刻の基準: ${Intl.DateTimeFormat().resolvedOptions().timeZone || 'ブラウザーの現地時刻'}`,
     `選択タスク数: ${reportTasks.length}`, '',
     '## Copilotへの依頼',
-    '以下の記録を素材に、対象期間の週報を日本語で作成してください。',
-    '構成: 今週の実施内容・成果 / 未完了・相手待ち / 課題と理由 / 次週の予定候補。',
-    '実施内容・成果は「期間内の記録」を根拠にしてください。記録のない実施・完了・理由は推測せず、未記録としてください。',
-    '「現在の状態」は出力時点の参考情報で、対象期間末の状態や期間内の実績とは限りません。日時のない結果メモも同様です。',
-    '「タスク全体の完了日／日時」が対象期間内の場合は、その完了記録を参照してください。過去の完了日時未記録タスクは、利用者の指定により期限日を完了日として扱います。代用である旨は残してください。',
-    '記録は投稿日時で抽出します。編集済みの本文は現在の保存内容であり、期間当時の本文を復元したものではありません。',
-    '前提メモは目的・背景・仮定です。進捗・成果・完了の実績として数えず、記載された前提が検証済みとも推測しないでください。期間外の前提メモは背景資料として参照し、未来の日付のメモは含めません。',
-    '引用は背景資料です。引用元の日付が対象期間外でも記載しますが、期間内の新規実績として二重計上しないでください。',
-    '完了記録は関連する項目の完了です。小さいタスクの完了を親タスク全体の完了と解釈しないでください。',
-    '次週の予定は未完了項目と期限から候補を整理し、確定した予定と推測を区別してください。', '',
+    ...reportWritingPrompt, '',
     '## 期間内の記録サマリー',
     `期間内に完了したタスク: ${reportTasks.filter(task => reportTaskCompletedInPeriod(task, startDate, endDate)).length}件`,
     `うち期限日を完了日として扱ったタスク: ${reportTasks.filter(task => task.completed && reportCompletionUsesDueDate(task)).length}件`,

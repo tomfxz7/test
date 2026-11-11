@@ -139,6 +139,10 @@ class ProgressTests(unittest.TestCase):
     def entry(self,entry_id):
         return self.page.locator('[data-progress-entry-id="'+entry_id+'"]')
 
+    def open_talk_filters(self):
+        toggle=self.page.get_by_label('トークの絞り込みを開閉',exact=True)
+        if toggle.evaluate('node=>!node.parentElement.open'):toggle.click()
+
     def reply(self,entry_id):
         self.entry(entry_id).get_by_role('button',name='コメントに返信',exact=True).click()
         expect(self.page.get_by_role('region',name='返信先',exact=True)).to_be_visible()
@@ -4528,6 +4532,121 @@ class ProgressTests(unittest.TestCase):
         expect(self.page.get_by_role('region',name='返信先',exact=True)).to_contain_text('折りたたまれた依頼')
         self.page.get_by_role('button',name='編集をキャンセル',exact=True).click()
         self.assertNotIn('quote',next(entry for entry in self.stored()[0]['progressHistory'] if entry['id']=='root17'))
+
+    def talk_filter_fixture(self):
+        import base64
+        image=dict(id='img',name='確認画像.png',src='data:image/png;base64,'+base64.b64encode(self.progress_png()).decode())
+        item=task(progressEnabled=True,progressStage='doing')
+        item['subtasks']=[dict(id='p',title='絞り込みの親',smallTasks=[dict(id='a',title='絞り込みの小作業')])]
+        table='| 項目 | 内容 |\n| --- | --- |\n| 作業 | 確認 |'
+        plain=dict(id='plain',kind='comment',text='画像のない元コメント',status='active',subtaskIds=[])
+        image_entry=dict(plain,id='image',text='画像付きの全体連絡',images=[image])
+        item['progressHistory']=[plain,image_entry,
+            dict(plain,id='attachment',text='添付の資料',links=[dict(id='link',label='仕様書',url='https://example.com/spec')]),
+            dict(plain,id='inline',text='本文 https://example.com/inline'),
+            dict(plain,id='named',text='設計仕様',textLinks=[dict(start=0,end=4,url='https://example.com/named')]),
+            dict(plain,id='table',text='専用の表\n'+table),
+            dict(plain,id='bullets',text='• 一つ目\n• 二つ目'),
+            dict(plain,id='mixed',text='複合の表\n'+table,images=[image],links=[dict(id='mixed-link',url='https://example.com/mixed')]),
+            dict(plain,id='quoted-only',text='引用だけに画像がある返信',quote=image_entry),
+            dict(plain,id='null-media',text='添付なしの旧データ',images=[None],links=None,textLinks=None),
+            dict(plain,id='parent-origin',text='親の追加',subtaskIds=['p'],addedSubtask=True,images=[image]),
+            dict(plain,id='small-image',text='小作業の画像',subtaskIds=['p'],smallTaskId='a',smallTaskTitle='絞り込みの小作業',images=[image]),
+            dict(plain,id='small-plain',text='表示しない小作業の補足',subtaskIds=['p'],smallTaskId='a',smallTaskTitle='絞り込みの小作業'),
+            dict(plain,id='image-reply',text='元コメントを引用した画像',images=[image],quote=plain)]
+        return item
+
+    def test_talk_content_filters_show_only_own_images_links_and_tables(self):
+        self.seed([self.talk_filter_fixture()]);self.progress();self.select_chat();saved=self.stored()
+        self.open_talk_filters()
+        kind=self.page.get_by_label('トークの内容で絞り込み',exact=True)
+        log=self.page.get_by_role('log',name='進捗履歴',exact=True)
+        def ids():return log.locator('[data-progress-entry-id]').evaluate_all('(nodes)=>nodes.map(node=>node.dataset.progressEntryId)')
+        kind.select_option('image')
+        self.assertCountEqual(ids(),['image','mixed','parent-origin','small-image','image-reply'])
+        expect(log.locator('[data-todo-thread-id],[data-small-thread-id],[data-other-thread-id]')).to_have_count(0)
+        expect(self.page.get_by_label('絞り込み対象のトーク件数',exact=True)).to_have_text('5件')
+        self.page.get_by_role('button',name='絞り込みの親のトークを表示',exact=True).click()
+        self.assertCountEqual(ids(),['parent-origin','small-image'])
+        self.page.get_by_role('button',name='絞り込みの小作業のトークを表示',exact=True).click()
+        self.assertEqual(ids(),['small-image'])
+        self.select_chat();self.open_talk_filters()
+        kind.select_option('link');self.assertCountEqual(ids(),['attachment','inline','named','mixed'])
+        kind.select_option('table');self.assertCountEqual(ids(),['table','mixed'])
+        self.page.get_by_label('履歴を検索',exact=True).fill('専用の表')
+        self.assertEqual(ids(),['table'])
+        self.page.get_by_role('button',name='種類・ステータスを解除',exact=True).click()
+        expect(kind).to_have_value('all');expect(self.page.get_by_label('履歴を検索',exact=True)).to_have_value('専用の表')
+        self.assertEqual(self.stored(),saved)
+
+    def test_talk_status_and_content_filters_combine_with_scope_and_hidden_waits(self):
+        image=self.talk_filter_fixture()['progressHistory'][1]['images']
+        item=task(progressEnabled=True,progressStage='doing')
+        item['subtasks']=[dict(id='p',title='絞り込みの親',smallTasks=[dict(id='a',title='絞り込みの小作業'),dict(id='closed',title='完了した小作業',completed=True)]),dict(id='block',title='タスク待ちの作業',dependencies=[dict(kind='subtask',id='p',title='絞り込みの親')]),dict(id='late',title='期限超過の作業',dueDate=PAST)]
+        normal=dict(id='normal',kind='comment',text='通常の画像進捗',status='active',subtaskIds=[],images=image)
+        waiting=dict(normal,id='waiting',text='全体の未返信画像',status='waiting')
+        pending=dict(waiting,id='small-waiting',text='小作業の未返信画像',subtaskIds=['p'],smallTaskId='a',smallTaskTitle='絞り込みの小作業')
+        resolved=dict(pending,id='resolved',text='返信済みの画像依頼')
+        answer=dict(normal,id='answer',text='画像への返信',subtaskIds=['p'],smallTaskId='a',smallTaskTitle='絞り込みの小作業',quote=resolved)
+        item['progressHistory']=[normal,waiting,pending,resolved,answer,
+            dict(normal,id='conclusion',text='画像付き結論',isConclusion=True),
+            dict(normal,id='comment',text='画像付きコメント',status='note',plainComment=True),
+            dict(normal,id='premise',text='画像付き前提',status='note',assumptionMemo=True),
+            dict(normal,id='completion',text='完了した記録',status='completed',subtaskIds=['p'],smallTaskId='closed',completedSmallTaskId='closed'),
+            dict(normal,id='blocked-origin',text='待ち作業の追加',addedSubtask=True,subtaskIds=['block']),
+            dict(normal,id='overdue-origin',text='期限超過作業の追加',addedSubtask=True,subtaskIds=['late'])]
+        self.seed([item]);self.progress();self.select_chat();saved=self.stored()
+        self.open_talk_filters()
+        kind=self.page.get_by_label('トークの内容で絞り込み',exact=True);status=self.page.get_by_label('トークのステータスで絞り込み',exact=True)
+        log=self.page.get_by_role('log',name='進捗履歴',exact=True)
+        expected={'progress':['normal','answer'],'waiting':['waiting','small-waiting'],'replied':['resolved'],'conclusion':['conclusion','completion'],'comment':['comment'],'premise':['premise'],'blocked':['blocked-origin'],'overdue':['overdue-origin']}
+        for value,ids in expected.items():
+            with self.subTest(status=value):
+                status.select_option(value)
+                self.assertCountEqual(log.locator('[data-progress-entry-id]').evaluate_all('(nodes)=>nodes.map(node=>node.dataset.progressEntryId)'),ids)
+        kind.select_option('image');status.select_option('waiting')
+        self.page.get_by_role('button',name='絞り込みの親のトークを表示',exact=True).click()
+        expect(kind).to_have_value('image');expect(status).to_have_value('waiting')
+        expect(self.entry('waiting')).to_have_count(0);expect(self.entry('small-waiting')).to_be_visible()
+        self.page.get_by_role('button',name='絞り込みの小作業のトークを表示',exact=True).click()
+        expect(self.entry('small-waiting')).to_be_visible();expect(self.entry('answer')).to_have_count(0)
+        status.select_option('replied');expect(self.entry('resolved')).to_be_visible()
+        self.page.get_by_label('返信済みの相手待ちの表示',exact=True).select_option('hide')
+        expect(self.page.get_by_text('条件に一致するトークはありません。',exact=True)).to_be_visible()
+        self.page.get_by_label('返信済みの相手待ちの表示',exact=True).select_option('show')
+        expect(self.entry('resolved')).to_be_visible()
+        status.select_option('waiting');kind.select_option('table')
+        expect(self.page.get_by_text('条件に一致するトークはありません。',exact=True)).to_be_visible()
+        kind.select_option('image');self.card().get_by_role('button',name='その他のトークを表示',exact=True).click()
+        expect(self.entry('waiting')).to_be_visible();expect(self.entry('small-waiting')).to_have_count(0)
+        self.page.get_by_label('履歴を検索',exact=True).fill('見つからない画像')
+        expect(self.page.get_by_text('条件に一致するトークはありません。',exact=True)).to_be_visible()
+        self.assertEqual(self.stored(),saved)
+
+    def test_talk_filters_preserve_drafts_and_table_state_and_reveal_quoted_source(self):
+        self.seed([self.talk_filter_fixture()]);self.progress();self.select_chat();saved=self.stored()
+        self.entry('image-reply').get_by_role('button',name='コメントを編集',exact=True).click()
+        editor=self.page.get_by_label('コメントの編集',exact=True);editor.fill('編集中の本文を保持')
+        editor.press('Control+a');editor.press('Control+b');draft=editor.inner_html()
+        self.open_talk_filters()
+        kind=self.page.get_by_label('トークの内容で絞り込み',exact=True);status=self.page.get_by_label('トークのステータスで絞り込み',exact=True)
+        kind.select_option('image');status.select_option('waiting')
+        expect(editor).to_have_text('編集中の本文を保持');self.assertEqual(editor.inner_html(),draft)
+        self.page.get_by_role('button',name='テーブル表示',exact=True).click()
+        expect(self.page.get_by_role('group',name='トークの絞り込み',exact=True)).to_have_count(0)
+        expect(self.page.get_by_role('region',name='進捗テーブル',exact=True)).to_be_visible()
+        self.page.get_by_role('button',name='トーク表示',exact=True).click()
+        self.open_talk_filters()
+        expect(kind).to_have_value('image');expect(status).to_have_value('waiting')
+        self.assertEqual(editor.inner_html(),draft)
+        status.select_option('all')
+        self.page.get_by_label('トークの絞り込みを開閉',exact=True).press('Escape')
+        expect(self.page.get_by_role('group',name='トークの絞り込み',exact=True)).to_be_hidden()
+        self.entry('image-reply').get_by_role('button',name='引用元へ移動: 画像のない元コメント',exact=True).click()
+        expect(kind).to_have_value('all');expect(status).to_have_value('all')
+        expect(self.entry('plain')).to_be_focused();self.assertEqual(editor.inner_html(),draft)
+        self.page.get_by_role('button',name='編集をキャンセル',exact=True).click()
+        self.assertEqual(self.stored(),saved)
 
     def other_talks_fixture(self):
         item=task(progressEnabled=True,progressStage='doing')
