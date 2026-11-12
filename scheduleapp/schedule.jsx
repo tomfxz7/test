@@ -3490,34 +3490,43 @@ const parseAISummaryBundle = (markdown, task) => {
   return { summaries, count: todos.length };
 };
 const buildAIBundleSource = (sourceTask, snapshot, onImage) => {
-  const task = visibleProgressTask(sourceTask), todos = getProgressSubtasks(task), previous = sourceTask.aiSummaries || {};
+  const task = visibleProgressTask(sourceTask), todos = getProgressSubtasks(task), includePrevious = snapshot.includePrevious !== false;
+  const previous = includePrevious ? sourceTask.aiSummaries || {} : {};
   const root = previous[aiSummaryKey('task', task.id)];
   const lines = ['# 一括要約の出力形式（必須）',
     '大タスク全体の要約と、下記の各やるべきことの要約を、1回の回答にすべて出力してください。回答全体をMarkdownコードブロックで囲まないでください。',
     '以下のID付き見出しを順番どおりに、そのまま使用してください。IDを変更・省略・重複したり、未指定の項目を追加しないでください。角括弧のIDはアプリによる自動振り分けに必要なので、表示される本文として必ず残してください。',
     `# ${task.title.replace(/\n/g, ' ')} ${aiSummaryMarker('BATCH', snapshot.id)}`,
     `## 全体要約 ${aiSummaryMarker('TASK', task.id)}`, '（ここに案件全体を横断した要約。やるべきこと別に章立てせず、論点・判断テーマごとに結論、進捗、決定事項、未確定事項、優先順位、重要ポイント、ボールの所在、待ち条件、決定条件、今後の進め方と日程感を整理）'];
-  todos.forEach(st => lines.push(`## やるべきこと：${st.title.replace(/\n/g, ' ')} ${aiSummaryMarker('TODO', st.id)}`, '（ここにこの項目と配下の小さいタスクの要約。前回からの進捗も記載。記録がない場合も本文を記載）'));
-  lines.push('', '全体要約はやるべきこと別に章立てせず、複数の作業を横断した論点・判断テーマごとに整理してください。結論・重要ポイントを先に示し、前回から進んだこと、決定済み・未確定のこと、優先順位、だれがボールを持ち何を待っているか、何が分かればだれが何を決められるか、その後どういう順序・日程感で進める予定かを結び付けてください。担当・判断条件・日程・優先順位が不明なら創作せず明示してください。項目別要約はこの後の各AI_TODO見出しに別枠で記載します。',
-    '前回の全体要約がやるべきこと別の構成でも踏襲せず、横断的な構成に組み直してください。内容に合うテーマ分けは可能ですが、各作業の小要約を順番に並べるだけにしないでください。優先順位や日程を提案する場合は決定事項と区別してください。',
-    '前回の要約がある場合は、それを参考情報として、今回の記録と比較して要約し直してください。何が新しく進捗・変更・完了したか、継続中・未解決かを明示してください。前回の要約の誤りや古い状態は今回の根拠に合わせて修正してください。',
-    '「追加・更新」は記録の変化であり、必ずしも作業の進捗ではありません。追加記録がないだけで「進捗なし」と断定せず、前回比較の根拠が不足する場合は不明としてください。記録の除外・削除・非表示を完了とみなさないでください。',
-    '画面の検索や絞り込みにかかわらず、大タスク全体の表示対象の記録を出力しています。非表示のやるべきことは出力対象ではありません。', '', '# 前回の要約（参考情報）');
-  const appendPrevious = (kind, item) => {
-    const saved = previous[aiSummaryKey(kind, item.id)];
-    lines.push('', `## ${item.title}／${kind === 'task' ? '全体' : 'やるべきこと'}`);
-    if (!saved?.markdown) { lines.push('前回の要約はありません。'); return; }
-    lines.push(`要約保存日時: ${reportTimestamp(saved.updatedAt)}`, `前回の対象記録の基準日時: ${reportTimestamp(saved.sourceExportedAt)}`);
-    lines.push(saved.markdown.replace(/!\[([^\]]*)\]\(([^\s)]+)\)/g, (all, name, src) => summaryImageUrl(src) ? `\n画像: ${name || '前回要約の画像'}\n${onImage({ name: name || '前回要約の画像', src })}\n` : all));
-  };
-  appendPrevious('task', task); todos.forEach(st => appendPrevious('todo', st));
-  lines.push('', '# 前回との記録比較');
-  if (!root?.sourceEntries) lines.push('前回の対象記録の比較基準がありません。前回要約と今回の資料を比較し、判定できない変更は推測しないでください。');
-  else {
-    const added = Object.keys(snapshot.sourceEntries).filter(id => !(id in root.sourceEntries));
-    const updated = Object.keys(snapshot.sourceEntries).filter(id => id in root.sourceEntries && root.sourceEntries[id] !== snapshot.sourceEntries[id]);
-    const excluded = Object.keys(root.sourceEntries).filter(id => !(id in snapshot.sourceEntries));
-    lines.push(`前回の基準日時: ${reportTimestamp(root.sourceExportedAt)}`, `今回の基準日時: ${reportTimestamp(snapshot.exportedAt)}`, `追加された記録ID: ${added.join('、') || 'なし'}`, `更新された記録ID: ${updated.join('、') || 'なし'}`, `今回は対象から除外された記録: ${excluded.length}件（削除・非表示など。完了を意味しません）`);
+  todos.forEach(st => lines.push(`## やるべきこと：${st.title.replace(/\n/g, ' ')} ${aiSummaryMarker('TODO', st.id)}`, includePrevious ? '（ここにこの項目と配下の小さいタスクの要約。前回からの進捗も記載。記録がない場合も本文を記載）' : '（ここにこの項目と配下の小さいタスクの要約。今回の元記録だけから現状と進捗を整理。記録がない場合も本文を記載）'));
+  lines.push('', `全体要約はやるべきこと別に章立てせず、複数の作業を横断した論点・判断テーマごとに整理してください。結論・重要ポイントを先に示し、${includePrevious ? '前回から進んだこと' : '元のトークから分かる進捗'}、決定済み・未確定のこと、優先順位、だれがボールを持ち何を待っているか、何が分かればだれが何を決められるか、その後どういう順序・日程感で進める予定かを結び付けてください。担当・判断条件・日程・優先順位が不明なら創作せず明示してください。項目別要約はこの後の各AI_TODO見出しに別枠で記載します。`,
+    '内容に合うテーマ分けは可能ですが、各作業の小要約を順番に並べるだけにしないでください。優先順位や日程を提案する場合は決定事項と区別してください。',
+    '画面の検索や絞り込みにかかわらず、大タスク全体の表示対象の記録を出力しています。非表示のやるべきことは出力対象ではありません。');
+  if (includePrevious) {
+    lines.push('前回の全体要約がやるべきこと別の構成でも踏襲せず、横断的な構成に組み直してください。',
+      '前回の要約がある場合は、それを参考情報として、今回の記録と比較して要約し直してください。何が新しく進捗・変更・完了したか、継続中・未解決かを明示してください。前回の要約の誤りや古い状態は今回の根拠に合わせて修正してください。',
+      '「追加・更新」は記録の変化であり、必ずしも作業の進捗ではありません。追加記録がないだけで「進捗なし」と断定せず、前回比較の根拠が不足する場合は不明としてください。記録の除外・削除・非表示を完了とみなさないでください。', '', '# 前回の要約（参考情報）');
+    const appendPrevious = (kind, item) => {
+      const saved = previous[aiSummaryKey(kind, item.id)];
+      lines.push('', `## ${item.title}／${kind === 'task' ? '全体' : 'やるべきこと'}`);
+      if (!saved?.markdown) { lines.push('前回の要約はありません。'); return; }
+      lines.push(`要約保存日時: ${reportTimestamp(saved.updatedAt)}`, `前回の対象記録の基準日時: ${reportTimestamp(saved.sourceExportedAt)}`);
+      lines.push(saved.markdown.replace(/!\[([^\]]*)\]\(([^\s)]+)\)/g, (all, name, src) => summaryImageUrl(src) ? `\n画像: ${name || '前回要約の画像'}\n${onImage({ name: name || '前回要約の画像', src })}\n` : all));
+    };
+    appendPrevious('task', task); todos.forEach(st => appendPrevious('todo', st));
+    lines.push('', '# 前回との記録比較');
+    if (!root?.sourceEntries) lines.push('前回の対象記録の比較基準がありません。前回要約と今回の資料を比較し、判定できない変更は推測しないでください。');
+    else {
+      const added = Object.keys(snapshot.sourceEntries).filter(id => !(id in root.sourceEntries));
+      const updated = Object.keys(snapshot.sourceEntries).filter(id => id in root.sourceEntries && root.sourceEntries[id] !== snapshot.sourceEntries[id]);
+      const excluded = Object.keys(root.sourceEntries).filter(id => !(id in snapshot.sourceEntries));
+      lines.push(`前回の基準日時: ${reportTimestamp(root.sourceExportedAt)}`, `今回の基準日時: ${reportTimestamp(snapshot.exportedAt)}`, `追加された記録ID: ${added.join('、') || 'なし'}`, `更新された記録ID: ${updated.join('、') || 'なし'}`, `今回は対象から除外された記録: ${excluded.length}件（削除・非表示など。完了を意味しません）`);
+    }
+  } else {
+    lines.push('', '# 出力モード：前回AI要約なし（元記録から再生成）',
+      '保存済みのAI要約、その画像・URL・保存日時、および前回要約に基づく記録比較情報は、この資料に含めていません。',
+      '以前のAI要約や同じ会話内の過去の回答を参照・継承せず、今回添付された元のトークと現在の状態だけから独立して要約を作成してください。前の結論や優先順位を前提にしないでください。',
+      '前回要約との比較は行わず、進捗・方針変更は今回の元記録内の時系列から確認できる事実だけを整理してください。全体要約と各やるべきことのID付き見出しは、通常の一括要約と同じ形式を保持してください。');
   }
   lines.push('', buildAISummarySource({ task, title: task.title, history: (task.progressHistory || []).filter(isVisibleProgressEntry), onImage, query: '', talkType: 'all', talkStatus: 'all' }));
   return lines.join('\n');
@@ -4167,7 +4176,7 @@ const ProgressThread = ({ task: sourceTask, onUpdateTask, smallTaskTarget, showR
       {(filterSmallId || filterOther) && <p className="my-2 text-xs text-slate-500">{filterSmallId ? '親のやるべきことの要約を表示しています。' : '大タスク全体の要約を表示しています。'}</p>}
       {latestSummary ? <><p className="mt-1 mb-3 text-xs text-slate-500">最終保存: {new Date(latestSummary.updatedAt).toLocaleString('ja-JP')}</p><AISummaryMarkdown markdown={latestSummary.markdown}/>
         {allTodoSummaries.map(st => <section key={st.id} aria-label={`${st.title}の要約`} className="mt-6 border-t pt-4"><h4 className="font-bold">{st.title}</h4><AISummaryMarkdown markdown={st.summary.markdown}/></section>)}
-      </> : <div className="py-8 text-center space-y-3"><p className="text-sm text-slate-500">このトークの要約内容はまだありません。</p><p className="text-xs text-slate-500">どのトークから操作しても、大タスク「{task.title}」全体を出力・入力します。</p><div className="flex flex-wrap justify-center gap-2"><button type="button" disabled={aiBusy} onClick={() => onExportAISummary(sourceTask)} className="rounded bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-40">AI要約用Wordを出力</button><button type="button" onClick={() => onInputAISummary(sourceTask)} className="rounded border px-3 py-2 text-sm">AI要約を入力</button></div></div>}
+      </> : <div className="py-8 text-center space-y-3"><p className="text-sm text-slate-500">このトークの要約内容はまだありません。</p><p className="text-xs text-slate-500">どのトークから操作しても、大タスク「{task.title}」全体を出力・入力します。</p><div className="flex flex-wrap justify-center gap-2"><button type="button" disabled={aiBusy} onClick={() => onExportAISummary(sourceTask)} className="rounded bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-40">AI要約用Wordを出力</button><button type="button" disabled={aiBusy} onClick={() => onExportAISummary(sourceTask, false)} className="rounded border px-3 py-2 text-sm disabled:opacity-40">AI要約用Wordを出力（前回要約なし）</button><button type="button" onClick={() => onInputAISummary(sourceTask)} className="rounded border px-3 py-2 text-sm">AI要約を入力</button></div></div>}
     </section>}
     <ProgressSummaryTable active={tableView && !summaryView} task={task} parentId={filterId} query={query} onUpdateTask={onUpdateTask} onNavigate={entry => { onSummaryViewChange(false); onTableViewChange(false); navigateQuote(entry); }}/>
     {selectingReply && <section aria-label="返信元の選択" className="shrink-0 flex flex-wrap items-center gap-2 border-b bg-blue-50 px-3 py-2 text-xs text-blue-800"><p className="flex-1">表示中のトークの「返信元にする」を押してください。</p><button type="button" className="rounded border bg-white px-2 py-1" onClick={() => setSelectingReply(false)}>選択を終了</button></section>}
@@ -4389,15 +4398,15 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask, onDeleteTask }) => {
   };
   const [aiInputTaskId, setAIInputTaskId] = useState(null), [aiBusy, setAIBusy] = useState(false), [aiNotice, setAINotice] = useState('');
   const aiInputTask = tasks.find(task => task.id === aiInputTaskId);
-  const exportTaskAISummary = async task => {
+  const exportTaskAISummary = async (task, includePrevious = true) => {
     if (aiBusy) return;
     setAIBusy(true); setAINotice('');
-    const snapshot = aiSummarySnapshot(task);
+    const snapshot = { ...aiSummarySnapshot(task), includePrevious };
     try {
       const blob = await buildWeeklyWordReport({ buildBody: onImage => buildAIBundleSource(task, snapshot, onImage) });
       onUpdateTask(task.id, previous => ({ ...previous, aiSummaryExport: snapshot }));
-      const url = URL.createObjectURL(blob), anchor = document.createElement('a'); anchor.href = url; anchor.download = `AI要約用_${task.title.replace(/[\\/:*?"<>|]/g, '_')}.docx`; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setAINotice(`「${task.title}」の全体・やるべきこと一括要約用Wordを出力しました。`);
+      const url = URL.createObjectURL(blob), anchor = document.createElement('a'); anchor.href = url; anchor.download = `AI要約用_${task.title.replace(/[\\/:*?"<>|]/g, '_')}${includePrevious ? '' : '_前回要約なし'}.docx`; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setAINotice(`「${task.title}」の全体・やるべきこと一括要約用Wordを出力しました${includePrevious ? '。' : '（前回AI要約なし）。'}`);
     } catch (error) { setAINotice(`Wordを出力できませんでした: ${error.message}`); }
     finally { setAIBusy(false); }
   };
@@ -4519,7 +4528,7 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask, onDeleteTask }) => {
     {menu && <div ref={menuRef} role="menu" aria-label={menu.todo ? 'やるべきことの設定' : '大タスクの設定'} className="fixed z-50 w-52 max-h-[calc(100vh-1rem)] overflow-y-auto rounded-xl border bg-white p-1 shadow-xl text-sm" style={{ left: menu.x, top: menu.y }}>
       <p className="px-3 py-1 text-xs text-slate-500 truncate">{menu.todo?.title || menu.task.title}</p>
       {[['name','名前変更'],['due','期限変更'],...(menu.todo ? [['status','ステータス変更']] : [['restore','やるべきこと再表示'],...(hideTodo ? [['add','やるべきことの追加']] : [])])].map(([action,label]) => <button type="button" role="menuitem" key={action} onClick={() => edit(action)} className="block w-full rounded px-3 py-2 text-left hover:bg-blue-50">{label}</button>)}
-      {!menu.todo && <><button type="button" role="menuitem" disabled={aiBusy} onClick={() => { exportTaskAISummary(menu.task); setMenu(null); }} className="block w-full rounded px-3 py-2 text-left hover:bg-blue-50 disabled:opacity-40">AI要約用Wordを出力</button><button type="button" role="menuitem" onClick={() => { inputTaskAISummary(menu.task); setMenu(null); }} className="block w-full rounded px-3 py-2 text-left hover:bg-blue-50">AI要約を入力</button></>}
+      {!menu.todo && <><button type="button" role="menuitem" disabled={aiBusy} onClick={() => { exportTaskAISummary(menu.task); setMenu(null); }} className="block w-full rounded px-3 py-2 text-left hover:bg-blue-50 disabled:opacity-40">AI要約用Wordを出力</button><button type="button" role="menuitem" disabled={aiBusy} onClick={() => { exportTaskAISummary(menu.task, false); setMenu(null); }} className="block w-full rounded px-3 py-2 text-left hover:bg-blue-50 disabled:opacity-40">AI要約用Wordを出力（前回要約なし）</button><button type="button" role="menuitem" onClick={() => { inputTaskAISummary(menu.task); setMenu(null); }} className="block w-full rounded px-3 py-2 text-left hover:bg-blue-50">AI要約を入力</button></>}
       {!menu.todo && (menu.task.completed || canCompleteProgressTask(menu.task)) && <button type="button" role="menuitem" onClick={() => { if (menu.task.completed) reopenTask(menu.task); else completeTask(menu.task); setMenu(null); }} className="block w-full rounded px-3 py-2 text-left hover:bg-blue-50">{menu.task.completed ? '完了を取り消す' : 'タスク全体を完了'}</button>}
       {menu.todo && <button type="button" role="menuitem" onClick={() => hideSubtask(menu.task, menu.todo)} className="block w-full rounded px-3 py-2 text-left hover:bg-blue-50">非表示</button>}
       <button type="button" role="menuitem" onClick={deleteItem} className="block w-full rounded px-3 py-2 text-left text-red-700 hover:bg-red-50">削除</button>

@@ -178,5 +178,36 @@ class AISummaryTests(base.ProgressTests):
         self.assertIn('**更新した全体**',self.stored()[0]['aiSummaries'][json.dumps(['task',task['id']],separators=(',',':'))]['markdown'])
 
 
+    def test_fresh_export_excludes_all_prior_ai_material_and_keeps_crosscut_in_both_modes(self):
+        task=base.task(progressEnabled=True,progressStage='doing')
+        image='data:image/png;base64,'+base64.b64encode(self.progress_png()).decode()
+        rootkey=json.dumps(['task',task['id']],separators=(',',':'))
+        todokey=json.dumps(['todo','s1'],separators=(',',':'))
+        task['aiSummaries']={rootkey:dict(markdown='PRIOR_ROOT_ONLY\n\n![前回だけの画像]('+image+')\n\n[前回だけのリンク](https://example.com/prior-only)',updatedAt='2020-01-02T00:00:00Z',sourceExportedAt='2020-01-01T00:00:00Z',sourceEntries={}),todokey:dict(markdown='PRIOR_TODO_ONLY',updatedAt='2020-01-02T00:00:00Z')}
+        task['progressHistory']=[dict(id='source',kind='comment',status='active',text='元のトーク\n\n| 項目 | 値 |\n| --- | --- |\n| 数値 | 12 |',subtaskIds=['s1'],images=[dict(name='元記録の画像',src=image)],links=[dict(label='元資料',url='https://example.com/original')])]
+        self.seed([task]);self.open_task();original=self.stored()[0]['aiSummaries']
+        for include in [True,False]:
+            with self.page.expect_download() as download:self.context('AI要約用Wordを出力' if include else 'AI要約用Wordを出力（前回要約なし）')
+            if not include:self.assertIn('前回要約なし',download.value.suggested_filename)
+            with zipfile.ZipFile(download.value.path()) as z:
+                ns={'w':'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+                text='\n'.join(n.text or '' for n in ET.fromstring(z.read('word/document.xml')).findall('.//w:t',ns))
+                for phrase in ['全体要約はやるべきこと別に章立てせず','複数の作業を横断した論点・判断テーマごとに整理','元のトーク','数値',self.marker('TASK','track'),self.marker('TODO','s1')]:self.assertIn(phrase,text)
+                self.assertEqual(len(ET.fromstring(z.read('word/document.xml')).findall('.//w:tbl',ns)),1)
+                relations=z.read('word/_rels/document.xml.rels').decode();self.assertIn('https://example.com/original',relations)
+                media=[n for n in z.namelist() if n.startswith('word/media/')]
+                if include:
+                    for phrase in ['PRIOR_ROOT_ONLY','PRIOR_TODO_ONLY','前回の要約（参考情報）','前回との記録比較']:self.assertIn(phrase,text)
+                    self.assertIn('https://example.com/prior-only',relations);self.assertEqual(len(media),2)
+                else:
+                    for phrase in ['PRIOR_ROOT_ONLY','PRIOR_TODO_ONLY','前回だけの画像','前回だけのリンク','前回の要約（参考情報）','前回との記録比較','2020-01-01','2020-01-02']:self.assertNotIn(phrase,text)
+                    self.assertNotIn('https://example.com/prior-only',relations);self.assertEqual(len(media),1)
+                    self.assertIn('過去の回答を参照・継承せず',text)
+            self.assertEqual(self.stored()[0]['aiSummaries'],original)
+            self.assertEqual(self.stored()[0]['aiSummaryExport']['includePrevious'],include)
+        editor=self.editor();self.paste(editor,self.bundle('新しく考え直した全体','新しい項目要約'));self.save()
+        expect(self.show()).to_contain_text('新しく考え直した全体')
+
+
 def load_tests(loader,tests,pattern):return unittest.TestSuite(AISummaryTests(name) for name in AISummaryTests.__dict__ if name.startswith('test_'))
 if __name__=='__main__':unittest.main(verbosity=2)
