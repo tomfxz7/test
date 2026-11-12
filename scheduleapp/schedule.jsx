@@ -1405,7 +1405,14 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
           {Array.from({ length: rows.length }, (_, index) => edgeControl('row', index, rows.length, maxRows, insertRow, true))}
         </div>
       </div>
-      {contextMenu && <div ref={menuRef} role="menu" aria-label="表の選択範囲の操作" style={{ left: contextMenu.x, top: contextMenu.y }} className="fixed z-[200] w-64 rounded-lg border bg-white p-1 shadow-xl text-sm"
+      {contextMenu && <div ref={menuRef} role="menu" onKeyDown={e => {
+      const items = [...e.currentTarget.querySelectorAll('[role=menuitem]')];
+      const index = items.indexOf(document.activeElement);
+      if (['ArrowDown','ArrowUp','Home','End'].includes(e.key)) {
+        e.preventDefault();
+        items[e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : (index + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
+      }
+    }} aria-label="表の選択範囲の操作" style={{ left: contextMenu.x, top: contextMenu.y }} className="fixed z-[200] w-64 rounded-lg border bg-white p-1 shadow-xl text-sm"
         onKeyDown={e => {
           if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
             e.preventDefault(); e.stopPropagation(); const items = [...menuRef.current.querySelectorAll('[role="menuitem"]')], index = items.indexOf(document.activeElement);
@@ -2875,94 +2882,6 @@ const progressStatusClasses = (status) => ({
   active: 'bg-purple-50 border-black text-purple-900'
 }[status]);
 
-const ProgressSettingsModal = ({ task, starting, onClose, onSave }) => {
-  const [title, setTitle] = useState(task.title || '');
-  const [dueDate, setDueDate] = useState(task.dueDate || '');
-  const [subtasks, setSubtasks] = useState(() => getProgressSubtasks(task).map(st => ({ ...st })));
-  const [newTitle, setNewTitle] = useState('');
-  const [newDueDate, setNewDueDate] = useState('');
-  const [reason, setReason] = useState('');
-  const [error, setError] = useState('');
-  const formRef = useRef(null);
-  const inputRef = useRef(null);
-  useEffect(() => {
-    const previous = document.activeElement;
-    inputRef.current?.focus();
-    const handleKey = (e) => {
-      if (e.key === 'Escape') { e.preventDefault(); onClose(); }
-      if (e.key === 'Tab' && formRef.current) {
-        const elements = [...formRef.current.querySelectorAll('button:not([disabled]),input:not([disabled]),textarea:not([disabled])')];
-        const first = elements[0]; const last = elements[elements.length - 1];
-        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
-        if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
-      }
-    };
-    document.addEventListener('keydown', handleKey);
-    return () => { document.removeEventListener('keydown', handleKey); previous?.focus(); };
-  }, [onClose]);
-  const addSubtask = () => {
-    if (!newTitle.trim()) return;
-    setSubtasks(prev => [...prev, { id: createProgressId(), title: newTitle.trim(), dueDate: newDueDate || dueDate || task.dueDate || '', completed: false, waiting: false, order: Date.now() }]);
-    setNewTitle(''); setNewDueDate(''); setError(''); inputRef.current?.focus();
-  };
-  const confirm = (e) => {
-    e.preventDefault();
-    if (!title.trim()) { setError('タスク名を入力してください。'); return; }
-    if (subtasks.some(st => !st.title.trim())) { setError('やるべきことの名前を入力してください。'); return; }
-    if (subtasks.some(st => st.completed && !getProgressSubtasks(task).find(old => old.id === st.id)?.completed && progressCompletionBlocked({ ...task, subtasks }, { ...st, completed: false }))) { setError('相手待ち、未完了の小さいタスク、または完了待ちの関連先が残っています。'); return; }
-    const additions = newTitle.trim() ? [{ id: createProgressId(), title: newTitle.trim(), dueDate: newDueDate || dueDate || task.dueDate || '', completed: false, waiting: false, order: Date.now() }] : [];
-    onSave({ title: title.trim(), dueDate, subtasks: [...subtasks.map(st => ({ ...st, title: st.title.trim(), dueDate: st.dueDate || dueDate })), ...additions], ...(starting ? { progressStage: 'doing' } : {}) }, reason.trim());
-  };
-  return (
-    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <form ref={formRef} role="dialog" aria-modal="true" aria-label="進捗の設定" onSubmit={confirm} onKeyDown={e => {
-        if (e.key === 'Enter' && e.ctrlKey && !e.nativeEvent.isComposing) { e.preventDefault(); formRef.current?.requestSubmit(); }
-        else if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.target.tagName === 'INPUT') e.preventDefault();
-      }} className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
-        <header className="p-5 border-b flex justify-between items-start gap-3">
-          <div><h2 className="text-lg font-black text-gray-900">{starting ? '着手前にやるべきことを設定' : '進捗の設定'}</h2><p className="text-sm text-gray-500 mt-1 break-words">{task.title}</p></div>
-          <button type="button" onClick={onClose} aria-label="進捗の設定を閉じる" className="p-2 rounded-lg hover:bg-gray-100"><X size={20}/></button>
-        </header>
-        <div className="overflow-y-auto p-5 space-y-5">
-          <label className="block text-sm font-bold">タスク名<input type="text" required value={title} onChange={e => setTitle(e.target.value)} className="block w-full mt-2 border rounded-lg px-3 py-2 font-normal"/></label>
-          <label className="block text-sm font-bold">タスクの期限<input type="date" required value={dueDate} onChange={e => setDueDate(e.target.value)} className="block mt-2 border rounded-lg px-3 py-2 bg-white"/></label>
-          <div>
-            <h3 className="text-sm font-bold mb-2">やるべきこと（小タスク）</h3>
-            <p className="text-xs text-gray-500 mb-3">変更はカレンダーなど、すべてのページに反映されます。</p>
-            <div className="space-y-2">
-              {subtasks.map((st, i) => <div key={st.id} className="flex flex-wrap gap-2 items-center border rounded-xl p-3 bg-gray-50">
-                <input aria-label={`やるべきこと ${i + 1}`} required value={st.title} onChange={e => setSubtasks(prev => prev.map(item => item.id === st.id ? { ...item, title: e.target.value } : item))} className="min-w-0 flex-1 border rounded-lg px-3 py-2 text-sm"/>
-                <input aria-label={`やるべきこと ${i + 1} の期限`} type="date" value={st.dueDate || ''} onChange={e => setSubtasks(prev => prev.map(item => item.id === st.id ? { ...item, dueDate: e.target.value } : item))} className="border rounded-lg px-2 py-2 text-sm"/>
-                <button type="button" aria-label={`やるべきこと ${i + 1} を削除`} onClick={() => setSubtasks(prev => prev.filter(item => item.id !== st.id))} className="p-2 text-red-500 hover:bg-red-100 rounded-lg"><Trash2 size={16}/></button>
-                <div className="w-full text-xs flex gap-4 text-gray-600">
-                  <label className="flex items-center gap-1"><input type="checkbox" checked={!!st.waiting} onChange={e => setSubtasks(prev => prev.map(item => item.id === st.id ? { ...item, waiting: e.target.checked, ...(e.target.checked ? { completed: false } : {}) } : item))}/>相手待ち</label>
-                  <label className="flex items-center gap-1"><input type="checkbox" checked={!!st.completed} disabled={!st.completed && progressCompletionBlocked({ ...task, subtasks }, st)} onChange={e => setSubtasks(prev => prev.map(item => item.id === st.id ? { ...item, completed: e.target.checked, ...(e.target.checked ? { waiting: false } : {}) } : item))}/>完了</label>
-                </div>
-              </div>)}
-            </div>
-            {!subtasks.length && <p className="text-sm text-gray-400 py-3">やるべきことはまだありません。</p>}
-            <div className="mt-3 p-3 rounded-xl bg-blue-50 border border-blue-100 flex flex-wrap gap-2">
-              <input ref={inputRef} aria-label="新しいやるべきこと" placeholder="やるべきことを入力 → Enter で追加" value={newTitle} onChange={e => setNewTitle(e.target.value)} onKeyDown={e => {
-                if (e.key === 'Enter' && !e.ctrlKey && !e.nativeEvent.isComposing) { e.preventDefault(); addSubtask(); }
-              }} className="flex-1 min-w-[180px] border rounded-lg px-3 py-2 text-sm"/>
-              <input type="date" aria-label="新しいやるべきことの期限" value={newDueDate} onChange={e => setNewDueDate(e.target.value)} className="border rounded-lg px-2 py-2 text-sm"/>
-              <button type="button" onClick={addSubtask} disabled={!newTitle.trim()} className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-bold disabled:opacity-40">追加</button>
-              <p className="w-full text-xs text-blue-700">期限の未入力時: {dueDate || 'タスクの期限なし'}</p>
-            </div>
-          </div>
-          <label className="block text-sm font-bold">変更理由<textarea value={reason} onChange={e => setReason(e.target.value)} placeholder="期限などを変更した理由（任意）" rows={2} className="block w-full mt-2 border rounded-lg px-3 py-2 text-sm font-normal"/></label>
-          <p className="text-xs text-gray-500">期限の変更は、変更理由を入力した場合だけ履歴へ残ります。Enter で追加、Ctrl+Enter で確定。</p>
-          {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
-        </div>
-        <footer className="p-4 border-t bg-gray-50 flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="px-4 py-2 text-sm font-bold rounded-lg border bg-white">キャンセル</button>
-          <button type="submit" className="px-5 py-2 text-sm font-bold rounded-lg bg-blue-600 text-white">確定</button>
-        </footer>
-      </form>
-    </div>
-  );
-};
-
 const ProgressDependencyModal = ({ task, target, onClose, onSave }) => {
   const item = getProgressDependencyNode(task, target);
   const [selected, setSelected] = useState(item?.dependencies || []);
@@ -3074,28 +2993,28 @@ const ProgressWaitingModal = ({ task, scope, onClose }) => {
   </div>;
 };
 
-const ProgressTaskCard = ({ task, selected, onSelect, onSettings, onStart, onDragStart, onDeleteSmallTask, onFilter, onOtherTalks, onCompleteSubtask, onCompleteTask, onReopenTask, onDependency, onWaiting, onReorderSubtask, onReorderSmallTask, tableView = false }) => {
+const ProgressTaskCard = ({ task, selected, onSelect, onDeleteSmallTask, onFilter, onOtherTalks, onCompleteSubtask, onCompleteTask, onReopenTask, onDependency, onWaiting, onReorderSubtask, onReorderSmallTask, tableView = false, onlyTodos = false, onContextMenu, onTodoContextMenu }) => {
   const [dropHint, setDropHint] = useState(null);
   const todoDragType = 'application/x-taskmatrix-progress-todo';
   const status = progressItemStatus(task);
   const waitingItems = getProgressWaitingItems(task);
-  return <article data-progress-task-id={task.id} data-status={status} draggable onDragStart={e => onDragStart(e, task.id)} onClick={onSelect} className={`border rounded-xl p-3 shadow-sm ${progressStatusClasses(status)} ${selected ? 'ring-2 ring-purple-500' : ''}`}>
-    <div className="flex gap-2 justify-between items-start">
+  return <article onContextMenu={onContextMenu} data-progress-task-id={onlyTodos ? undefined : task.id} data-status={status} onClick={onSelect} className={onlyTodos ? 'contents' : `border rounded-xl p-3 shadow-sm ${progressStatusClasses(status)} ${selected ? 'ring-2 ring-purple-500' : ''}`}>
+    {!onlyTodos && <> <div className="flex gap-2 justify-between items-start">
       <button type="button" onClick={e => { e.stopPropagation(); onSelect(); }} className="font-bold text-sm text-left break-words flex-1">{task.title}</button>
-      <button type="button" aria-label={`${task.title}の設定`} onClick={e => { e.stopPropagation(); onSettings(); }} className="p-1.5 rounded-lg hover:bg-white/70 shrink-0"><Settings size={16}/></button>
     </div>
     <div className="mt-2 mb-3 flex flex-wrap gap-2 text-xs items-center"><span className="font-bold px-2 py-0.5 rounded bg-white/70">{progressStatusLabel(status)}</span><span>タスク期日: {task.dueDate || '未設定'}</span><button type="button" aria-label={`${task.title}の相手待ち一覧`} onClick={e => { e.stopPropagation(); onWaiting(); }} className="rounded-lg border border-black bg-white/80 px-2 py-1 text-green-800">相手待ち一覧（{waitingItems.length}）</button></div>
     {task.completed && <p className="mb-3 text-xs">完了日時: {Number.isFinite(reportEntryDate(task.completedAt).getTime()) ? reportEntryDate(task.completedAt).toLocaleString('ja-JP') : '未記録'}</p>}
+    </>}
     <ul className="space-y-1.5">
-      {getProgressSubtasks(task).length > 0 && <li data-progress-other-talks={task.id} className="rounded-lg border border-black bg-white/80 text-xs overflow-hidden">
+      {!onlyTodos && getProgressSubtasks(task).length > 0 && <li data-progress-other-talks={task.id} className="rounded-lg border border-black bg-white/80 text-xs overflow-hidden">
         <button type="button" aria-label="その他のトークを表示" onClick={e => { e.stopPropagation(); onOtherTalks(); }} className="flex w-full items-center gap-1.5 px-2 py-3 text-left hover:bg-slate-50">
           <MessageSquare size={14} className="shrink-0"/><span className="flex-1 font-medium">その他のトーク</span><span className="text-[10px] text-gray-500">{getProgressOtherTalks(task).length}件</span>
         </button>
       </li>}
-      {getProgressSubtasks(task).map(st => {
+      {getProgressSubtasks(task).filter(st => !st.progressHidden).map(st => {
         const smallTasks = getProgressSmallTasks(st);
         const canComplete = !st.completed && !progressCompletionBlocked(task, st);
-        return <li key={st.id} draggable data-progress-subtask-id={st.id} data-status={st.completed || task.completed ? 'completed' : progressItemStatus(st, task)}
+        return <li key={st.id} onContextMenu={e => { e.preventDefault(); e.stopPropagation(); onTodoContextMenu?.(e, st); }} draggable data-progress-subtask-id={st.id} data-status={st.completed || task.completed ? 'completed' : progressItemStatus(st, task)}
           onDragStart={e => { e.stopPropagation(); e.dataTransfer.setData(todoDragType, JSON.stringify({ taskId: task.id, id: st.id })); e.dataTransfer.effectAllowed = 'move'; }}
           onDragEnd={e => { e.stopPropagation(); setDropHint(null); }}
           onDragOver={e => { if (!e.dataTransfer.types.includes(todoDragType)) return; e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'move'; setDropHint({ id: st.id, after: e.clientY > e.currentTarget.getBoundingClientRect().top + e.currentTarget.getBoundingClientRect().height / 2 }); }}
@@ -3117,14 +3036,14 @@ const ProgressTaskCard = ({ task, selected, onSelect, onSettings, onStart, onDra
             {pendingProgressDependencies(task, st).length > 0 && <p className="text-[11px] mb-2 break-words">タスク待ち: {pendingProgressDependencies(task, st).map(ref => progressDependencyTitle(task, ref)).join('、')}</p>}
             {!smallTasks.length && <p className="py-2 text-[11px] opacity-70">未完了の小さいタスクはありません。</p>}
             <ul className="space-y-1.5 mt-1.5">
-              {smallTasks.map(small => <li key={small.id} data-progress-small-task-id={small.id} data-status={task.completed || st.completed ? 'completed' : progressItemStatus(small, task)}
+              {smallTasks.map(small => <li key={small.id} onContextMenu={e => e.stopPropagation()} data-progress-small-task-id={small.id} data-status={task.completed || st.completed ? 'completed' : progressItemStatus(small, task)}
                 onClick={e => { e.stopPropagation(); onFilter(st.id, small.id); }}
                 draggable
                 onDragStart={e => { e.stopPropagation(); e.dataTransfer.setData('application/x-taskmatrix-progress-small', JSON.stringify({ taskId: task.id, parentId: st.id, id: small.id })); e.dataTransfer.effectAllowed = 'move'; }}
                 onDragOver={e => { if (!e.dataTransfer.types.includes('application/x-taskmatrix-progress-small')) return; e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'move'; setDropHint({ smallId: small.id, after: e.clientY > e.currentTarget.getBoundingClientRect().top + e.currentTarget.getBoundingClientRect().height / 2 }); }}
                 onDrop={e => { if (!e.dataTransfer.types.includes('application/x-taskmatrix-progress-small')) return; e.preventDefault(); e.stopPropagation(); try { const source = JSON.parse(e.dataTransfer.getData('application/x-taskmatrix-progress-small')); setDropHint(null); if (source.taskId === task.id && source.parentId === st.id) onReorderSmallTask(st.id, source.id, small.id, e.clientY > e.currentTarget.getBoundingClientRect().top + e.currentTarget.getBoundingClientRect().height / 2); } catch {} }}
                 className={`rounded-lg border px-2 py-1.5 flex gap-2 items-center text-xs ${progressStatusClasses(task.completed || st.completed ? 'completed' : progressItemStatus(small, task))} ${dropHint?.smallId === small.id ? dropHint.after ? 'border-b-4' : 'border-t-4' : ''}`}>
-                <button type="button" aria-label={`${small.title}のトークを表示`} disabled={tableView} title={tableView ? 'テーブルでは大タスクかやるべきことを選択してください' : undefined} draggable
+                <button type="button" aria-label={`${small.title}のトークを表示`}  draggable
                   onClick={e => { e.stopPropagation(); onFilter(st.id, small.id); }}
                   className={`flex-1 min-w-0 text-left rounded focus:outline-none focus:ring-2 focus:ring-purple-400 ${small.completed ? 'line-through' : ''} disabled:opacity-50 disabled:cursor-not-allowed`}>
                   <span className="break-words">{small.title}</span>
@@ -3142,10 +3061,10 @@ const ProgressTaskCard = ({ task, selected, onSelect, onSettings, onStart, onDra
         </li>;
       })}
     </ul>
-    {canCompleteProgressTask(task) && <button type="button" aria-label={`${task.title}を完了`} onClick={e => { e.stopPropagation(); onCompleteTask(); }} className="mt-3 w-full rounded-lg bg-blue-600 hover:bg-blue-700 text-white py-2 text-xs font-bold">タスク全体を完了</button>}
+    {!onlyTodos && <> {canCompleteProgressTask(task) && <button type="button" aria-label={`${task.title}を完了`} onClick={e => { e.stopPropagation(); onCompleteTask(); }} className="mt-3 w-full rounded-lg bg-blue-600 hover:bg-blue-700 text-white py-2 text-xs font-bold">タスク全体を完了</button>}
     {task.completed && <button type="button" aria-label={`${task.title}の完了を取り消す`} onClick={e => { e.stopPropagation(); onReopenTask(); }} className="mt-3 w-full rounded-lg border bg-white/80 py-1.5 text-xs font-bold">完了を取り消す</button>}
-    {!task.completed && (!task.progressStage || task.progressStage === 'todo') && <button type="button" onClick={e => { e.stopPropagation(); onStart(); }} className="mt-3 w-full bg-white/80 border border-current rounded-lg py-1.5 text-xs font-bold hover:bg-white">着手する</button>}
-    <p className="mt-3 text-[11px] opacity-70">クリックしてタスク全体のトークを表示</p>
+
+    <p className="mt-3 text-[11px] opacity-70">クリックしてタスク全体のトークを表示</p></>}
   </article>;
 };
 
@@ -3400,7 +3319,17 @@ const ProgressSummaryTable = ({ task, parentId, query, onUpdateTask, active = tr
     }}><h3 className="font-bold">結論を記入</h3><p className="text-xs text-gray-600">{draft.smallTitle || draft.waitingTitle}に結論コメントを追加します。</p><textarea aria-label="結論コメント" value={conclusionText} onChange={e => setConclusionText(e.target.value)} rows={6} className="w-full rounded border p-2"/><div className="flex justify-end gap-2"><button type="button" onClick={() => setDraft(null)} className="rounded border px-3 py-2">キャンセル</button><button type="button" disabled={!conclusionText.trim()} onClick={() => { onUpdateTask(task.id, previous => applyProgressTableConclusion(previous, draft.id, conclusionText)); setDraft(null); }} className="rounded bg-blue-600 px-3 py-2 text-white disabled:opacity-30">結論コメントを追加</button></div></section></div>}
   </section>;
 };
-const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiting = true, expandedComposer = false, tableView = false, onTableViewChange }) => {
+const visibleProgressTask = task => {
+  const hidden = getProgressSubtasks(task).filter(st => st.progressHidden);
+  if (!hidden.length) return task;
+  const ids = new Set(hidden.map(st => st.id));
+  const smallIds = new Set(hidden.flatMap(getProgressSmallTasks).map(st => st.id));
+  return { ...task, subtasks: getProgressSubtasks(task).filter(st => !ids.has(st.id)),
+    progressHistory: (task.progressHistory || []).filter(entry => !progressEntryParentIds(entry).some(id => ids.has(id)) && !smallIds.has(entry.smallTaskId) && !smallIds.has(entry.completedSmallTaskId)) };
+};
+
+const ProgressThread = ({ task: sourceTask, onUpdateTask, smallTaskTarget, showResolvedWaiting = true, expandedComposer = false, tableView = false, onTableViewChange }) => {
+  const task = useMemo(() => visibleProgressTask(sourceTask), [sourceTask]);
   const [text, setText] = useState('');
   const [textLinks, setTextLinks] = useState([]);
   const [textFormats, setTextFormats] = useState([]);
@@ -3559,6 +3488,7 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
       setSmallTarget(scopeSmallTarget(parentId, smallId));
     }
   };
+  useEffect(() => { if (tableView) { if (filterOther) chooseThreadScope(); else if (filterSmallId) chooseThreadScope(scopeParent?.id || '', ''); setSelectingReply(false); } }, [tableView]);
   const chooseOtherScope = () => { chooseThreadScope(); setFilterOther(true); };
   const missingDraftSource = !!((editingId && !editingEntry) || (replyTo && !findProgressReplySource(task, replyTo)));
   useEffect(() => { if (missingDraftSource) resetComposer(); }, [missingDraftSource]);
@@ -3856,25 +3786,27 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
   const renderHistoryEntry = (entry, { extra = null, virtual = false, tone = null, synthetic = false } = {}) => <div key={entry.id} data-progress-entry-id={synthetic ? undefined : entry.id} tabIndex={0} onClick={e => selectCommentTarget(entry, e)} onKeyDown={e => { if (e.key === 'Enter' && e.target === e.currentTarget) { e.preventDefault(); selectCommentTarget(entry, e); } }} aria-current={selectedEntryId === entry.id ? 'true' : undefined} className={`flex flex-col items-stretch ${selectedEntryId === entry.id ? 'ring-2 ring-slate-300 ring-offset-2 rounded-xl' : ''} ${highlightedId === entry.id ? 'ring-2 ring-blue-400 rounded-xl' : ''}`}>
         {Number.isFinite(Date.parse(entry.createdAt)) ? <time dateTime={entry.createdAt} className="text-[10px] text-gray-500 px-1 mb-1">{new Date(entry.createdAt).toLocaleString('ja-JP')}</time> : <span className="text-[10px] text-gray-500 px-1 mb-1">日時未記録</span>}
         <div className={`progress-talk-bubble w-full rounded-xl border px-3 py-2 text-sm shadow-sm ${tone ? progressToneClasses(tone) : progressEntryClasses(entry, task)}`}>
-          <p className="text-[10px] font-bold text-gray-400 mb-1">{entry.kind === 'comment' ? (entry.assumptionMemo ? '前提メモ' : progressEntryIsNote(entry) ? 'コメント' : entry.addedSubtask ? 'やるべきことの追加' : entry.addedSmallTask ? '小さいタスクの追加' : '進捗記録') : '期限変更'}</p>
-          {entry.quote && <ProgressQuote quote={entry.quote} onNavigate={navigateQuote} task={task}/>}
-          <div className="whitespace-pre-wrap break-words"><ProgressText value={entry.text} textLinks={entry.textLinks} textFormats={entry.textFormats}/></div>
-          <ProgressAttachments images={entry.images} links={entry.links}/>
-          {entry.isConclusion && <p className="mt-1 text-xs font-bold">結論</p>}
-          {progressEntrySubtaskTitles(task, entry).length > 0 && <div className="flex flex-wrap gap-1 mt-2">{progressEntrySubtaskTitles(task, entry).map((title, i) => <span key={`${entry.subtaskIds?.[i]}-${i}`} data-progress-subtask-label={entry.subtaskIds?.[i]} className="text-[10px] rounded px-1.5 py-0.5 bg-black/10 break-all">{title}</span>)}</div>}
-          {entry.smallTaskTitle && <p className="mt-1 text-xs text-gray-500 break-words">小さいタスク: {entry.smallTaskTitle}</p>}
-          {entry.status && !progressEntryIsNote(entry) && entry.kind === 'comment' && <p className="text-[10px] mt-1 opacity-80">{progressEntryLabel(entry, task, tone)}</p>}
-          {!virtual && <div className="flex items-center justify-end gap-2 mt-2 text-[11px]">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mb-1" data-talk-meta>
+          <p className="text-[10px] font-bold text-gray-500 shrink-0">{entry.kind === 'comment' ? (entry.assumptionMemo ? '前提メモ' : progressEntryIsNote(entry) ? 'コメント' : entry.addedSubtask ? 'やるべきことの追加' : entry.addedSmallTask ? '小さいタスクの追加' : '進捗記録') : '期限変更'}</p>
+          {entry.isConclusion && <p className="text-[10px] font-bold">結論</p>}
+          {progressEntrySubtaskTitles(task, entry).length > 0 && <div className="flex flex-wrap gap-1">{progressEntrySubtaskTitles(task, entry).map((title, i) => <span key={`${entry.subtaskIds?.[i]}-${i}`} data-progress-subtask-label={entry.subtaskIds?.[i]} className="text-[10px] rounded px-1.5 py-0.5 bg-black/10 break-all">{title}</span>)}</div>}
+          {entry.smallTaskTitle && <p className="text-[10px] text-gray-500 break-words">小さいタスク: {entry.smallTaskTitle}</p>}
+          {entry.status && !progressEntryIsNote(entry) && entry.kind === 'comment' && <p className="text-[10px] opacity-80">{progressEntryLabel(entry, task, tone)}</p>}
+          {!virtual && <div className="flex items-center gap-1 ml-auto text-[10px] shrink-0">
             {entry.kind === 'comment' && <>
               {entry.editedAt && <span title={`編集日時: ${new Date(entry.editedAt).toLocaleString('ja-JP')}`}>編集済み</span>}
               <label className="flex items-center gap-1"><input type="checkbox" aria-label="このコメントを結論にする" checked={!!entry.isConclusion} onChange={e => toggleConclusion(entry, e.target.checked)}/>結論</label>
               <button type="button" aria-label={selectingReply ? `返信元に選択: ${entry.text || '本文なし'}` : 'コメントに返信'} disabled={selectingReply && progressReplyWouldCycle(task, editingId, entry)}
                 title={selectingReply && progressReplyWouldCycle(task, editingId, entry) ? '自分自身・このコメントへの返信は選択できません' : undefined}
-                onClick={() => { if (selectingReply) { chooseEditedReply(entry); setSelectingReply(false); } else replyToComment(entry); }} className="rounded px-2 py-1 text-blue-700 hover:bg-blue-50 underline disabled:opacity-40">{selectingReply ? '返信元にする' : '返信'}</button>
-              <button type="button" aria-label="コメントを編集" onClick={() => editComment(entry)} className="rounded px-2 py-1 text-blue-700 hover:bg-blue-50 underline">編集</button>
+                onClick={() => { if (selectingReply) { chooseEditedReply(entry); setSelectingReply(false); } else replyToComment(entry); }} className="rounded px-1 py-0.5 text-blue-700 hover:bg-blue-50 underline disabled:opacity-40">{selectingReply ? '返信元にする' : '返信'}</button>
+              <button type="button" aria-label="コメントを編集" onClick={() => editComment(entry)} className="rounded px-1 py-0.5 text-blue-700 hover:bg-blue-50 underline">編集</button>
             </>}
-            <button type="button" aria-label="コメントを削除" title={entry.addedSubtask && !entry.smallTaskId ? '追加コメントと対応するやるべきことのカードを削除します。ほかのトーク・引用は保持します。' : entry.status === 'completed' && !progressEntryIsNote(entry) ? 'この完了記録を削除し、完了した対象を未完了に戻します。保存済みの引用は残ります。' : entry.addedSmallTask ? 'この追加コメントと、ひも付く小さいタスクを削除します。保存済みの引用は残ります。' : 'コメントだけを削除します。保存済みの引用は残ります。'} onClick={() => deleteComment(entry.id)} className="rounded px-2 py-1 text-red-700 hover:bg-red-50 underline">削除</button>
+            <button type="button" aria-label="コメントを削除" title={entry.addedSubtask && !entry.smallTaskId ? '追加コメントと対応するやるべきことのカードを削除します。ほかのトーク・引用は保持します。' : entry.status === 'completed' && !progressEntryIsNote(entry) ? 'この完了記録を削除し、完了した対象を未完了に戻します。保存済みの引用は残ります。' : entry.addedSmallTask ? 'この追加コメントと、ひも付く小さいタスクを削除します。保存済みの引用は残ります。' : 'コメントだけを削除します。保存済みの引用は残ります。'} onClick={() => deleteComment(entry.id)} className="rounded px-1 py-0.5 text-red-700 hover:bg-red-50 underline">削除</button>
           </div>}
+          </div>
+          {entry.quote && <ProgressQuote quote={entry.quote} onNavigate={navigateQuote} task={task}/>}
+          <div className="whitespace-pre-wrap break-words"><ProgressText value={entry.text} textLinks={entry.textLinks} textFormats={entry.textFormats}/></div>
+          <ProgressAttachments images={entry.images} links={entry.links}/>
           {extra}
         </div>
       </div>;
@@ -3989,14 +3921,12 @@ const ProgressThread = ({ task, onUpdateTask, smallTaskTarget, showResolvedWaiti
           </div>
         </div>
       </details>}
-      <button type="button" aria-pressed={!tableView} onClick={() => onTableViewChange(false)} className={`rounded border px-2 py-0.5 ${!tableView ? 'bg-blue-50 text-blue-700' : ''}`}>トーク表示</button>
-      <button type="button" aria-pressed={tableView} onClick={() => { if (filterOther) chooseThreadScope(); else if (filterSmallId) chooseThreadScope(scopeParent?.id || '', ''); setSelectingReply(false); onTableViewChange(true); }} className={`rounded border px-2 py-0.5 ${tableView ? 'bg-blue-50 text-blue-700' : ''}`}>テーブル表示</button>
     </div>
     </div>
     <ProgressSummaryTable active={tableView} task={task} parentId={filterId} query={query} onUpdateTask={onUpdateTask} onNavigate={entry => { onTableViewChange(false); navigateQuote(entry); }}/>
     {selectingReply && <section aria-label="返信元の選択" className="shrink-0 flex flex-wrap items-center gap-2 border-b bg-blue-50 px-3 py-2 text-xs text-blue-800"><p className="flex-1">表示中のトークの「返信元にする」を押してください。</p><button type="button" className="rounded border bg-white px-2 py-1" onClick={() => setSelectingReply(false)}>選択を終了</button></section>}
     <div ref={historyRef} role="log" aria-label="進捗履歴" onScroll={e => { const el = e.currentTarget; if (el.scrollHeight - el.clientHeight - el.scrollTop <= 8) followLatestRef.current = true; }} onWheel={e => { if (e.deltaY < 0) followLatestRef.current = false; }} onPointerDown={() => { followLatestRef.current = false; }} onTouchStart={() => { followLatestRef.current = false; }} onKeyDown={e => { if (['ArrowUp', 'PageUp', 'Home'].includes(e.key)) followLatestRef.current = false; }} onLoadCapture={() => { if (followLatestRef.current && allowFollowRef.current) scrollHistory(true); }} className={`${tableView ? 'hidden' : ''} flex-1 overflow-y-auto min-h-0 p-4 bg-slate-100`}>
-      <div ref={historyContentRef} className="space-y-4">
+      <div ref={historyContentRef} className="space-y-2">
       {!rows.length && <p className="text-center text-sm text-gray-400 py-8">{filteringTalks ? '条件に一致するトークはありません。' : query.trim() ? '一致する履歴はありません。' : 'この範囲のコメントはまだありません。'}</p>}
       {[...rows].sort((a, b) => Number(!!b.entry?.assumptionMemo) - Number(!!a.entry?.assumptionMemo)).map(renderRow)}
       </div>
@@ -4069,7 +3999,42 @@ class ProgressThreadBoundary extends React.Component {
   }
 }
 
-const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
+const ProgressManageDialog = ({ task, todo, action, onClose, onSave }) => {
+  const target = todo || task;
+  const [title, setTitle] = useState(action === 'add' ? '' : target.title);
+  const [dueDate, setDueDate] = useState(action === 'add' ? task.dueDate || '' : target.dueDate || '');
+  const [status, setStatus] = useState(target.completed ? 'completed' : target.waiting ? 'waiting' : 'active');
+  const [ids, setIds] = useState([]);
+  const ref = useRef(null);
+  const heading = ({ name: '名前変更', due: '期限変更', status: 'ステータス変更', restore: 'やるべきこと再表示', add: 'やるべきことの追加' })[action];
+  useEffect(() => {
+    const previous = document.activeElement;
+    const dialog = ref.current;
+    dialog?.querySelector('input,button,select')?.focus();
+    const keydown = e => {
+      if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+      if (e.key === 'Tab') {
+        const items = [...dialog.querySelectorAll('input,button,select')].filter(el => !el.disabled);
+        if (e.shiftKey && document.activeElement === items[0]) { e.preventDefault(); items.at(-1)?.focus(); }
+        else if (!e.shiftKey && document.activeElement === items.at(-1)) { e.preventDefault(); items[0]?.focus(); }
+      }
+    };
+    dialog.addEventListener('keydown', keydown);
+    return () => { dialog.removeEventListener('keydown', keydown); if (previous?.isConnected) previous.focus(); };
+  }, []);
+  return <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+    <form ref={ref} role="dialog" aria-modal="true" aria-label={heading} onSubmit={e => { e.preventDefault(); onSave({ title, dueDate, status, ids }); }} className="rounded-2xl bg-white shadow-xl p-5 space-y-4 w-full max-w-md max-h-[85vh] overflow-y-auto">
+      <h2 className="font-bold">{heading}</h2><p className="text-xs text-slate-500 break-words">{target.title}</p>
+      {(action === 'name' || action === 'add') && <label className="block text-sm">名前<input required aria-label="名前" value={title} onChange={e => setTitle(e.target.value)} className="block w-full rounded border px-3 py-2 mt-1"/></label>}
+      {(action === 'due' || action === 'add') && <label className="block text-sm">期限<input aria-label="期限" type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} className="block w-full rounded border px-3 py-2 mt-1"/></label>}
+      {action === 'status' && <label className="block text-sm">ステータス<select aria-label="ステータス" value={status} onChange={e => setStatus(e.target.value)} className="block w-full rounded border px-3 py-2 mt-1"><option value="active">進行可能</option><option value="waiting">相手待ち</option><option value="completed">完了</option></select></label>}
+      {action === 'restore' && <div className="space-y-2">{getProgressSubtasks(task).filter(st => st.progressHidden).map(st => <label key={st.id} className="flex gap-2 items-start text-sm"><input type="checkbox" checked={ids.includes(st.id)} onChange={e => setIds(previous => e.target.checked ? [...previous,st.id] : previous.filter(id => id !== st.id))}/><span className="break-words">{st.title}</span></label>)}{!getProgressSubtasks(task).some(st => st.progressHidden) && <p className="text-sm text-slate-500">非表示のやるべきことはありません。</p>}</div>}
+      <div className="flex justify-end gap-2"><button type="button" onClick={onClose} className="rounded border px-3 py-2 text-sm">キャンセル</button><button type="submit" disabled={((action === 'name' || action === 'add') && !title.trim()) || (action === 'restore' && !ids.length)} className="rounded bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-40">{action === 'restore' ? '選択した項目を再表示' : '保存'}</button></div>
+    </form>
+  </div>;
+};
+
+const ProgressPage = ({ tasks, onUpdateTask, onAddTask, onDeleteTask }) => {
   const [showResolvedWaiting, setShowResolvedWaiting] = useState(() => {
     try { return localStorage.getItem('taskmatrix.progress.resolvedWaiting') !== 'hide'; } catch { return true; }
   });
@@ -4102,14 +4067,11 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
     return () => cancelAnimationFrame(frame);
   }, [taskHome, selectedId]);
   const [smallTaskTarget, setSmallTaskTarget] = useState(null);
-  const [settings, setSettings] = useState(null);
   const [dependencyTarget, setDependencyTarget] = useState(null);
   const [waitingTarget, setWaitingTarget] = useState(null);
-  const [draggingId, setDraggingId] = useState(null);
   const [showCompleted, setShowCompleted] = useState(false);
   const [boardQuery, setBoardQuery] = useState('');
   const [completionMonth, setCompletionMonth] = useState('');
-  const [showCompletionPeriod, setShowCompletionPeriod] = useState(false);
   const tracked = tasks.filter(task => task.progressEnabled);
   const query = boardQuery.trim().toLowerCase();
   const boardMatches = task => !query || [task.title, task.memo, task.completionNote, task.richResult,
@@ -4118,14 +4080,12 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
       ...progressMediaItems(entry.images).map(image => image.name), ...progressMediaItems(entry.links).flatMap(link => [link.label, link.url]),
       ...progressMediaItems(entry.textLinks).map(link => link.url)])].filter(Boolean).join(' ').toLowerCase().includes(query);
   const selectedTask = tracked.find(task => task.id === selectedId);
-  const settingsTask = tracked.find(task => task.id === settings?.id);
-  const startTask = task => setSettings({ id: task.id, starting: true });
   const selectTask = task => { setTaskHome(false); setSelectedId(task.id); setSmallTaskTarget({ taskId: task.id, filterOnly: true, clearComposer: !(taskHome && task.id === selectedId), requestId: createProgressId() }); };
   const deleteSmallTask = (task, id) => {
     onUpdateTask(task.id, previous => removeProgressSmallTask(previous, id));
   };
   const filterThread = (task, subtaskId, smallTaskId, otherTalks = false) => {
-    if (tableView && smallTaskId) return;
+    if (smallTaskId) setTableView(false);
     if (otherTalks) setTableView(false);
     setTaskHome(false); setSelectedId(task.id);
     setSmallTaskTarget({ taskId: task.id, subtaskId, smallTaskId, otherTalks, filterOnly: true, requestId: createProgressId() });
@@ -4180,15 +4140,61 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
       return { ...st, smallTasks: next.map((small, index) => ({ ...small, order: index + 1 })) };
     }) }));
   };
-  const dropTask = (e, stage) => {
-    e.preventDefault();
-    const id = e.dataTransfer.getData('application/x-taskmatrix-progress') || draggingId;
-    const task = tracked.find(item => item.id === id);
-    setDraggingId(null);
-    if (!task || (task.progressStage || 'todo') === stage) return;
-    if (stage === 'doing') startTask(task);
-    else onUpdateTask(task.id, previous => ({ ...previous, progressStage: 'todo' }));
+  const [menu, setMenu] = useState(null);
+  const [manage, setManage] = useState(null);
+  const menuRef = useRef(null);
+  useEffect(() => {
+    const dismiss = e => { if (!menuRef.current?.contains(e.target)) setMenu(null); };
+    const escape = e => { if (e.key === 'Escape') setMenu(null); };
+    document.addEventListener('pointerdown', dismiss);
+    document.addEventListener('keydown', escape);
+    return () => { document.removeEventListener('pointerdown', dismiss); document.removeEventListener('keydown', escape); };
+  }, []);
+  useEffect(() => { if (menu) menuRef.current?.querySelector('[role=menuitem]')?.focus(); }, [menu]);
+  const openMenu = (e, task, todo = null) => {
+    e.preventDefault(); e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    setMenu({ task, todo, x: Math.max(8, Math.min(e.clientX || rect.left, window.innerWidth - 220)), y: Math.max(8, Math.min(e.clientY || rect.bottom, window.innerHeight - 300)) });
   };
+  const edit = action => { setManage({ ...menu, action }); setMenu(null); };
+  const hideSubtask = (task, todo) => {
+    onUpdateTask(task.id, previous => ({ ...previous, subtasks: getProgressSubtasks(previous).map(st => st.id === todo.id ? { ...st, progressHidden: true } : st) }));
+    selectTask(task); setMenu(null);
+  };
+  const deleteItem = () => {
+    const { task, todo } = menu;
+    if (window.confirm(`「${todo?.title || task.title}」を本当に削除しますか？`)) {
+      if (todo) { onUpdateTask(task.id, previous => removeProgressTodo(previous, todo.id)); selectTask(task); }
+      else onDeleteTask(task.id);
+    }
+    setMenu(null);
+  };
+  const saveManagement = values => {
+    const { task, todo, action } = manage;
+    if (action === 'restore') {
+      onUpdateTask(task.id, previous => ({ ...previous, subtasks: getProgressSubtasks(previous).map(st => values.ids.includes(st.id) ? { ...st, progressHidden: false } : st) }));
+    } else if (action === 'add') {
+      const added = { id: createProgressId(), title: values.title.trim(), dueDate: values.dueDate, completed: false, order: Date.now(), smallTasks: [] };
+      onUpdateTask(task.id, previous => ({ ...previous, completed: false, progressStage: 'doing', subtasks: [...getProgressSubtasks(previous), added] }));
+    } else if (todo) {
+      if (action === 'status' && values.status === 'completed' && progressCompletionBlocked(task, todo)) { window.alert('相手待ち・タスク待ち・未完了の小さいタスクを解消してから完了してください。'); return; }
+      onUpdateTask(task.id, previous => ({ ...previous, subtasks: getProgressSubtasks(previous).map(st => st.id !== todo.id ? st : action === 'name' ? { ...st, title: values.title.trim() } : action === 'due' ? { ...st, dueDate: values.dueDate } : { ...st, completed: values.status === 'completed', waiting: values.status === 'waiting', completedAt: values.status === 'completed' ? new Date().toISOString() : undefined, completionManaged: true, completionSource: 'manual' }) }));
+    } else {
+      onUpdateTask(task.id, previous => ({ ...previous, ...(action === 'name' ? { title: values.title.trim() } : { dueDate: values.dueDate }) }));
+    }
+    setManage(null);
+  };
+  const boardTasks = tracked.filter(task => !!task.completed === showCompleted && boardMatches(task) && (!showCompleted || !completionMonth || formatDate(reportEntryDate(task.completedAt)).slice(0, 7) === completionMonth));
+  const renderCard = (task, onlyTodos = false) => <ProgressTaskCard key={task.id} task={task} onlyTodos={onlyTodos} tableView={tableView} selected={selectedId === task.id}
+    onContextMenu={onlyTodos ? undefined : e => openMenu(e, task)} onTodoContextMenu={(e, todo) => openMenu(e, task, todo)}
+    onSelect={() => selectTask(task)}
+    onCompleteTask={() => completeTask(task)} onReopenTask={() => reopenTask(task)} onDeleteSmallTask={id => deleteSmallTask(task, id)}
+    onFilter={(id, small) => filterThread(task, id, small)} onOtherTalks={() => filterThread(task, '', '', true)}
+    onReorderSmallTask={(parent, source, target, after) => reorderSmallTask(task.id, parent, source, target, after)} onReorderSubtask={(source, target, after) => reorderSubtask(task.id, source, target, after)}
+    onCompleteSubtask={id => completeSubtask(task, id)} onDependency={target => setDependencyTarget({ taskId: task.id, ...target })} onWaiting={scope => setWaitingTarget({ taskId: task.id, scope })}/>;
+  const tiles = <div aria-label="大タスクのタイル" className="grid grid-cols-2 gap-3">{boardTasks.map(task => <article key={task.id} data-progress-task-id={task.id} data-status={progressItemStatus(task)} onContextMenu={e => openMenu(e, task)} className={`rounded-xl border shadow-sm ${progressStatusClasses(progressItemStatus(task))}`}>
+    <button type="button" aria-label={task.title} onClick={() => { tileScrollTargetRef.current = task.id; selectTask(task); }} className="min-h-28 w-full rounded-xl p-3 text-left hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"><span className="block break-words text-sm font-bold">{task.title}</span><span className="mt-3 block text-xs">期限: {task.dueDate || '未設定'}</span></button>
+  </article>)}{!hideTodo && <button type="button" aria-label="大タスクを追加" onClick={onAddTask} className="min-h-28 rounded-xl border-2 border-dashed bg-white/70 flex items-center justify-center text-slate-500 hover:bg-blue-50"><Plus size={28}/></button>}</div>;
   return <div className="h-full min-h-0 flex flex-col overflow-hidden" data-progress-page="">
     <style>{`
       [data-progress-page] *, [data-progress-page] *::before, [data-progress-page] *::after { border-color: #cbd5e1 !important; }
@@ -4196,9 +4202,13 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
       [data-progress-page] [data-progress-small-task-id], [data-progress-page] .progress-talk-bubble { border-color: #64748b !important; }
       [data-progress-page] .progress-talk-bubble { box-shadow: 0 1px 3px rgba(15, 23, 42, .06); }
     `}</style>
-    <div className="px-4 py-2 bg-white/70 border-b flex items-center justify-between gap-3 shrink-0">
+    <div className="px-4 py-2 bg-white/70 border-b flex flex-wrap items-center justify-between gap-3 shrink-0">
       <label className="text-xs flex items-center gap-2">返信済みの相手待ち<select aria-label="返信済みの相手待ちの表示" value={showResolvedWaiting ? 'show' : 'hide'} onChange={e => changeResolvedWaiting(e.target.value)} className="border rounded-lg bg-white px-2 py-1.5"><option value="show">青色で残す</option><option value="hide">非表示</option></select></label>
-      <button type="button" aria-label={hideTodo ? '未着手ボードを表示' : '未着手ボードを非表示'} aria-pressed={hideTodo} onClick={toggleTodo} className="rounded-lg border bg-white px-3 py-1.5 text-xs font-bold">{tableView ? hideTodo ? '通常の幅に戻す' : 'テーブルを拡大表示' : hideTodo ? '入力欄を下に戻す' : '入力欄を右に表示'}</button>
+      <button type="button" aria-label="コンパクト表示" aria-pressed={hideTodo} onClick={toggleTodo} className="rounded-lg border bg-white px-3 py-1.5 text-xs font-bold">コンパクト表示 {hideTodo ? 'オン' : 'オフ'}</button>
+      <div role="group" aria-label="進捗リストの表示切替" className="flex gap-1 shrink-0 text-xs">
+        <button type="button" aria-pressed={!tableView} onClick={() => setTableView(false)} className={`rounded border px-2 py-1 ${!tableView ? 'bg-blue-50 text-blue-700' : 'bg-white'}`}>トーク表示</button>
+        <button type="button" aria-pressed={tableView} onClick={() => setTableView(true)} className={`rounded border px-2 py-1 ${tableView ? 'bg-blue-50 text-blue-700' : 'bg-white'}`}>テーブル表示</button>
+      </div>
       <details className="relative text-xs shrink-0"><summary className="cursor-pointer text-gray-600">色の説明</summary>
         <div className="absolute right-0 top-full z-30 mt-2 w-72 rounded-xl border bg-white p-3 shadow-lg space-y-3">
           <p className="text-gray-600">ボードのカードを選ぶと、その範囲のトークを表示・入力できます。</p>
@@ -4208,41 +4218,36 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
     </div>
     <div className="flex-1 min-h-0 overflow-x-auto p-4 md:p-6">
       <div className="grid gap-4 h-full min-h-0" style={{ gridTemplateColumns: hideTodo ? 'minmax(240px, 0.65fr) minmax(776px, 2.35fr)' : 'minmax(240px, 1fr) minmax(240px, 1fr) minmax(380px, 1.6fr)', minWidth: hideTodo ? 1040 : 920 }}>
-        {[{ stage: 'todo', title: '未着手ボード' }, { stage: 'doing', title: '着手中ボード' }].filter(({ stage }) => !hideTodo || stage !== 'todo').map(({ stage, title }) => {
-          const items = tracked.filter(task => stage === 'doing' && showCompleted
-            ? task.completed && boardMatches(task) && (!completionMonth || (Number.isFinite(reportEntryDate(task.completedAt).getTime()) && formatDate(reportEntryDate(task.completedAt)).slice(0, 7) === completionMonth))
-            : !task.completed && (task.progressStage || 'todo') === stage && (stage !== 'doing' || boardMatches(task)));
-          if (stage === 'doing' && showCompleted) items.sort((a, b) => (reportEntryDate(b.completedAt).getTime() || 0) - (reportEntryDate(a.completedAt).getTime() || 0));
-          return <section key={stage} aria-label={title} data-progress-stage={stage} onDragOver={e => { if (stage === 'doing' && showCompleted) return; e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }} onDrop={e => { if (stage === 'doing' && showCompleted) { e.preventDefault(); return; } dropTask(e, stage); }} className={`rounded-2xl border flex flex-col min-h-0 overflow-hidden ${draggingId ? 'border-black bg-blue-50' : 'border-black bg-gray-50'}`}>
-            <header className="p-4 border-b flex items-center justify-between bg-white shrink-0">{stage === 'doing' && <button type="button" aria-label="大タスクのホーム" title="大タスクのタイル表示に戻る" aria-pressed={taskHome} onClick={() => setTaskHome(true)} className="mr-2 rounded-lg border bg-white p-1.5 text-blue-700"><Home size={18}/></button>}<h2 className="text-sm font-black flex items-center gap-2">{title}<span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">{items.length}</span></h2>{stage === 'todo' && <button onClick={onAddTask} aria-label="未着手タスクを追加" className="p-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100"><Plus size={18}/></button>}</header>
-            {stage === 'doing' && <div className="shrink-0 border-b bg-white px-3 py-2 space-y-2">
-              <div className="flex rounded-lg bg-slate-100 p-0.5 text-xs font-bold">
-                {[false, true].map(completed => <button type="button" key={String(completed)} aria-label={completed ? '完了済みタスクを表示' : '未完了タスクを表示'} aria-pressed={showCompleted === completed} onClick={() => setShowCompleted(completed)} className={`flex-1 rounded-md px-2 py-1.5 ${showCompleted === completed ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500'}`}>{completed ? '完了済み' : '未完了'}</button>)}
-              </div>
-              <div className="flex items-center gap-1.5">
-                <label className="flex min-w-0 flex-1 items-center gap-1 rounded-lg border px-2 py-1.5"><Search size={13} className="shrink-0 text-slate-400"/><input aria-label="ボードのタスクを検索" placeholder="タスク・トークを検索" value={boardQuery} onChange={e => setBoardQuery(e.target.value)} className="min-w-0 w-full text-xs outline-none"/></label>
-                <button type="button" aria-label="完了時期で絞り込み" title="完了した年月で絞り込み" disabled={!showCompleted} aria-expanded={showCompleted && showCompletionPeriod} aria-controls="progress-completion-period" onClick={() => setShowCompletionPeriod(value => !value)} className={`rounded-lg border p-2 disabled:opacity-30 ${completionMonth ? 'bg-blue-50 text-blue-700' : 'text-slate-500'}`}><CalendarDays size={16}/></button>
-              </div>
-              {showCompleted && showCompletionPeriod && <div id="progress-completion-period" className="space-y-1.5 rounded-lg border bg-slate-50 p-2 text-xs">
-                <label className="flex flex-wrap items-center gap-1.5">完了した年月<input aria-label="完了した年月" type="month" value={completionMonth} onChange={e => setCompletionMonth(e.target.value)} className="min-w-0 rounded border bg-white px-2 py-1"/></label>
-                <button type="button" disabled={!completionMonth} onClick={() => setCompletionMonth('')} className="underline text-slate-500 disabled:opacity-40">年月指定を解除</button>
-              </div>}
-            </div>}
-            <div ref={stage === 'doing' ? doingListRef : undefined} className="overflow-y-auto p-3 space-y-3 flex-1 min-h-0">
-              {stage === 'doing' && taskHome && <div aria-label="大タスクのタイル" className="grid grid-cols-2 gap-3">{items.map(task => <article key={task.id} data-progress-task-id={task.id} data-status={progressItemStatus(task)} className={`rounded-xl border shadow-sm ${progressStatusClasses(progressItemStatus(task))}`}><button type="button" aria-label={task.title} onClick={() => { tileScrollTargetRef.current = task.id; selectTask(task); }} className="min-h-28 w-full rounded-xl p-3 text-left hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
-                <span className="block break-words text-sm font-bold">{task.title}</span><span className="mt-3 block text-xs">期限: {task.dueDate || '未設定'}</span>
-              </button></article>)}</div>}
-              {(stage === 'doing' && taskHome ? [] : items).map(task => <ProgressTaskCard key={task.id} task={task} tableView={tableView} selected={selectedId === task.id} onSelect={() => selectTask(task)} onSettings={() => setSettings({ id: task.id, starting: false })} onStart={() => startTask(task)} onCompleteTask={() => completeTask(task)} onReopenTask={() => reopenTask(task)} onDeleteSmallTask={id => deleteSmallTask(task, id)} onFilter={(subtaskId, smallTaskId) => filterThread(task, subtaskId, smallTaskId)} onOtherTalks={() => filterThread(task, '', '', true)} onReorderSmallTask={(parent, source, target, after) => reorderSmallTask(task.id, parent, source, target, after)} onReorderSubtask={(source, target, after) => reorderSubtask(task.id, source, target, after)} onCompleteSubtask={id => completeSubtask(task, id)} onDependency={target => setDependencyTarget({ taskId: task.id, ...target })} onWaiting={scope => setWaitingTarget({ taskId: task.id, scope })} onDragStart={(e, id) => { if (task.completed) { e.preventDefault(); return; } setDraggingId(id); e.dataTransfer.setData('application/x-taskmatrix-progress', id); e.dataTransfer.effectAllowed = 'move'; e.currentTarget.addEventListener('dragend', () => setDraggingId(null), { once: true }); }}/>) }
-              {!items.length && <p className="border-2 border-dashed border-black rounded-xl p-5 text-xs text-gray-400 text-center leading-relaxed">{stage === 'todo' ? 'ボードの「進捗ページに表示」にチェックするか、＋からタスクを追加してください。' : showCompleted || query ? '条件に一致するタスクはありません。' : '未着手のカードをここへドラッグするか、「着手する」を押してください。'}</p>}
-            </div>
-          </section>;
-        })}
+        <section aria-label="大タスクボード" className="rounded-2xl border bg-gray-50 flex flex-col min-h-0 overflow-hidden">
+          <header className="p-3 border-b bg-white flex items-center gap-2 shrink-0">
+            {hideTodo && <><button type="button" aria-label="大タスクのホーム" aria-pressed={taskHome} onClick={() => setTaskHome(true)} className="rounded-lg border p-1.5"><Home size={18}/></button><button type="button" aria-label="大タスクを追加" onClick={onAddTask} className="rounded-lg border p-1.5"><Plus size={18}/></button></>}
+            <h2 className="text-sm font-black">大タスクボード</h2>
+          </header>
+          <div className="bg-white border-b p-2 space-y-2 shrink-0">
+            <div className="flex gap-1 text-xs">{[false,true].map(completed => <button type="button" key={String(completed)} aria-label={completed ? '完了済みタスクを表示' : '未完了タスクを表示'} aria-pressed={showCompleted === completed} onClick={() => setShowCompleted(completed)} className={`flex-1 rounded border p-1 ${showCompleted === completed ? 'bg-blue-50 text-blue-700' : ''}`}>{completed ? '完了済み' : '未完了'}</button>)}</div>
+            <input aria-label="ボードのタスクを検索" placeholder="タスク・トークを検索" value={boardQuery} onChange={e => setBoardQuery(e.target.value)} className="w-full border rounded px-2 py-1 text-xs"/>
+            {showCompleted && <label className="text-xs">完了した年月<input type="month" aria-label="完了した年月" value={completionMonth} onChange={e => setCompletionMonth(e.target.value)} className="border rounded ml-1 min-w-0"/></label>}
+          </div>
+          <div ref={doingListRef} className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">{!hideTodo || taskHome ? tiles : boardTasks.map(task => renderCard(task))}</div>
+        </section>
+        {!hideTodo && <section aria-label="やるべきことボード" className="rounded-2xl border bg-gray-50 flex flex-col min-h-0 overflow-hidden">
+          <header className="p-3 border-b bg-white shrink-0"><h2 className="text-sm font-black">やるべきことボード</h2><p className="text-xs text-slate-500 truncate">{selectedTask?.title || '大タスクを選択してください'}</p></header>
+          <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">{selectedTask && <>{renderCard(selectedTask, true)}<button type="button" aria-label="やるべきことを追加" onClick={() => setManage({ task: selectedTask, action: 'add' })} className="w-full min-h-28 border-2 border-dashed rounded-xl flex items-center justify-center text-slate-500 hover:bg-blue-50"><Plus size={24}/></button></>}</div>
+        </section>}
         <section aria-label="進捗リストボード" className={`${hideTodo && selectedTask ? '' : 'rounded-2xl border border-black bg-white overflow-hidden'} flex flex-col min-h-0 min-w-0`}>
           {!selectedTask && <header className="px-3 py-2 border-b shrink-0"><h2 className="text-sm font-black">進捗リストボード</h2></header>}
           {selectedTask ? <ProgressThreadBoundary key={selectedTask.id} resetKey={smallTaskTarget?.requestId}><ProgressThread task={selectedTask} onUpdateTask={onUpdateTask} smallTaskTarget={smallTaskTarget} showResolvedWaiting={showResolvedWaiting} expandedComposer={hideTodo} tableView={tableView} onTableViewChange={setTableView}/></ProgressThreadBoundary> : <div className="flex-1 flex flex-col items-center justify-center gap-3 text-gray-400 p-6 text-sm text-center"><List size={32}/><p>カードをクリックすると、<br/>進捗と変更履歴が表示されます。</p></div>}
         </section>
       </div>
     </div>
+    {menu && <div ref={menuRef} role="menu" aria-label={menu.todo ? 'やるべきことの設定' : '大タスクの設定'} className="fixed z-50 w-52 rounded-xl border bg-white p-1 shadow-xl text-sm" style={{ left: menu.x, top: menu.y }}>
+      <p className="px-3 py-1 text-xs text-slate-500 truncate">{menu.todo?.title || menu.task.title}</p>
+      {[['name','名前変更'],['due','期限変更'],...(menu.todo ? [['status','ステータス変更']] : [['restore','やるべきこと再表示'],...(hideTodo ? [['add','やるべきことの追加']] : [])])].map(([action,label]) => <button type="button" role="menuitem" key={action} onClick={() => edit(action)} className="block w-full rounded px-3 py-2 text-left hover:bg-blue-50">{label}</button>)}
+      {!menu.todo && (menu.task.completed || canCompleteProgressTask(menu.task)) && <button type="button" role="menuitem" onClick={() => { if (menu.task.completed) reopenTask(menu.task); else completeTask(menu.task); setMenu(null); }} className="block w-full rounded px-3 py-2 text-left hover:bg-blue-50">{menu.task.completed ? '完了を取り消す' : 'タスク全体を完了'}</button>}
+      {menu.todo && <button type="button" role="menuitem" onClick={() => hideSubtask(menu.task, menu.todo)} className="block w-full rounded px-3 py-2 text-left hover:bg-blue-50">非表示</button>}
+      <button type="button" role="menuitem" onClick={deleteItem} className="block w-full rounded px-3 py-2 text-left text-red-700 hover:bg-red-50">削除</button>
+    </div>}
+    {manage && <ProgressManageDialog key={`${manage.task.id}-${manage.todo?.id}-${manage.action}`} {...manage} onClose={() => setManage(null)} onSave={saveManagement}/>}
     {waitingTarget && tracked.some(task => task.id === waitingTarget.taskId) && <ProgressWaitingModal task={tracked.find(task => task.id === waitingTarget.taskId)} scope={waitingTarget.scope} onClose={() => setWaitingTarget(null)}/>}
     {dependencyTarget && tracked.some(task => task.id === dependencyTarget.taskId) && <ProgressDependencyModal key={`${dependencyTarget.taskId}-${progressDependencyKey(dependencyTarget)}`} task={tracked.find(task => task.id === dependencyTarget.taskId)} target={dependencyTarget} onClose={() => setDependencyTarget(null)} onSave={dependencies => {
       onUpdateTask(dependencyTarget.taskId, previous => {
@@ -4252,7 +4257,7 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask }) => {
           : st.id === dependencyTarget.parentId ? { ...st, smallTasks: getProgressSmallTasks(st).map(small => small.id === dependencyTarget.id ? { ...small, dependencies } : small) } : st) };
       }); setDependencyTarget(null);
     }}/>}
-    {settingsTask && <ProgressSettingsModal key={`${settingsTask.id}-${settings.starting}`} task={settingsTask} starting={settings.starting} onClose={() => setSettings(null)} onSave={(patch, reason) => { onUpdateTask(settingsTask.id, previous => ({ ...previous, ...patch }), { reason }); if (settings.starting) { setTaskHome(false); setSelectedId(settingsTask.id); } setSettings(null); }}/>}
+
   </div>;
 };
 
@@ -4659,7 +4664,27 @@ const WeeklyReportModal = ({ tasks, onClose, onCreated }) => {
 
 export default function App() {
   const [isDBReady, setIsDBReady] = useState(false);
-  const [activeTab, setActiveTab] = useState('board');
+  const [activeTab, setActiveTab] = useState('progress');
+  const fileBackupMenuRef = useRef(null);
+  useEffect(() => {
+    const dismissOutside = event => {
+      const menu = fileBackupMenuRef.current;
+      if (menu && !menu.contains(event.target)) menu.open = false;
+    };
+    const dismissOnEscape = event => {
+      const menu = fileBackupMenuRef.current;
+      if (event.key === 'Escape' && menu?.open) {
+        menu.open = false;
+        menu.querySelector('summary')?.focus();
+      }
+    };
+    document.addEventListener('click', dismissOutside, true);
+    document.addEventListener('keydown', dismissOnEscape);
+    return () => {
+      document.removeEventListener('click', dismissOutside, true);
+      document.removeEventListener('keydown', dismissOnEscape);
+    };
+  }, []);
   const [plannerView, setPlannerView] = useState('list');
 
   const [tasks, setTaskRecords] = useState([]);
@@ -5303,7 +5328,7 @@ export default function App() {
         resultImages: [],
         order: Date.now(),
         ...processedTaskData,
-        ...(creatingProgressTask ? { progressEnabled: true, progressStage: 'todo' } : {}),
+        ...(creatingProgressTask ? { progressEnabled: true, progressStage: 'doing' } : {}),
         id: `t_${Date.now()}_${Math.random().toString(36).substring(2,9)}`
       };
       setTasks(prev => [...prev, newTask]);
@@ -5476,7 +5501,7 @@ export default function App() {
 
         <div className="flex flex-wrap items-center gap-4">
           <div className="flex flex-wrap items-center gap-2">
-            <details className="relative" data-file-backup>
+            <details ref={fileBackupMenuRef} className="relative" data-file-backup>
               <summary className="flex cursor-pointer list-none items-center gap-1.5 text-slate-700 hover:bg-slate-100 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-bold shadow-sm">
                 <Download size={14} /><span>ファイル保存</span>
                 {fileBackup.name && <span className={fileBackup.status === 'saved' ? 'text-emerald-700' : fileBackup.status === 'error' || fileBackup.status === 'permission' ? 'text-red-600' : 'text-amber-700'} role="status" aria-label="ファイル保存状態">{({ saved: '保存済み', saving: '保存中…', choosing: '選択中…', pending: '未保存', permission: '許可が必要', error: '保存失敗', ready: '接続済み' })[fileBackup.status]}</span>}
@@ -5574,7 +5599,7 @@ export default function App() {
       <main className="flex-1 overflow-hidden relative">
 
         {activeTab === 'progress' && (
-          <ProgressPage tasks={tasks} onUpdateTask={handleUpdateProgressTask} onAddTask={handleAddProgressTask} />
+          <ProgressPage tasks={tasks} onUpdateTask={handleUpdateProgressTask} onAddTask={handleAddProgressTask} onDeleteTask={handleDeleteTask} />
         )}
 
         {activeTab === 'today' && (
