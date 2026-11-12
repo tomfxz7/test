@@ -13,10 +13,10 @@ from playwright.sync_api import expect
 
 class AISummaryTests(base.ProgressTests):
     def open_task(self):
-        self.card().get_by_role('button',name='進捗テスト案件',exact=True).click()
+        self.card(self.stored()[0]['id']).get_by_role('button',name='進捗テスト案件',exact=True).click()
 
     def context(self, action):
-        self.card().get_by_role('button',name='進捗テスト案件',exact=True).click(button='right')
+        self.card(self.stored()[0]['id']).get_by_role('button',name='進捗テスト案件',exact=True).click(button='right')
         self.page.get_by_role('menu',name='大タスクの設定',exact=True).get_by_role('menuitem',name=action,exact=True).click()
 
     def export(self):
@@ -152,6 +152,30 @@ class AISummaryTests(base.ProgressTests):
         expect(self.page.get_by_role('alert')).to_contain_text('先に');self.page.get_by_role('button',name='キャンセル',exact=True).click()
         self.export();editor=self.editor();self.paste(editor,self.bundle('全体のみの要約'));self.save()
         self.assertEqual(len(self.stored()[0]['aiSummaries']),1);expect(self.show()).to_contain_text('全体のみの要約')
+
+
+    def test_real_ids_keep_underscores_when_pasted_as_markdown_or_styled_html(self):
+        task=base.task(progressEnabled=True,progressStage='doing')
+        task['id']='t_1793949728983_ix1rt6m'
+        task['subtasks'][0]['id']='st_1793949728983_first'
+        task['subtasks'][1]['id']='st_1793949728983_second'
+        self.seed([task]);self.open_task();self.export()
+        value=self.bundle('スクリーンショット形式の全体要約','項目別の結論')
+        editor=self.editor();self.paste(editor,value)
+        for kind,id in [('TASK',task['id']),('TODO',task['subtasks'][0]['id']),('TODO',task['subtasks'][1]['id'])]:
+            expect(editor).to_contain_text(self.marker(kind,id))
+        expect(editor.locator('h1 em,h2 em')).to_have_count(0)
+        self.save();expect(self.show()).to_contain_text('スクリーンショット形式の全体要約')
+        editor=self.editor();snapshot=self.stored()[0]['aiSummaryExport']
+        html='<h1>進捗テスト案件 <strong>'+self.marker('BATCH',snapshot['id'])+'</strong></h1><p>全体要約 <em>'+self.marker('TASK',task['id'])+'</em></p><p><strong>更新した全体</strong></p>'
+        for st in task['subtasks']:
+            html+='<h2><strong>'+st['title']+' '+self.marker('TODO',st['id'])+'</strong></h2><p>更新した項目 '+st['title']+'</p>'
+        self.paste(editor,'Copilotの書式付き回答',html)
+        for st in task['subtasks']:expect(editor).to_contain_text(self.marker('TODO',st['id']))
+        self.save();expect(self.show()).to_contain_text('更新した全体')
+        self.page.get_by_role('button',name='既存の調査のトークを表示',exact=True).click()
+        expect(self.show()).to_contain_text('更新した項目 '+task['subtasks'][0]['title'])
+        self.assertIn('**更新した全体**',self.stored()[0]['aiSummaries'][json.dumps(['task',task['id']],separators=(',',':'))]['markdown'])
 
 
 def load_tests(loader,tests,pattern):return unittest.TestSuite(AISummaryTests(name) for name in AISummaryTests.__dict__ if name.startswith('test_'))

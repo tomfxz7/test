@@ -3330,14 +3330,22 @@ const visibleProgressTask = task => {
 
 // Summary Markdown is rendered from safe DOM nodes, never pasted HTML.
 const summaryImageUrl = value => progressSafeUrl(value) || (/^data:image\/(?:png|jpeg|gif|webp|avif);base64,[a-z0-9+/=\s]+$/i.test(value || '') ? value : null);
+// Routing IDs contain underscores; keep the complete token outside Markdown formatting.
+const summaryFormatMarkdown = (text, delimiter) => text.split(/(\[AI_(?:BATCH|TASK|TODO):[^\]\r\n]+\])/).map(part => {
+  if (/^\[AI_(?:BATCH|TASK|TODO):/.test(part) || !part.trim()) return part;
+  return part.replace(/^(\s*)([\s\S]*?\S)(\s*)$/, (_, before, body, after) => before + delimiter + body + delimiter + after);
+}).join('');
 const summaryInline = (text, depth = 0) => {
   const fragment = document.createDocumentFragment();
   if (depth > 12) { fragment.append(document.createTextNode(text)); return fragment; }
-  const pattern = /!?\[([^\]\n]*)\]\(([^\s)]+)\)|\*\*([^\n]+?)\*\*|__([^\n]+?)__|~~([^\n]+?)~~|`([^`\n]+)`|\*([^*\n]+)\*|_([^_\n]+)_|https?:\/\/[^\s<>]+/g;
+  const pattern = /\[AI_(?:BATCH|TASK|TODO):[^\]\r\n]+\]|!?\[([^\]\n]*)\]\(([^\s)]+)\)|\*\*([^\n]+?)\*\*|__([^\n]+?)__|~~([^\n]+?)~~|`([^`\n]+)`|\*([^*\n]+)\*|_([^_\n]+)_|https?:\/\/[^\s<>]+/g;
   let cursor = 0, match;
   while ((match = pattern.exec(text))) {
     fragment.append(document.createTextNode(text.slice(cursor, match.index)));
     const token = match[0]; let element;
+    if (/^\[AI_(?:BATCH|TASK|TODO):/.test(token)) {
+      fragment.append(document.createTextNode(token)); cursor = pattern.lastIndex; continue;
+    }
     if (match[1] !== undefined) {
       const image = token.startsWith('!'), url = image ? summaryImageUrl(match[2]) : progressSafeUrl(match[2]);
       if (url) {
@@ -3413,10 +3421,10 @@ const summaryReadMarkdown = root => {
     }).join('\n') + '\n';
     if (tag === 'PRE') return '\n\n```\n' + node.textContent + '\n```\n\n';
     const text = contents();
-    if (/^(STRONG|B)$/.test(tag) || /^(bold|[6-9]00)$/.test(node.style?.fontWeight || '')) return `**${text}**`;
-    if (/^(EM|I)$/.test(tag)) return `*${text}*`;
-    if (/^(S|DEL|STRIKE)$/.test(tag)) return `~~${text}~~`;
-    if (tag === 'CODE') return '`' + text + '`';
+    if (/^(STRONG|B)$/.test(tag) || /^(bold|[6-9]00)$/.test(node.style?.fontWeight || '')) return summaryFormatMarkdown(text, '**');
+    if (/^(EM|I)$/.test(tag)) return summaryFormatMarkdown(text, '*');
+    if (/^(S|DEL|STRIKE)$/.test(tag)) return summaryFormatMarkdown(text, '~~');
+    if (tag === 'CODE') return summaryFormatMarkdown(text, '`');
     if (tag === 'BLOCKQUOTE') return '\n\n' + text.trim().split('\n').map(line => '> ' + line).join('\n') + '\n\n';
     return /^(P|DIV)$/.test(tag) && node !== root ? '\n\n' + text + '\n\n' : text;
   };
