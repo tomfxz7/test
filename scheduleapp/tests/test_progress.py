@@ -5386,6 +5386,44 @@ class ProgressTests(unittest.TestCase):
             current=next(entry for entry in self.stored()[0]['progressHistory'] if entry['id']==source['id'])
             self.assertEqual(current['text'],source['text']);self.assertEqual(current['textFormats'],source['textFormats'])
 
+    def test_summary_waiting_links_jump_to_original_even_when_resolved_hidden(self):
+        item=self.summary_fixture()
+        item['subtasks'][0]['smallTasks'][3]['progressTableSplitWaiting']=True
+        self.open_summary(item);saved=self.stored()
+        self.page.get_by_label('返信済みの相手待ちの表示',exact=True).select_option('hide')
+        for row_id, title, entry_id in [
+            ('waiting:root-replied','全体の返信済み依頼','root-replied'),
+            ('waiting:parent-wait','親の結論待ち依頼','parent-wait'),
+            ('waiting:sw','小さいタスク内の依頼','sw'),
+        ]:
+            self.summary_row(row_id).get_by_role('button',name='相手待ちのトークへ移動: '+title,exact=True).press('Enter')
+            expect(self.entry(entry_id)).to_be_focused()
+            self.page.get_by_role('button',name='テーブル表示',exact=True).click()
+        self.assertEqual(self.stored(),saved)
+
+    def test_summary_task_links_open_scoped_talks_including_empty_and_manual_wait(self):
+        item=self.summary_fixture()
+        item['subtasks'][0]['smallTasks'][0].update(waiting=True,progressTableSplitWaiting=True)
+        item['subtasks'].append(dict(id='manual',title='手動の相手待ち',waiting=True))
+        self.open_summary(item);saved=self.stored()
+        for row_id, label, title in [
+            ('small:p:active','小さいタスクのトークへ移動: 進捗あり','進捗あり'),
+            ('small:p:active','やるべきことのトークへ移動: 表の親','表の親'),
+            ('waiting-scope:small:none','小さいタスクのトークへ移動: 設定だけ','設定だけ'),
+            ('waiting-scope:small:none','相手待ちのトークへ移動: 設定だけ（相手待ち）','設定だけ'),
+            ('waiting-scope:subtask:manual','相手待ちのトークへ移動: 手動の相手待ち（相手待ち）','手動の相手待ち'),
+            ('waiting:root-wait','タスク全体のトークへ移動','進捗テスト案件'),
+        ]:
+            self.summary_row(row_id).get_by_role('button',name=label,exact=True).click()
+            expect(self.page.get_by_role('button',name='トーク表示',exact=True)).to_have_attribute('aria-pressed','true')
+            expect(self.page.get_by_label('トークのタイトル',exact=True)).to_have_text(title)
+            if title == '進捗あり':
+                expect(self.entry('active-last')).to_be_visible()
+                expect(self.entry('outside-talk')).to_have_count(0)
+            self.select_chat(expand_threads=False)
+            self.page.get_by_role('button',name='テーブル表示',exact=True).click()
+        self.assertEqual(self.stored(),saved)
+
     def test_summary_root_nested_waits_show_first_request_and_each_conclusion_jumps(self):
         source=dict(id='req',kind='comment',text='最初の依頼',status='waiting',subtaskIds=[])
         nested=dict(id='more',kind='comment',text='回答と追加の依頼',status='waiting',subtaskIds=[],quote=source)
@@ -5394,7 +5432,7 @@ class ProgressTests(unittest.TestCase):
         item=task(progressEnabled=True,progressStage='doing',progressHistory=[source,nested,result,final])
         table=self.open_summary(item)
         expect(self.summary_row('waiting:more')).to_have_count(0)
-        row=self.summary_row('waiting:req');expect(row.get_by_role('cell',name='最初の依頼',exact=True)).to_be_visible()
+        row=self.summary_row('waiting:req');expect(row.get_by_role('button',name='相手待ちのトークへ移動: 最初の依頼',exact=True)).to_be_visible()
         row.get_by_role('button',name='トークへ移動: 最初の結論',exact=True).click()
         expect(self.entry('done1')).to_be_focused()
         self.page.get_by_role('button',name='テーブル表示',exact=True).click()
