@@ -209,5 +209,27 @@ class AISummaryTests(base.ProgressTests):
         expect(self.show()).to_contain_text('新しく考え直した全体')
 
 
+    def test_word_prompts_linked_powerpoint_and_keeps_card_sources_in_both_modes(self):
+        task=base.task(progressEnabled=True,progressStage='doing')
+        task['urls']=['https://example.com/slides.pptx?download=1&version=2','javascript:alert(1)']
+        task['subtasks'][0]['urls']=['https://tenant.sharepoint.com/:p:/s/review/visible']
+        task['subtasks'][0]['smallTasks']=[dict(id='tiny',title='小作業',urls=['https://example.com/detail.ppt'])]
+        task['subtasks'].append(dict(id='hidden',title='非表示の作業',progressHidden=True,urls=['https://example.com/hidden.pptx']))
+        task['progressHistory']=[dict(id='source',kind='comment',status='active',text='資料の測定条件を確認',subtaskIds=['s1'],links=[dict(label='測定結果',url='https://example.com/results.pptx')])]
+        self.seed([task]);self.open_task()
+        for include in [True,False]:
+            with self.page.expect_download() as download:self.context('AI要約用Wordを出力' if include else 'AI要約用Wordを出力（前回要約なし）')
+            with zipfile.ZipFile(download.value.path()) as archive:
+                text='\n'.join(node.text or '' for node in ET.fromstring(archive.read('word/document.xml')).iter() if node.tag.endswith('}t'))
+                for phrase in ['対応優先順序','要約上の整理・提案','PowerPoint','SharePoint・OneDrive','関連スライド','スライド番号','未閲覧・部分閲覧','再掲できない場合','図表名・要点','同じ会話内の過去の回答' if not include else '前回の要約（参考情報）']:
+                    self.assertIn(phrase,text)
+                targets=[node.attrib.get('Target') for node in ET.fromstring(archive.read('word/_rels/document.xml.rels'))]
+                for url in [task['urls'][0],task['subtasks'][0]['urls'][0],task['subtasks'][0]['smallTasks'][0]['urls'][0],'https://example.com/results.pptx']:
+                    self.assertIn(url,targets)
+                self.assertNotIn('https://example.com/hidden.pptx',targets)
+                self.assertNotIn('javascript:alert(1)',text)
+                for kind,id in [('TASK','track'),('TODO','s1'),('TODO','s2')]:self.assertIn(self.marker(kind,id),text)
+
+
 def load_tests(loader,tests,pattern):return unittest.TestSuite(AISummaryTests(name) for name in AISummaryTests.__dict__ if name.startswith('test_'))
 if __name__=='__main__':unittest.main(verbosity=2)
