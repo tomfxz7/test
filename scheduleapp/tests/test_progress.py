@@ -202,6 +202,195 @@ class ProgressTests(unittest.TestCase):
     def backup_contents(self):
         return self.page.evaluate('''async()=>JSON.parse(await(await(await navigator.storage.getDirectory()).getFileHandle('taskmatrix-test.json')).getFile().then(file=>file.text()))''')
 
+    def sync_external_edit(self, body="document.tasks[0].title='別の端末で編集した名前';"):
+        return self.page.evaluate('''async body => {
+          const previous = JSON.parse(await (await backupFile.getFile()).text());
+          const document = structuredClone(previous);
+          new Function('document', body)(document);
+          document._sync = {...document._sync,version:1,saveId:crypto.randomUUID(),savedAt:'2099-01-01T00:00:00.000Z',deviceId:'other-device',fields:trackBackupEdits(backupBody(previous),backupBody(document),{...previous._sync.fields},'2099-01-01T00:00:00.000Z')};
+          const stream = await backupFile.createWritable();await stream.write(JSON.stringify(document));await stream.close();
+          const root=await navigator.storage.getDirectory();
+          window.retreatDirectory=await root.getDirectoryHandle('retreats',{create:true});
+          window.showDirectoryPicker=async()=>retreatDirectory;
+          return document;
+        }''',body)
+
+    def sync_manual_conflict(self):
+        menu=self.page.locator('[data-file-backup]')
+        menu.evaluate('(node)=>node.open=true')
+        menu.get_by_role('button',name='今すぐ保存',exact=True).click()
+        dialog=self.page.get_by_role('dialog',name='保存データの競合',exact=True)
+        expect(dialog).to_be_visible()
+        return dialog
+
+    def sync_retreats(self):
+        return self.page.evaluate('''async()=>{const result={};for await(const [name,handle] of retreatDirectory.entries())result[name]=await(await handle.getFile()).text();return result;}''')
+
+    def test_sync_cache_priority_retreats_external_data_before_overwrite(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.connect_backup_file()
+        external=self.sync_external_edit();dialog=self.sync_manual_conflict()
+        expect(dialog.get_by_role('button',name='キャッシュデータを優先',exact=True)).to_be_disabled()
+        dialog.get_by_role('button',name='退避先フォルダーを選択',exact=True).click()
+        dialog.get_by_role('button',name='キャッシュデータを優先',exact=True).click()
+        expect(dialog).to_have_count(0)
+        saved=self.backup_contents();self.assertEqual(saved['tasks'],self.stored())
+        self.assertNotEqual(saved['_sync']['saveId'],external['_sync']['saveId'])
+        retreats=self.sync_retreats();self.assertEqual(len(retreats),1)
+        name,raw=next(iter(retreats.items()));self.assertTrue(name.startswith('ファイル退避データ_'))
+        self.assertEqual(json.loads(raw),external)
+
+    def test_sync_file_priority_retreats_cache_and_restores_all_collections(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.connect_backup_file()
+        self.page.get_by_label('変更時に自動で上書き保存',exact=True).uncheck()
+        self.progress();self.select_chat();self.send('端末内だけにあるコメント')
+        cache=self.stored()
+        external=self.sync_external_edit("document.tasks[0].title='外部の名前';document.projects=[{id:'remote-project',title:'外部プロジェクト'}];document.recurringCompletions={remote:{completed:true}};")
+        dialog=self.sync_manual_conflict();dialog.get_by_role('button',name='退避先フォルダーを選択',exact=True).click()
+        dialog.get_by_role('button',name='保存データを優先',exact=True).click();expect(dialog).to_have_count(0)
+        self.assertEqual(self.stored()[0]['title'],'外部の名前');self.assertEqual(self.backup_contents(),external)
+        retreats=self.sync_retreats();self.assertEqual(len(retreats),1)
+        name,raw=next(iter(retreats.items()));self.assertTrue(name.startswith('キャッシュ退避データ_'))
+        self.assertEqual(json.loads(raw)['tasks'],cache)
+        self.page.reload();expect(self.page.get_by_role('heading',name='TaskMatrix Pro')).to_be_visible()
+        expect(self.page.get_by_role('dialog',name='保存データの競合',exact=True)).to_have_count(0)
+        self.assertEqual(self.stored()[0]['title'],'外部の名前')
+
+    def test_sync_merge_retreats_both_and_preserves_independent_edits(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.connect_backup_file()
+        self.page.get_by_label('変更時に自動で上書き保存',exact=True).uncheck()
+        self.progress();self.select_chat();self.send('マージで残す端末内のコメント');cache=self.stored()
+        external=self.sync_external_edit();dialog=self.sync_manual_conflict()
+        dialog.get_by_role('button',name='退避先フォルダーを選択',exact=True).click()
+        dialog.get_by_role('button',name='マージする',exact=True).click();expect(dialog).to_have_count(0)
+        saved=self.backup_contents();self.assertEqual(saved['tasks'][0]['title'],'別の端末で編集した名前')
+        self.assertEqual(saved['tasks'][0]['progressHistory'][-1]['text'],'マージで残す端末内のコメント')
+        self.assertEqual(saved['tasks'],self.stored())
+        retreats=self.sync_retreats();self.assertEqual(len(retreats),2)
+        for name,raw in retreats.items():
+            if name.startswith('キャッシュ退避データ_'):self.assertEqual(json.loads(raw)['tasks'],cache)
+            else:self.assertEqual(json.loads(raw),external)
+
+    def test_sync_auto_save_stops_and_cancel_keeps_it_paused(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.connect_backup_file()
+        external=self.sync_external_edit();self.progress();self.select_chat();self.send('競合中のコメント')
+        dialog=self.page.get_by_role('dialog',name='保存データの競合',exact=True);expect(dialog).to_be_visible(timeout=10000)
+        dialog.get_by_role('button',name='キャンセル',exact=True).click()
+        self.send('保留中も端末に残すコメント');self.page.wait_for_timeout(1300)
+        self.assertEqual(self.backup_contents(),external)
+        dialog=self.sync_manual_conflict();expect(dialog).to_be_visible()
+
+    def test_sync_startup_detects_external_update_without_writing(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.connect_backup_file()
+        external=self.sync_external_edit()
+        self.page.reload();expect(self.page.get_by_role('heading',name='TaskMatrix Pro')).to_be_visible()
+        expect(self.page.get_by_role('dialog',name='保存データの競合',exact=True)).to_be_visible()
+        self.assertEqual(self.backup_contents(),external)
+
+    def test_sync_retreat_failure_and_remote_change_during_retreat_never_overwrite(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.connect_backup_file()
+        external=self.sync_external_edit();dialog=self.sync_manual_conflict()
+        dialog.get_by_role('button',name='退避先フォルダーを選択',exact=True).click()
+        self.page.evaluate('backupControl.fail=true')
+        dialog.get_by_role('button',name='キャッシュデータを優先',exact=True).click()
+        expect(dialog.get_by_role('alert').filter(has_text='反映できませんでした')).to_be_visible()
+        self.assertEqual(self.backup_contents(),external)
+        self.page.evaluate('backupControl.fail=false;backupControl.holdNext=true')
+        dialog.get_by_role('button',name='キャッシュデータを優先',exact=True).click()
+        self.page.wait_for_function('!!window.releaseBackupWrite')
+        newer=self.sync_external_edit("document.tasks[0].title='退避中にさらに変わった内容';")
+        self.page.evaluate('releaseBackupWrite()')
+        expect(dialog.get_by_role('button',name='キャッシュデータを優先',exact=True)).to_be_enabled()
+        self.assertEqual(self.backup_contents(),newer)
+        expect(dialog).to_be_visible()
+
+    def test_sync_merge_uses_field_clocks_deletions_and_asks_for_unknown_or_equal_dates(self):
+        result=self.page.evaluate('''() => {
+          const base={tasks:[{id:'t',title:'元',dueDate:'2026-01-01',comments:[{id:'c',text:'元の本文'},{id:'delete',text:'削除対象'}]}]};
+          const local=structuredClone(base), remote=structuredClone(base);
+          local.tasks[0].title='端末の名前';local.tasks[0].comments[0].text='古い編集';local.tasks[0].comments.splice(1,1);
+          remote.tasks[0].dueDate='2026-02-01';remote.tasks[0].comments[0].text='新しい編集';remote.tasks[0].comments[1].text='削除より新しい編集';
+          const lf=trackBackupEdits(base,local,{},'2026-01-01T01:00:00Z'),rf=trackBackupEdits(base,remote,{},'2026-01-01T02:00:00Z');
+          const merged=mergeBackupData(base,local,remote,lf,rf);
+          const newerDelete=structuredClone(lf);newerDelete['/tasks/@t/comments/@delete'].at='2026-01-01T03:00:00Z';
+          const deleted=mergeBackupData(base,local,remote,newerDelete,rf);
+          const tied=mergeBackupData(base,local,remote,lf,trackBackupEdits(base,remote,{},'2026-01-01T01:00:00Z'));
+          const unknown=mergeBackupData(base,local,remote,lf,{});
+          const chosen=mergeBackupData(base,local,remote,lf,{},Object.fromEntries(unknown.conflicts.map(item=>[item.path,'file'])));
+          return {merged,deleted,tied: tied.conflicts.map(item=>item.path),unknown:unknown.conflicts.map(item=>item.path),chosen};
+        }''')
+        self.assertEqual(result['merged']['conflicts'],[])
+        t=result['merged']['data']['tasks'][0]
+        self.assertEqual((t['title'],t['dueDate']),('端末の名前','2026-02-01'))
+        self.assertEqual([c['text'] for c in t['comments']],['新しい編集','削除より新しい編集'])
+        self.assertEqual(len(result['deleted']['data']['tasks'][0]['comments']),1)
+        self.assertIn('/tasks/@t/comments/@c/text',result['tied'])
+        self.assertIn('/tasks/@t/comments/@c/text',result['unknown'])
+        self.assertEqual(result['chosen']['data']['tasks'][0]['comments'][0]['text'],'新しい編集')
+
+    def test_sync_malformed_file_is_retired_byte_for_byte_before_explicit_overwrite(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.connect_backup_file()
+        self.sync_external_edit()
+        raw=[255,254,0,123,125,128]
+        self.page.evaluate('''async bytes=>{const s=await backupFile.createWritable();await s.write(new Uint8Array(bytes));await s.close();}''',raw)
+        dialog=self.sync_manual_conflict()
+        expect(dialog.get_by_role('button',name='保存データを優先',exact=True)).to_be_disabled()
+        expect(dialog.get_by_role('button',name='マージする',exact=True)).to_be_disabled()
+        dialog.get_by_role('button',name='退避先フォルダーを選択',exact=True).click()
+        dialog.get_by_role('button',name='キャッシュデータを優先',exact=True).click();expect(dialog).to_have_count(0)
+        retired=self.page.evaluate('''async()=>{for await(const [name,h] of retreatDirectory.entries())return Array.from(new Uint8Array(await(await h.getFile()).arrayBuffer()));}''')
+        self.assertEqual(retired,raw)
+        self.assertEqual(self.backup_contents()['tasks'],self.stored())
+
+    def test_sync_metadata_only_changes_for_edited_fields_and_survives_reload(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.connect_backup_file()
+        initial=self.backup_contents()['_sync'];self.assertTrue(all(not clock.get('at') for clock in initial['fields'].values()))
+        self.progress();self.select_chat();self.send('編集日時を残すコメント')
+        self.page.wait_for_function('backupControl.closed===2')
+        saved=self.backup_contents();fields=saved['_sync']['fields'];self.assertTrue(fields)
+        self.assertEqual(fields.get('/tasks/@track/title'),initial['fields'].get('/tasks/@track/title'))
+        self.page.locator('[data-file-backup]').evaluate('(node)=>node.open=true')
+        self.page.get_by_role('button',name='今すぐ保存',exact=True).click()
+        expect(self.page.get_by_label('ファイル保存状態',exact=True)).to_have_text('保存済み')
+        self.assertEqual(self.backup_contents()['_sync']['fields'],fields)
+        self.page.reload();expect(self.page.get_by_role('heading',name='TaskMatrix Pro')).to_be_visible()
+        with self.page.expect_download() as download:self.page.get_by_role('button',name='エクスポート',exact=True).click()
+        self.assertEqual(json.loads(Path(download.value.path()).read_text())['_sync']['fields'],fields)
+
+    def test_sync_merge_unknown_edits_require_explicit_choice_and_preserve_legacy_file(self):
+        item=task(progressEnabled=True,progressStage='doing')
+        item['progressHistory']=[dict(id='legacy-comment',kind='comment',status='active',text='元の本文',subtaskIds=[])]
+        self.seed([item]);self.connect_backup_file()
+        self.page.get_by_label('変更時に自動で上書き保存',exact=True).uncheck()
+        self.progress();self.select_chat()
+        self.entry('legacy-comment').get_by_role('button',name='コメントを編集',exact=True).click()
+        self.page.get_by_label('コメントの編集',exact=True).fill('端末で編集した本文')
+        self.page.get_by_role('button',name='編集を保存',exact=True).click()
+        self.sync_external_edit("document.tasks[0].progressHistory[0].text='日時のない外部編集';delete document._sync;")
+        # Remove the external helper's generated field clocks to model a legacy writer.
+        self.page.evaluate('''async()=>{const doc=JSON.parse(await(await backupFile.getFile()).text());delete doc._sync;const s=await backupFile.createWritable();await s.write(JSON.stringify(doc));await s.close();}''')
+        dialog=self.sync_manual_conflict();dialog.get_by_role('button',name='退避先フォルダーを選択',exact=True).click()
+        expect(dialog.get_by_role('button',name='マージする',exact=True)).to_be_disabled()
+        controls=dialog.locator('select')
+        self.assertGreater(controls.count(),0)
+        for control in controls.all():control.select_option('file')
+        dialog.get_by_role('button',name='マージする',exact=True).click();expect(dialog).to_have_count(0)
+        comment=next(entry for entry in self.backup_contents()['tasks'][0]['progressHistory'] if entry['id']=='legacy-comment')
+        self.assertEqual(comment['text'],'日時のない外部編集')
+        self.assertEqual(len(self.sync_retreats()),2)
+
+    def test_sync_read_failure_never_overwrites_and_focus_checks_external_changes(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.connect_backup_file()
+        before=self.backup_contents()
+        self.page.evaluate('''()=>{const get=FileSystemFileHandle.prototype.getFile;window.restoreSyncRead=()=>{FileSystemFileHandle.prototype.getFile=get;};FileSystemFileHandle.prototype.getFile=async()=>{throw new DOMException('unavailable','NotReadableError')};}''')
+        self.page.get_by_role('button',name='今すぐ保存',exact=True).click()
+        expect(self.page.get_by_label('ファイル保存状態',exact=True)).to_have_text('保存失敗')
+        self.page.evaluate('restoreSyncRead()');self.assertEqual(self.backup_contents(),before)
+        self.page.get_by_role('button',name='今すぐ保存',exact=True).click()
+        expect(self.page.get_by_label('ファイル保存状態',exact=True)).to_have_text('保存済み')
+        external=self.sync_external_edit();self.page.evaluate("window.dispatchEvent(new Event('focus'))")
+        expect(self.page.get_by_role('dialog',name='保存データの競合',exact=True)).to_be_visible()
+        self.assertEqual(self.backup_contents(),external)
+
     def test_file_backup_writes_all_data_auto_saves_and_restores_real_handle(self):
         original=task(progressEnabled=True,progressStage='doing')
         original['progressHistory']=[dict(id='image-link',kind='comment',status='active',text='https://example.com',subtaskIds=[],images=[dict(id='img',name='資料.png',src='data:image/png;base64,'+__import__('base64').b64encode(self.progress_png()).decode())],links=[dict(url='https://example.com',label='資料')])]
@@ -211,7 +400,7 @@ class ProgressTests(unittest.TestCase):
         expect(self.page.get_by_text('データをインポートしました',exact=True)).to_be_visible()
         self.connect_backup_file()
         saved=self.backup_contents()
-        self.assertEqual(set(saved),{'tasks','projects','recurringSchedules','recurringCompletions'})
+        self.assertEqual(set(saved),{'tasks','projects','recurringSchedules','recurringCompletions','_sync'})
         self.assertEqual(saved['tasks'],self.stored())
         for key,value in shared.items():self.assertEqual(saved[key],value)
         with self.page.expect_download() as download:self.page.get_by_role('button',name='エクスポート',exact=True).click()
@@ -308,7 +497,7 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(self.backup_contents()['tasks'],self.stored())
 
     def test_file_backup_unsupported_browser_keeps_export_available(self):
-        self.page.add_init_script('window.showSaveFilePicker=undefined')
+        self.page.add_init_script("window.showSaveFilePicker=undefined;Object.defineProperty(crypto,'randomUUID',{value:undefined});")
         self.page.reload();expect(self.page.get_by_role('heading',name='TaskMatrix Pro')).to_be_visible()
         self.page.locator('[data-file-backup] summary').click()
         expect(self.page.get_by_text(re.compile('このブラウザーでは直接上書き保存に対応していません'))).to_be_visible()

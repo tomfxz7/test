@@ -87,162 +87,397 @@ const loadFromDB = async (key) => {
 // File handles are kept separately from exported data. Only an explicit picker
 // selection connects a file; importing data never changes the connected handle.
 const FILE_BACKUP_KEY = 'fileBackupSettings';
-const storeFileBackupSettings = async (settings) => {
+// Synchronization metadata is separate from application records. Paths address
+// stable record IDs, so moving a task never makes its fields look newly edited.
+const newBackupId = () => {
+  if (typeof globalThis.crypto?.randomUUID === 'function') return crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) crypto.getRandomValues(bytes);
+  else bytes.forEach((_, index) => { bytes[index] = Math.floor(Math.random() * 256); });
+  return Array.from(bytes).map(value => value.toString(16).padStart(2, '0')).join('');
+};
+const SYNC_STATE_KEY = 'fileSyncState';
+const backupKeys = ['tasks', 'projects', 'recurringSchedules', 'recurringCompletions'];
+const backupBody = data => Object.fromEntries(backupKeys.map(key => [key, data[key]]));
+const syncEqual = (a, b) => {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every(key => Object.hasOwn(b, key) && syncEqual(a[key], b[key]));
+};
+const syncObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const syncIdArray = value => Array.isArray(value) && value.every(item => syncObject(item) && ['string', 'number'].includes(typeof item.id)) && new Set(value.map(item => String(item.id))).size === value.length;
+const syncPath = (path, key) => `${path}/${String(key).replace(/~/g, '~0').replace(/\//g, '~1')}`;
+const syncChildren = value => syncIdArray(value) ? Object.fromEntries(value.map(item => [`@${item.id}`, item])) : syncObject(value) ? value : null;
+const syncTime = clock => Number.isFinite(Date.parse(clock?.at)) ? Date.parse(clock.at) : 0;
+const combineBackupFields = (left, right) => {
+  const result = { ...left };
+  Object.entries(right).forEach(([path, clock]) => { if (syncTime(clock) > syncTime(result[path])) result[path] = clock; });
+  return result;
+};
+const syncLatest = (fields, path) => Object.entries(fields).reduce((latest, [key, clock]) => key === path || key.startsWith(path + '/') ? Math.max(latest, syncTime(clock)) : latest, 0);
+const trackBackupEdits = (before, after, fields, at, path = '') => {
+  if (syncEqual(before, after)) return fields;
+  const oldChildren = syncChildren(before), newChildren = syncChildren(after);
+  if (!oldChildren || !newChildren || Array.isArray(before) !== Array.isArray(after)) fields[path] = { at, ...(after === undefined ? { deleted: true } : {}) };
+  if (newChildren) {
+    for (const key of new Set([...Object.keys(oldChildren || {}), ...Object.keys(newChildren)])) trackBackupEdits(oldChildren?.[key], newChildren[key], fields, at, syncPath(path, key));
+    if (syncIdArray(after) && !syncEqual(syncIdArray(before) ? before.map(item => item.id) : undefined, after.map(item => item.id))) fields[syncPath(path, '$order')] = { at };
+  }
+  return fields;
+};
+const mergeBackupData = (base, cache, file, cacheFields, fileFields, choices = {}) => {
+  const conflicts = [];
+  const fields = combineBackupFields(cacheFields, fileFields);
+  const select = (old, left, right, path, subtree = false) => {
+    const l = subtree ? syncLatest(cacheFields, path) : syncTime(cacheFields[path]);
+    const r = subtree ? syncLatest(fileFields, path) : syncTime(fileFields[path]);
+    // Both dates must be known: a recent timestamp is not proof that an
+    // undated legacy edit happened earlier.
+    if (l && r && l !== r) return l > r ? left : right;
+    conflicts.push({ path, cache: left, file: right });
+    if (choices[path]) {
+      const selected = choices[path] === 'cache' ? left : right;
+      fields[path] = { at: new Date().toISOString(), ...(selected === undefined ? { deleted: true } : {}) };
+      trackBackupEdits(undefined, selected, fields, fields[path].at, path);
+      return choices[path] === 'cache' ? left : right;
+    }
+    return left;
+  };
+  const visit = (old, left, right, path) => {
+    if (syncEqual(left, right)) return left;
+    // An unknown common ancestor must not be treated as an unchanged legacy
+    // record. Known one-sided changes need no timestamp arbitration.
+    if (base !== null && syncEqual(left, old)) return right;
+    if (base !== null && syncEqual(right, old)) return left;
+    if (left === undefined || right === undefined) {
+      const missingFields = left === undefined ? cacheFields : fileFields;
+      if (old === undefined && !missingFields[path]?.deleted) return left === undefined ? right : left;
+      return select(old, left, right, path, true);
+    }
+    const l = syncChildren(left), r = syncChildren(right), o = syncChildren(old);
+    if (l && r && Array.isArray(left) === Array.isArray(right)) {
+      const result = {};
+      for (const key of new Set([...Object.keys(o || {}), ...Object.keys(l), ...Object.keys(r)])) {
+        const value = visit(o?.[key], l[key], r[key], syncPath(path, key));
+        if (value !== undefined) Object.defineProperty(result, key, { value, enumerable: true, configurable: true });
+      }
+      if (!Array.isArray(left)) return result;
+      const leftOrder = left.map(item => String(item.id)), rightOrder = right.map(item => String(item.id));
+      // Additions do not conflict with ordering. Arbitrate only when the same
+      // surviving records were placed in a different relative order.
+      const shared = new Set(leftOrder.filter(id => rightOrder.includes(id) && Object.hasOwn(result, `@${id}`)));
+      const oldOrder = syncIdArray(old) ? old.map(item => String(item.id)).filter(id => shared.has(id)) : undefined;
+      const lc = leftOrder.filter(id => shared.has(id)), rc = rightOrder.filter(id => shared.has(id));
+      let order = leftOrder;
+      if (!syncEqual(lc, rc)) {
+        if (base !== null && syncEqual(lc, oldOrder)) order = rightOrder;
+        else if (!(base !== null && syncEqual(rc, oldOrder))) order = select(oldOrder, leftOrder, rightOrder, syncPath(path, '$order'));
+      }
+      return [...new Set([...order, ...leftOrder, ...rightOrder])].filter(id => Object.hasOwn(result, `@${id}`)).map(id => result[`@${id}`]);
+    }
+    return select(old, left, right, path);
+  };
+  return { data: visit(base || undefined, cache, file, ''), fields, conflicts };
+};
+const readBackupDocument = text => {
+  const data = JSON.parse(text);
+  if (!syncObject(data) || !Array.isArray(data.tasks) || !Array.isArray(data.projects) || !Array.isArray(data.recurringSchedules) || !syncObject(data.recurringCompletions)) throw new Error('保存ファイルの形式が正しくありません');
+  if (data._sync !== undefined && (!syncObject(data._sync) || data._sync.version !== 1 || !syncObject(data._sync.fields))) throw new Error('同期情報の形式に対応していません');
+  return data;
+};
+const backupFingerprint = async content => {
+  const bytes = typeof content === 'string' ? new TextEncoder().encode(content) : content;
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  return Array.from(hash).map(value => value.toString(16).padStart(2, '0')).join('');
+};
+const readBackupFile = async handle => {
+  const bytes = new Uint8Array(await (await handle.getFile()).arrayBuffer());
+  const text = new TextDecoder().decode(bytes);
+  let document = null;
+  try { document = readBackupDocument(text); } catch { /* Preserve even malformed files before an explicit overwrite. */ }
+  return { text, bytes, document, token: await backupFingerprint(bytes) };
+};
+const writeBackupFile = async (handle, text) => {
+  const stream = await handle.createWritable();
+  try { await stream.write(text); await stream.close(); }
+  catch (error) { try { await stream.abort(); } catch { /* Keep the original error. */ } throw error; }
+};
+const backupDateName = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date()).replace(/[-: ]/g, '') + '_' + String(Date.now() % 1000).padStart(3, '0');
+const saveRetreatFile = async (directory, prefix, text) => {
+  const stem = `${prefix}_${backupDateName()}`;
+  let name = `${stem}.json`, index = 1;
+  while (true) {
+    try { await directory.getFileHandle(name); name = `${stem}_${index++}.json`; }
+    catch (error) { if (error.name === 'NotFoundError') break; throw error; }
+  }
+  const handle = await directory.getFileHandle(name, { create: true });
+  await writeBackupFile(handle, text);
+  if (await backupFingerprint(new Uint8Array(await (await handle.getFile()).arrayBuffer())) !== await backupFingerprint(text)) throw new Error('退避ファイルの検証に失敗しました');
+};
+
+function useFileBackup(data, isDBReady, onApply) {
+  const dataRef = useRef(data); dataRef.current = data;
+  const applyRef = useRef(onApply); applyRef.current = onApply;
+  const settingsRef = useRef({ handle: null, enabled: true, lastSavedAt: null, token: null, base: null });
+  const syncRef = useRef({ deviceId: newBackupId(), fields: {}, record: null });
+  const initialized = useRef(false);
+  const observed = useRef(null), queue = useRef(Promise.resolve()), busy = useRef(false), dirty = useRef(false), blocked = useRef(false);
+  const [status, setStatus] = useState('unconnected'), [message, setMessage] = useState(''), [settingsWarning, setSettingsWarning] = useState('');
+  const [settings, setSettings] = useState({ name: '', enabled: true, lastSavedAt: null }), [ready, setReady] = useState(false);
+  const [conflict, setConflict] = useState(null), [directory, setDirectory] = useState(null), [choices, setChoices] = useState({});
+  const supported = typeof window.showSaveFilePicker === 'function';
+  const refreshSettings = () => setSettings({ name: settingsRef.current.handle?.name || '', enabled: settingsRef.current.enabled, lastSavedAt: settingsRef.current.lastSavedAt });
+  const enqueue = (key, value) => {
+    queue.current = queue.current.catch(() => {}).then(() => storeFileBackupSettingsValue(key, value));
+    queue.current.then(() => setSettingsWarning(''), () => { setSettingsWarning('保存設定・編集日時を記憶できませんでした。再読み込み前にエクスポートしてください。'); blocked.current = true; });
+  };
+  const persistSettings = () => enqueue(FILE_BACKUP_KEY, { ...settingsRef.current });
+  const persistSync = snapshot => enqueue(SYNC_STATE_KEY, { ...syncRef.current, snapshot });
+  const capture = () => {
+    const current = dataRef.current;
+    if (observed.current && !syncEqual(observed.current, current)) {
+      // A reload is not an edit. If a previous local transaction was interrupted,
+      // mark mismatched fields undated rather than inventing a new edit time.
+      syncRef.current.fields = trackBackupEdits(observed.current, current, { ...syncRef.current.fields }, initialized.current ? new Date().toISOString() : null);
+      if (initialized.current) dirty.current = true;
+    }
+    initialized.current = true; observed.current = current;
+    return current;
+  };
+  const exportData = () => ({ ...capture(), _sync: { version: 1, fields: syncRef.current.fields, ...syncRef.current.record } });
+  const showConflict = remote => {
+    blocked.current = true; dirty.current = true; setChoices({}); setConflict(remote); setStatus('conflict');
+    setMessage('保存先が最後に確認した版と異なります。自動保存を停止しています。');
+  };
+  const acceptBaseline = (remote, snapshot) => {
+    settingsRef.current.token = remote.token; settingsRef.current.base = snapshot;
+    persistSettings();
+  };
+  const matchesBaseline = remote => settingsRef.current.token !== null ? remote.token === settingsRef.current.token : remote.document && syncEqual(backupBody(remote.document), dataRef.current);
+  const permission = async request => {
+    const handle = settingsRef.current.handle;
+    let value = handle.queryPermission ? await handle.queryPermission({ mode: 'readwrite' }) : 'granted';
+    if (value !== 'granted' && request && handle.requestPermission) value = await handle.requestPermission({ mode: 'readwrite' });
+    if (value !== 'granted') { setStatus('permission'); setMessage('書き込みの許可が必要です。「今すぐ保存」を押して許可してください。'); return false; }
+    return true;
+  };
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([loadFromDB(FILE_BACKUP_KEY), loadFromDB(SYNC_STATE_KEY)]).then(([saved, sync]) => {
+      if (cancelled) return;
+      if (saved) settingsRef.current = { token: null, base: null, ...saved, handle: typeof saved.handle?.getFile === 'function' ? saved.handle : null };
+      if (sync?.deviceId && syncObject(sync.fields)) { syncRef.current = { deviceId: sync.deviceId, fields: sync.fields, record: sync.record || null }; observed.current = sync.snapshot || null; }
+      refreshSettings(); setStatus(settingsRef.current.handle ? 'ready' : 'unconnected'); setReady(true);
+    });
+    return () => { cancelled = true; };
+  }, []);
+  const checkFile = async () => {
+    if (!ready || !isDBReady || !settingsRef.current.handle || busy.current || blocked.current) return;
+    busy.current = true;
+    try {
+      if (!await permission(false)) return;
+      const remote = await readBackupFile(settingsRef.current.handle);
+      if (!matchesBaseline(remote)) showConflict(remote);
+      else if (settingsRef.current.token === null) acceptBaseline(remote, backupBody(remote.document));
+    } catch { blocked.current = true; setStatus('error'); setMessage('保存先の内容を確認できません。確認できるまで上書きしません。「今すぐ保存」で再試行してください。'); }
+    finally { busy.current = false; }
+  };
+  useEffect(() => {
+    if (!ready || !isDBReady) return;
+    const snapshot = capture(); persistSync(snapshot);
+    if (dirty.current && settingsRef.current.handle && !busy.current && !blocked.current) setStatus('pending');
+    if (!settingsRef.current.handle || !settingsRef.current.enabled || !dirty.current || blocked.current) return;
+    const timer = setTimeout(() => writeNow(), 1000);
+    return () => clearTimeout(timer);
+  }, [data, ready, isDBReady, settings.enabled]);
+  useEffect(() => {
+    if (!ready || !isDBReady) return;
+    checkFile();
+    const check = () => { if (document.visibilityState === 'visible') checkFile(); };
+    window.addEventListener('focus', check); document.addEventListener('visibilitychange', check);
+    return () => { window.removeEventListener('focus', check); document.removeEventListener('visibilitychange', check); };
+  }, [ready, isDBReady]);
+  useEffect(() => {
+    const unload = event => { if (settingsRef.current.handle && (dirty.current || busy.current || blocked.current)) { event.preventDefault(); event.returnValue = ''; } };
+    window.addEventListener('beforeunload', unload); return () => window.removeEventListener('beforeunload', unload);
+  }, []);
+  const commit = async (snapshot, fields, expectedToken, preserveEdits = true) => {
+    persistSync(dataRef.current); await queue.current;
+    const handle = settingsRef.current.handle;
+    const remote = await readBackupFile(handle);
+    if (remote.token !== expectedToken) { showConflict(remote); return false; }
+    const record = { saveId: newBackupId(), savedAt: new Date().toISOString(), deviceId: syncRef.current.deviceId };
+    const text = JSON.stringify({ ...snapshot, _sync: { version: 1, fields, ...record } }, null, 2);
+    await writeBackupFile(handle, text);
+    const token = await backupFingerprint(text);
+    const written = await readBackupFile(handle);
+    if (written.token !== token) { showConflict(written); return false; }
+    syncRef.current = { ...syncRef.current, fields: preserveEdits && !syncEqual(snapshot, dataRef.current) ? syncRef.current.fields : fields, record };
+    settingsRef.current.lastSavedAt = record.savedAt;
+    acceptBaseline({ token }, snapshot); refreshSettings(); persistSync(preserveEdits ? dataRef.current : snapshot);
+    await queue.current;
+    return true;
+  };
+  const writeNow = async (requestPermission = false, newFile = false) => {
+    if (!settingsRef.current.handle || busy.current || !ready || !isDBReady) return;
+    if (blocked.current && status === 'conflict') {
+      try { showConflict(await readBackupFile(settingsRef.current.handle)); } catch { setMessage('保存先を読み取れません。ファイルを確認してください。'); }
+      return;
+    }
+    busy.current = true; dirty.current = true; setStatus('saving'); setMessage('');
+    try {
+      if (!await permission(requestPermission)) return;
+      do {
+        const snapshot = capture();
+        const remote = await readBackupFile(settingsRef.current.handle);
+        if (!(newFile && remote.text === '') && !matchesBaseline(remote)) { showConflict(remote); return; }
+        if (settingsRef.current.token === null && remote.document && syncEqual(backupBody(remote.document), snapshot)) syncRef.current.fields = combineBackupFields(syncRef.current.fields, remote.document._sync?.fields || {});
+        const fields = { ...syncRef.current.fields };
+        if (!await commit(snapshot, fields, remote.token)) return;
+        newFile = false; blocked.current = false;
+        dirty.current = !syncEqual(snapshot, dataRef.current);
+      } while (dirty.current && settingsRef.current.enabled);
+      setStatus(dirty.current ? 'pending' : 'saved');
+    } catch (error) {
+      setStatus(error?.name === 'NotAllowedError' || error?.name === 'SecurityError' ? 'permission' : 'error');
+      setMessage(error?.name === 'NotAllowedError' || error?.name === 'SecurityError' ? '書き込みの許可が必要です。「今すぐ保存」で許可してください。' : 'ファイルへの保存に失敗しました。保存先を確認して再試行してください。');
+    } finally { busy.current = false; }
+  };
+  const chooseDestination = async () => {
+    if (!supported || !ready || busy.current) return;
+    busy.current = true; const previous = status; setStatus('choosing');
+    try {
+      const handle = await window.showSaveFilePicker({ suggestedName: `taskmatrix_backup_${formatDate(new Date())}.json`, types: [{ description: 'TaskMatrix バックアップ（JSON）', accept: { 'application/json': ['.json'] } }] });
+      settingsRef.current = { handle, enabled: settingsRef.current.enabled, lastSavedAt: null, token: null, base: null };
+      blocked.current = false; setConflict(null); dirty.current = true; refreshSettings(); persistSettings(); busy.current = false;
+      await writeNow(true, true);
+    } catch (error) { if (error.name === 'AbortError') setStatus(previous); else { setStatus('error'); setMessage('保存先を選択できませんでした。'); } }
+    finally { busy.current = false; }
+  };
+  const resolveConflict = async mode => {
+    if (busy.current || !conflict || !directory) return;
+    busy.current = true; setStatus('saving'); setMessage('');
+    try {
+      if (!await permission(true)) return;
+      const local = exportData(), remote = await readBackupFile(settingsRef.current.handle);
+      if (remote.token !== conflict.token) { showConflict(remote); return; }
+      let target = backupBody(local), fields = local._sync.fields;
+      if (mode !== 'cache' && !remote.document) throw new Error('保存データを読み込めません');
+      if (mode === 'merge') {
+        const merged = mergeBackupData(settingsRef.current.base, target, backupBody(remote.document), fields, remote.document._sync?.fields || {}, choices);
+        if (merged.conflicts.some(item => !choices[item.path])) throw new Error('日時不明・同時刻の項目を選択してください');
+        target = merged.data; fields = merged.fields;
+      } else if (mode === 'file') { target = backupBody(remote.document); fields = remote.document._sync?.fields || {}; }
+      else if (remote.document) fields = trackBackupEdits(backupBody(remote.document), target, { ...fields }, new Date().toISOString());
+      // A confirmed, readable retreat file is a prerequisite for replacement.
+      if (mode !== 'cache') await saveRetreatFile(directory, 'キャッシュ退避データ', JSON.stringify(local, null, 2));
+      if (mode !== 'file') await saveRetreatFile(directory, 'ファイル退避データ', remote.bytes);
+      const current = await readBackupFile(settingsRef.current.handle);
+      if (current.token !== remote.token) { showConflict(current); return; }
+      if (!syncEqual(backupBody(local), dataRef.current)) { showConflict(current); setMessage('退避中に端末内の内容が変わりました。最新の内容でもう一度選択してください。'); return; }
+      if (mode !== 'file' && !await commit(target, fields, remote.token, false)) return;
+      if (mode !== 'cache') {
+        const applied = await applyRef.current(target);
+        dataRef.current = applied; observed.current = applied;
+        syncRef.current.fields = fields;
+        if (mode === 'file') { syncRef.current.record = remote.document._sync ? { saveId: remote.document._sync.saveId, savedAt: remote.document._sync.savedAt, deviceId: remote.document._sync.deviceId } : null; settingsRef.current.lastSavedAt = remote.document._sync?.savedAt || null; acceptBaseline(remote, target); refreshSettings(); }
+        persistSync(applied); await queue.current;
+      }
+      blocked.current = false; dirty.current = false; setConflict(null); setChoices({}); setStatus('saved'); setMessage('退避データを保存し、選択した内容を反映しました。');
+    } catch (error) { blocked.current = true; setStatus('conflict'); setMessage(error.name === 'AbortError' ? '退避をキャンセルしました。内容は置き換えていません。' : `反映できませんでした：${error.message}。退避先と保存先を確認してください。`); }
+    finally { busy.current = false; }
+  };
+  const chooseRetreatDirectory = async () => {
+    try { setDirectory(await window.showDirectoryPicker({ mode: 'readwrite' })); }
+    catch (error) { if (error.name !== 'AbortError') setMessage('退避先フォルダーを選択できませんでした。'); }
+  };
+  const setEnabled = enabled => { settingsRef.current.enabled = enabled; refreshSettings(); persistSettings(); };
+  const disconnect = () => {
+    if (busy.current) return;
+    settingsRef.current = { handle: null, enabled: settingsRef.current.enabled, lastSavedAt: null, token: null, base: null };
+    blocked.current = false; dirty.current = false; setConflict(null); refreshSettings(); persistSettings(); setStatus('unconnected'); setMessage('保存先の接続を解除しました。保存済みのファイルは残ります。');
+  };
+  const importMetadata = document => {
+    const keys = backupKeys.filter(key => Object.hasOwn(document, key));
+    const fields = { ...syncRef.current.fields };
+    for (const path of Object.keys(fields)) if (keys.some(key => path === `/${key}` || path.startsWith(`/${key}/`))) delete fields[path];
+    if (document._sync?.version === 1 && syncObject(document._sync.fields)) for (const [path, clock] of Object.entries(document._sync.fields)) if (keys.some(key => path === `/${key}` || path.startsWith(`/${key}/`))) fields[path] = clock;
+    syncRef.current.fields = fields;
+    observed.current = { ...dataRef.current, ...Object.fromEntries(keys.map(key => [key, key === 'tasks' ? document.tasks.map(normalizeProgressTask) : document[key]])) };
+    dirty.current = true; persistSync(observed.current);
+  };
+  const preview = conflict?.document ? mergeBackupData(settingsRef.current.base, data, backupBody(conflict.document), syncRef.current.fields, conflict.document._sync?.fields || {}, choices) : null;
+  return { ...settings, ready, supported, status, message, settingsWarning, chooseDestination, writeNow, setEnabled, disconnect, exportData, importMetadata,
+    conflict, preview, choices, setChoices, directory, chooseRetreatDirectory, resolveConflict,
+    cancelConflict: () => { setConflict(null); setMessage('競合の解決を保留しました。自動保存は停止したままです。「今すぐ保存」で再開してください。'); } };
+}
+
+// Use transaction completion, not request success, to confirm durable local data.
+const storeFileBackupSettingsValue = async (key, value) => {
   const db = await initDB();
   try {
     await new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).put(settings, FILE_BACKUP_KEY);
-      tx.oncomplete = resolve;
-      tx.onabort = tx.onerror = () => reject(tx.error || new Error('保存先を記憶できませんでした'));
+      const tx = db.transaction(STORE_NAME, 'readwrite'); tx.objectStore(STORE_NAME).put(value, key);
+      tx.oncomplete = resolve; tx.onerror = tx.onabort = () => reject(tx.error || new Error('端末内に保存できませんでした'));
     });
   } finally { db.close(); }
 };
 
-function useFileBackup(data, isDBReady) {
-  const content = useMemo(() => JSON.stringify(data, null, 2), [data]);
-  const contentRef = useRef(content);
-  contentRef.current = content;
-  const settingsRef = useRef({ handle: null, enabled: true, lastSavedAt: null });
-  const settingsQueue = useRef(Promise.resolve());
-  const busyRef = useRef(false);
-  const dirtyRef = useRef(false);
-  const observedContent = useRef(null);
-  const [status, setStatus] = useState('unconnected');
-  const [message, setMessage] = useState('');
-  const [settingsWarning, setSettingsWarning] = useState('');
-  const [settings, setSettings] = useState({ name: '', enabled: true, lastSavedAt: null });
-  const [ready, setReady] = useState(false);
-  const supported = typeof window !== 'undefined' && typeof window.showSaveFilePicker === 'function';
-
-  const persistSettings = () => {
-    const snapshot = { ...settingsRef.current };
-    settingsQueue.current = settingsQueue.current.catch(() => {}).then(() => storeFileBackupSettings(snapshot));
-    settingsQueue.current.then(() => setSettingsWarning(''), () => setSettingsWarning('保存先を記憶できませんでした。次回は保存先を選び直してください。'));
-  };
-  const refreshSettings = () => setSettings({ name: settingsRef.current.handle?.name || '', enabled: settingsRef.current.enabled, lastSavedAt: settingsRef.current.lastSavedAt });
-
+const BackupConflictDialog = ({ backup }) => {
+  const dialogRef = useRef(null);
+  const busy = backup.status === 'saving';
   useEffect(() => {
-    let cancelled = false;
-    loadFromDB(FILE_BACKUP_KEY).then(saved => {
-      if (cancelled) return;
-      if (saved) {
-        const handle = typeof saved.handle?.createWritable === 'function' ? saved.handle : null;
-        settingsRef.current = { handle, enabled: saved.enabled !== false, lastSavedAt: handle ? saved.lastSavedAt || null : null };
-        refreshSettings();
-        if (handle) {
-          setStatus('ready');
-          setMessage('保存先を復元しました。必要な場合は「今すぐ保存」で書き込みを許可してください。');
-        }
-      }
-      setReady(true);
-    });
-    return () => { cancelled = true; };
+    const previous = document.activeElement; dialogRef.current?.focus();
+    return () => { if (previous?.isConnected) previous.focus(); };
   }, []);
-
-  const writeNow = async (requestPermission = false) => {
-    const handle = settingsRef.current.handle;
-    if (!handle || busyRef.current || !isDBReady) return;
-    busyRef.current = true;
-    dirtyRef.current = true;
-    setStatus('saving');
-    setMessage('');
-    try {
-      let permission = handle.queryPermission ? await handle.queryPermission({ mode: 'readwrite' }) : 'granted';
-      if (permission !== 'granted' && requestPermission && handle.requestPermission) permission = await handle.requestPermission({ mode: 'readwrite' });
-      if (permission !== 'granted') {
-        setStatus('permission');
-        setMessage('書き込みの許可が必要です。「今すぐ保存」を押して許可してください。');
-        return;
-      }
-      // Serialize writes, including changes made while an earlier write is in
-      // flight. Never allow an old snapshot to finish after a newer snapshot.
-      do {
-        const snapshot = contentRef.current;
-        const writable = await handle.createWritable();
-        try {
-          await writable.write(snapshot);
-          await writable.close();
-        } catch (error) {
-          try { await writable.abort(); } catch { /* Preserve the original error. */ }
-          throw error;
-        }
-        settingsRef.current.lastSavedAt = new Date().toISOString();
-        dirtyRef.current = snapshot !== contentRef.current;
-        refreshSettings();
-        persistSettings();
-      } while (dirtyRef.current && settingsRef.current.enabled);
-      setStatus(dirtyRef.current ? 'pending' : 'saved');
-    } catch (error) {
-      setStatus(error?.name === 'NotAllowedError' || error?.name === 'SecurityError' ? 'permission' : 'error');
-      setMessage(error?.name === 'NotAllowedError' || error?.name === 'SecurityError'
-        ? 'ファイルに書き込めません。「今すぐ保存」で許可するか、保存先を選び直してください。'
-        : 'ファイルへの保存に失敗しました。保存先を確認して再試行してください。');
-    } finally { busyRef.current = false; }
-  };
-
-  useEffect(() => {
-    if (!ready || !isDBReady) return;
-    if (observedContent.current === null) { observedContent.current = content; return; }
-    if (observedContent.current !== content) {
-      observedContent.current = content;
-      if (settingsRef.current.handle) {
-        dirtyRef.current = true;
-        if (!busyRef.current) setStatus('pending');
-      }
+  const label = path => {
+    let node = backup.exportData(), result = [];
+    const names = { tasks: 'タスク', projects: 'プロジェクト', recurringSchedules: '繰り返し予定', recurringCompletions: '繰り返し完了記録', title: '名前', text: 'コメント本文', dueDate: '期限', completed: '完了状態', waiting: '相手待ち', progressHistory: 'トーク', subtasks: 'やるべきこと', smallTasks: '小さいタスク', '$order': '並び順' };
+    for (const encoded of path.split('/').slice(1)) {
+      const key = encoded.replace(/~1/g, '/').replace(/~0/g, '~');
+      node = key.startsWith('@') && Array.isArray(node) ? node.find(item => String(item.id) === key.slice(1)) : node?.[key];
+      result.push(key.startsWith('@') ? node?.title || node?.text?.slice(0, 40) || key.slice(1) : names[key] || key);
     }
-    if (!settingsRef.current.handle || !settings.enabled || !dirtyRef.current) return;
-    const timer = setTimeout(() => writeNow(), 1000);
-    return () => clearTimeout(timer);
-  }, [content, ready, isDBReady, settings.enabled]);
-
-  useEffect(() => {
-    const beforeUnload = event => {
-      if (!settingsRef.current.handle || (!dirtyRef.current && !busyRef.current)) return;
-      event.preventDefault();
-      event.returnValue = '';
-    };
-    window.addEventListener('beforeunload', beforeUnload);
-    return () => window.removeEventListener('beforeunload', beforeUnload);
-  }, []);
-
-  const chooseDestination = async () => {
-    if (!supported || !ready || busyRef.current) return;
-    busyRef.current = true;
-    const previousStatus = status;
-    setStatus('choosing');
-    try {
-      const handle = await window.showSaveFilePicker({
-        suggestedName: `taskmatrix_backup_${formatDate(new Date())}.json`,
-        types: [{ description: 'TaskMatrix バックアップ（JSON）', accept: { 'application/json': ['.json'] } }]
-      });
-      settingsRef.current = { handle, enabled: settingsRef.current.enabled, lastSavedAt: null };
-      dirtyRef.current = true;
-      refreshSettings();
-      persistSettings();
-      busyRef.current = false;
-      await writeNow(true);
-    } catch (error) {
-      if (error?.name === 'AbortError') setStatus(previousStatus);
-      else { setStatus('error'); setMessage('保存先を選択できませんでした。別のファイルを選んで再試行してください。'); }
-    } finally { busyRef.current = false; }
+    return result.join(' / ') || 'データ全体';
   };
-  const setEnabled = enabled => {
-    settingsRef.current.enabled = enabled;
-    refreshSettings();
-    persistSettings();
-  };
-  const disconnect = () => {
-    if (busyRef.current) return;
-    settingsRef.current = { handle: null, enabled: settingsRef.current.enabled, lastSavedAt: null };
-    dirtyRef.current = false;
-    refreshSettings();
-    persistSettings();
-    setStatus('unconnected');
-    setMessage('保存先の接続を解除しました。保存済みのファイルは残ります。');
-  };
-  return { ...settings, ready, supported, status, message, settingsWarning, chooseDestination, writeNow, setEnabled, disconnect };
-}
+  const describe = value => value === undefined ? '削除' : typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  return <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-4">
+    <section ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="保存データの競合" className="w-full max-w-3xl max-h-[90vh] overflow-auto rounded-xl bg-white p-5 space-y-4 shadow-xl" onKeyDown={event => {
+      if (event.key === 'Escape' && !busy) { event.preventDefault(); event.stopPropagation(); backup.cancelConflict(); }
+      if (event.key === 'Tab') {
+        const controls = [...dialogRef.current.querySelectorAll('button:not(:disabled),select:not(:disabled)')];
+        const first = controls[0], last = controls.at(-1);
+        if (event.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.current)) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialogRef.current)) { event.preventDefault(); first?.focus(); }
+      }
+    }}>
+      <h2 className="font-bold text-lg">保存先のデータが変更されています</h2>
+      <p className="text-sm">自動保存を停止しました。内容を置き換える前に、退避先フォルダーへ元のデータを別ファイルで保存します。</p>
+      {backup.conflict.document?._sync?.savedAt && <p className="text-xs text-gray-600">ファイルの最終保存：{new Date(backup.conflict.document._sync.savedAt).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })} ／ 保存元：{backup.conflict.document._sync.deviceId || '不明'}</p>}
+      {!backup.conflict.document && <p role="alert" className="text-red-700 text-sm">保存先は空、または対応するJSON形式ではありません。保存データの採用・マージはできません。キャッシュ優先の場合も元ファイルを退避します。</p>}
+      <button type="button" disabled={busy || typeof window.showDirectoryPicker !== 'function'} onClick={backup.chooseRetreatDirectory} className="border rounded px-3 py-2">退避先フォルダーを選択</button>
+      <span className="ml-2 text-sm">{backup.directory?.name || '未選択'}</span>
+      {typeof window.showDirectoryPicker !== 'function' && <p role="alert">退避先を安全に保存できるChrome・Edgeをご利用ください。</p>}
+      <p className="text-xs text-gray-600">マージは別々の変更を統合し、同じ項目の編集は新しい編集日時を採用します。日時不明・同時刻で内容が異なる項目は選択してください。マージ時は両方の元データを退避します。</p>
+      {!!backup.preview?.conflicts.length && <fieldset className="space-y-3"><legend className="font-bold text-sm">マージで選択が必要な項目（{backup.preview.conflicts.length}件）</legend>
+        {backup.preview.conflicts.map(item => <div key={item.path} className="rounded border p-3 space-y-2">
+          <p className="text-sm font-bold break-words">{label(item.path)}</p>
+          <div className="grid grid-cols-2 gap-3 text-xs"><div>キャッシュ<pre className="whitespace-pre-wrap break-all max-h-32 overflow-auto">{describe(item.cache)}</pre></div><div>保存データ<pre className="whitespace-pre-wrap break-all max-h-32 overflow-auto">{describe(item.file)}</pre></div></div>
+          <select disabled={busy} aria-label={`マージの採用元: ${item.path}`} value={backup.choices[item.path] || ''} onChange={event => backup.setChoices(previous => ({ ...previous, [item.path]: event.target.value }))} className="rounded border p-1 text-sm"><option value="">選択してください</option><option value="cache">キャッシュを採用</option><option value="file">保存データを採用</option></select>
+        </div>)}
+      </fieldset>}
+      {backup.message && <p role="alert" className="text-sm text-amber-800">{backup.message}</p>}
+      <div className="flex flex-wrap gap-2">
+        <button type="button" disabled={busy || !backup.directory} onClick={() => backup.resolveConflict('cache')} className="rounded border px-3 py-2">キャッシュデータを優先</button>
+        <button type="button" disabled={busy || !backup.directory || !backup.conflict.document} onClick={() => backup.resolveConflict('file')} className="rounded border px-3 py-2">保存データを優先</button>
+        <button type="button" disabled={busy || !backup.directory || !backup.preview || backup.preview.conflicts.some(item => !backup.choices[item.path])} onClick={() => backup.resolveConflict('merge')} className="rounded border px-3 py-2">マージする</button>
+        <button type="button" disabled={busy} onClick={backup.cancelConflict} className="rounded border px-3 py-2">キャンセル</button>
+      </div>
+      {busy && <p role="status">退避・反映中です…</p>}
+    </section>
+  </div>;
+};
 
 // --- Utility Functions ---
 
@@ -5067,7 +5302,21 @@ export default function App() {
   const [recurringSchedules, setRecurringSchedules] = useState([]);
   const [recurringCompletions, setRecurringCompletions] = useState({});
   const backupData = useMemo(() => ({ tasks, projects, recurringSchedules, recurringCompletions }), [tasks, projects, recurringSchedules, recurringCompletions]);
-  const fileBackup = useFileBackup(backupData, isDBReady);
+  const applyFileBackup = async incoming => {
+    const db = await initDB();
+    try {
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite'), store = tx.objectStore(STORE_NAME);
+        backupKeys.forEach(key => store.put(incoming[key], key));
+        tx.oncomplete = resolve; tx.onerror = tx.onabort = () => reject(tx.error || new Error('端末内に保存できませんでした'));
+      });
+    } finally { db.close(); }
+    const applied = { ...incoming, tasks: incoming.tasks.map(normalizeProgressTask) };
+    setTaskRecords(applied.tasks); setProjects(applied.projects);
+    setRecurringSchedules(applied.recurringSchedules); setRecurringCompletions(applied.recurringCompletions);
+    return applied;
+  };
+  const fileBackup = useFileBackup(backupData, isDBReady, applyFileBackup);
 
   useEffect(() => {
     const loadData = async () => {
@@ -5199,7 +5448,7 @@ export default function App() {
   }, []);
 
   const handleExport = () => {
-    const jsonString = JSON.stringify(backupData, null, 2);
+    const jsonString = JSON.stringify(fileBackup.exportData(), null, 2);
     const blob = new Blob([jsonString], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -5220,6 +5469,9 @@ export default function App() {
     reader.onload = (event) => {
       try {
         const data = JSON.parse(event.target.result);
+        // Partial legacy imports remain supported. Only imported fields inherit
+        // their metadata; local-only records keep their own edit history.
+        fileBackup.importMetadata(data);
         if (data.tasks && Array.isArray(data.tasks)) setTaskRecords(data.tasks.map(normalizeProgressTask));
         if (data.projects && Array.isArray(data.projects)) setProjects(data.projects);
         if (data.recurringSchedules && Array.isArray(data.recurringSchedules)) setRecurringSchedules(data.recurringSchedules);
@@ -5843,10 +6095,11 @@ export default function App() {
 
         <div className="flex flex-wrap items-center gap-4">
           <div className="flex flex-wrap items-center gap-2">
+            {fileBackup.conflict && <BackupConflictDialog backup={fileBackup}/>}
             <details ref={fileBackupMenuRef} className="relative" data-file-backup>
               <summary className="flex cursor-pointer list-none items-center gap-1.5 text-slate-700 hover:bg-slate-100 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-bold shadow-sm">
                 <Download size={14} /><span>ファイル保存</span>
-                {fileBackup.name && <span className={fileBackup.status === 'saved' ? 'text-emerald-700' : fileBackup.status === 'error' || fileBackup.status === 'permission' ? 'text-red-600' : 'text-amber-700'} role="status" aria-label="ファイル保存状態">{({ saved: '保存済み', saving: '保存中…', choosing: '選択中…', pending: '未保存', permission: '許可が必要', error: '保存失敗', ready: '接続済み' })[fileBackup.status]}</span>}
+                {fileBackup.name && <span className={fileBackup.status === 'saved' ? 'text-emerald-700' : fileBackup.status === 'error' || fileBackup.status === 'permission' ? 'text-red-600' : 'text-amber-700'} role="status" aria-label="ファイル保存状態">{({ saved: '保存済み', saving: '保存中…', choosing: '選択中…', pending: '未保存', permission: '許可が必要', error: '保存失敗', ready: '接続済み', conflict: '競合・保存停止' })[fileBackup.status]}</span>}
               </summary>
               <section aria-label="ファイル保存設定" className="absolute top-full left-0 mt-2 w-80 max-w-[calc(100vw-2rem)] bg-white border border-slate-200 rounded-xl shadow-lg p-4 space-y-3 z-50 text-sm font-normal">
                 <p className="font-bold text-slate-800">ブラウザー外へのバックアップ</p>
@@ -5883,6 +6136,7 @@ export default function App() {
             </button>
             <button
               onClick={handleExport}
+              disabled={!isDBReady || !fileBackup.ready}
               className="flex items-center gap-1.5 text-gray-500 hover:text-blue-600 bg-gray-50 hover:bg-blue-50 px-3 py-1.5 rounded-lg border border-gray-200 transition-colors text-xs font-bold shadow-sm"
               title="JSONファイルへエクスポート"
             >
