@@ -204,16 +204,13 @@ const writeBackupFile = async (handle, text) => {
   catch (error) { try { await stream.abort(); } catch { /* Keep the original error. */ } throw error; }
 };
 const backupDateName = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date()).replace(/[-: ]/g, '') + '_' + String(Date.now() % 1000).padStart(3, '0');
-const saveRetreatFile = async (directory, prefix, text) => {
-  const stem = `${prefix}_${backupDateName()}`;
-  let name = `${stem}.json`, index = 1;
-  while (true) {
-    try { await directory.getFileHandle(name); name = `${stem}_${index++}.json`; }
-    catch (error) { if (error.name === 'NotFoundError') break; throw error; }
-  }
-  const handle = await directory.getFileHandle(name, { create: true });
-  await writeBackupFile(handle, text);
-  if (await backupFingerprint(new Uint8Array(await (await handle.getFile()).arrayBuffer())) !== await backupFingerprint(text)) throw new Error('退避ファイルの検証に失敗しました');
+const saveRetreatFile = (prefix, contents) => {
+  const url = URL.createObjectURL(new Blob([contents], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url; link.download = `${prefix}_${backupDateName()}.json`;
+  document.body.appendChild(link);
+  try { link.click(); }
+  finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
 };
 
 function useFileBackup(data, isDBReady, onApply) {
@@ -225,7 +222,7 @@ function useFileBackup(data, isDBReady, onApply) {
   const observed = useRef(null), queue = useRef(Promise.resolve()), busy = useRef(false), dirty = useRef(false), blocked = useRef(false);
   const [status, setStatus] = useState('unconnected'), [message, setMessage] = useState(''), [settingsWarning, setSettingsWarning] = useState('');
   const [settings, setSettings] = useState({ name: '', enabled: true, lastSavedAt: null }), [ready, setReady] = useState(false);
-  const [conflict, setConflict] = useState(null), [directory, setDirectory] = useState(null), [choices, setChoices] = useState({});
+  const [conflict, setConflict] = useState(null), [choices, setChoices] = useState({});
   const supported = typeof window.showSaveFilePicker === 'function';
   const refreshSettings = () => setSettings({ name: settingsRef.current.handle?.name || '', enabled: settingsRef.current.enabled, lastSavedAt: settingsRef.current.lastSavedAt });
   const enqueue = (key, value) => {
@@ -356,7 +353,7 @@ function useFileBackup(data, isDBReady, onApply) {
     finally { busy.current = false; }
   };
   const resolveConflict = async mode => {
-    if (busy.current || !conflict || !directory) return;
+    if (busy.current || !conflict) return;
     busy.current = true; setStatus('saving'); setMessage('');
     try {
       if (!await permission(true)) return;
@@ -370,9 +367,9 @@ function useFileBackup(data, isDBReady, onApply) {
         target = merged.data; fields = merged.fields;
       } else if (mode === 'file') { target = backupBody(remote.document); fields = remote.document._sync?.fields || {}; }
       else if (remote.document) fields = trackBackupEdits(backupBody(remote.document), target, { ...fields }, new Date().toISOString());
-      // A confirmed, readable retreat file is a prerequisite for replacement.
-      if (mode !== 'cache') await saveRetreatFile(directory, 'キャッシュ退避データ', JSON.stringify(local, null, 2));
-      if (mode !== 'file') await saveRetreatFile(directory, 'ファイル退避データ', remote.bytes);
+      // Request downloads of the original data before applying the selected version.
+      if (mode !== 'cache') saveRetreatFile('キャッシュ退避データ', JSON.stringify(local, null, 2));
+      if (mode !== 'file') saveRetreatFile('ファイル退避データ', remote.bytes);
       const current = await readBackupFile(settingsRef.current.handle);
       if (current.token !== remote.token) { showConflict(current); return; }
       if (!syncEqual(backupBody(local), dataRef.current)) { showConflict(current); setMessage('退避中に端末内の内容が変わりました。最新の内容でもう一度選択してください。'); return; }
@@ -384,13 +381,9 @@ function useFileBackup(data, isDBReady, onApply) {
         if (mode === 'file') { syncRef.current.record = remote.document._sync ? { saveId: remote.document._sync.saveId, savedAt: remote.document._sync.savedAt, deviceId: remote.document._sync.deviceId } : null; settingsRef.current.lastSavedAt = remote.document._sync?.savedAt || null; acceptBaseline(remote, target); refreshSettings(); }
         persistSync(applied); await queue.current;
       }
-      blocked.current = false; dirty.current = false; setConflict(null); setChoices({}); setStatus('saved'); setMessage('退避データを保存し、選択した内容を反映しました。');
-    } catch (error) { blocked.current = true; setStatus('conflict'); setMessage(error.name === 'AbortError' ? '退避をキャンセルしました。内容は置き換えていません。' : `反映できませんでした：${error.message}。退避先と保存先を確認してください。`); }
+      blocked.current = false; dirty.current = false; setConflict(null); setChoices({}); setStatus('saved'); setMessage('退避データのダウンロードを開始し、選択した内容を反映しました。');
+    } catch (error) { blocked.current = true; setStatus('conflict'); setMessage(error.name === 'AbortError' ? '退避をキャンセルしました。内容は置き換えていません。' : `反映できませんでした：${error.message}。ダウンロード設定と保存先を確認してください。`); }
     finally { busy.current = false; }
-  };
-  const chooseRetreatDirectory = async () => {
-    try { setDirectory(await window.showDirectoryPicker({ mode: 'readwrite' })); }
-    catch (error) { if (error.name !== 'AbortError') setMessage('退避先フォルダーを選択できませんでした。'); }
   };
   const setEnabled = enabled => { settingsRef.current.enabled = enabled; refreshSettings(); persistSettings(); };
   const disconnect = () => {
@@ -409,7 +402,7 @@ function useFileBackup(data, isDBReady, onApply) {
   };
   const preview = conflict?.document ? mergeBackupData(settingsRef.current.base, data, backupBody(conflict.document), syncRef.current.fields, conflict.document._sync?.fields || {}, choices) : null;
   return { ...settings, ready, supported, status, message, settingsWarning, chooseDestination, writeNow, setEnabled, disconnect, exportData, importMetadata,
-    conflict, preview, choices, setChoices, directory, chooseRetreatDirectory, resolveConflict,
+    conflict, preview, choices, setChoices, resolveConflict,
     cancelConflict: () => { setConflict(null); setMessage('競合の解決を保留しました。自動保存は停止したままです。「今すぐ保存」で再開してください。'); } };
 }
 
@@ -453,12 +446,9 @@ const BackupConflictDialog = ({ backup }) => {
       }
     }}>
       <h2 className="font-bold text-lg">保存先のデータが変更されています</h2>
-      <p className="text-sm">自動保存を停止しました。内容を置き換える前に、退避先フォルダーへ元のデータを別ファイルで保存します。</p>
+      <p className="text-sm">自動保存を停止しました。内容を置き換える前に、元のデータを退避ファイルとして自動ダウンロードします。保存データ優先ではキャッシュ、キャッシュ優先では保存データ、マージでは両方をダウンロードします。</p>
       {backup.conflict.document?._sync?.savedAt && <p className="text-xs text-gray-600">ファイルの最終保存：{new Date(backup.conflict.document._sync.savedAt).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })} ／ 保存元：{backup.conflict.document._sync.deviceId || '不明'}</p>}
       {!backup.conflict.document && <p role="alert" className="text-red-700 text-sm">保存先は空、または対応するJSON形式ではありません。保存データの採用・マージはできません。キャッシュ優先の場合も元ファイルを退避します。</p>}
-      <button type="button" disabled={busy || typeof window.showDirectoryPicker !== 'function'} onClick={backup.chooseRetreatDirectory} className="border rounded px-3 py-2">退避先フォルダーを選択</button>
-      <span className="ml-2 text-sm">{backup.directory?.name || '未選択'}</span>
-      {typeof window.showDirectoryPicker !== 'function' && <p role="alert">退避先を安全に保存できるChrome・Edgeをご利用ください。</p>}
       <p className="text-xs text-gray-600">マージは別々の変更を統合し、同じ項目の編集は新しい編集日時を採用します。日時不明・同時刻で内容が異なる項目は選択してください。マージ時は両方の元データを退避します。</p>
       {!!backup.preview?.conflicts.length && <fieldset className="space-y-3"><legend className="font-bold text-sm">マージで選択が必要な項目（{backup.preview.conflicts.length}件）</legend>
         {backup.preview.conflicts.map(item => <div key={item.path} className="rounded border p-3 space-y-2">
@@ -469,9 +459,9 @@ const BackupConflictDialog = ({ backup }) => {
       </fieldset>}
       {backup.message && <p role="alert" className="text-sm text-amber-800">{backup.message}</p>}
       <div className="flex flex-wrap gap-2">
-        <button type="button" disabled={busy || !backup.directory} onClick={() => backup.resolveConflict('cache')} className="rounded border px-3 py-2">キャッシュデータを優先</button>
-        <button type="button" disabled={busy || !backup.directory || !backup.conflict.document} onClick={() => backup.resolveConflict('file')} className="rounded border px-3 py-2">保存データを優先</button>
-        <button type="button" disabled={busy || !backup.directory || !backup.preview || backup.preview.conflicts.some(item => !backup.choices[item.path])} onClick={() => backup.resolveConflict('merge')} className="rounded border px-3 py-2">マージする</button>
+        <button type="button" disabled={busy} onClick={() => backup.resolveConflict('cache')} className="rounded border px-3 py-2">キャッシュデータを優先</button>
+        <button type="button" disabled={busy || !backup.conflict.document} onClick={() => backup.resolveConflict('file')} className="rounded border px-3 py-2">保存データを優先</button>
+        <button type="button" disabled={busy || !backup.preview || backup.preview.conflicts.some(item => !backup.choices[item.path])} onClick={() => backup.resolveConflict('merge')} className="rounded border px-3 py-2">マージする</button>
         <button type="button" disabled={busy} onClick={backup.cancelConflict} className="rounded border px-3 py-2">キャンセル</button>
       </div>
       {busy && <p role="status">退避・反映中です…</p>}
@@ -705,7 +695,8 @@ const restoreProgressTalks = task => {
     recover(quote.quote, quote);
     if (!quote.id || deleted.has(quote.id)) return;
     const currentReply = byId.get(reply.id) || reply;
-    if (quote.status === 'waiting' && !deleted.has(reply.id) && !progressEntryIsNote(quote) && !progressEntryIsNote(currentReply)
+    const currentSource = byId.get(quote.id) || quote;
+    if (currentSource.status === 'waiting' && !deleted.has(reply.id) && !progressEntryIsNote(currentSource) && !progressEntryIsNote(currentReply)
       && currentReply.quote?.id === quote.id) resolved.set(quote.id, reply.id);
     if (!byId.has(quote.id) && (quote.addedSmallTask || (quote.status === 'waiting' && !progressEntryIsNote(quote)))) {
       const entry = { ...quote, kind: 'comment' }; byId.set(entry.id, entry); restored.push(entry);

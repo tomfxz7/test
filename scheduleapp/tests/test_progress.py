@@ -75,6 +75,8 @@ class ProgressTests(unittest.TestCase):
         self.addCleanup(self.ctx.close)
         self.page = self.ctx.new_page()
         self.errors = []
+        self.downloads = []
+        self.page.on('download', lambda download: self.downloads.append(download))
         self.page.on('pageerror',lambda e:self.errors.append(str(e)))
         self.page.route('https://schedule.test/**', self.route)
         self.page.goto('https://schedule.test/',timeout=60000)
@@ -209,9 +211,7 @@ class ProgressTests(unittest.TestCase):
           new Function('document', body)(document);
           document._sync = {...document._sync,version:1,saveId:crypto.randomUUID(),savedAt:'2099-01-01T00:00:00.000Z',deviceId:'other-device',fields:trackBackupEdits(backupBody(previous),backupBody(document),{...previous._sync.fields},'2099-01-01T00:00:00.000Z')};
           const stream = await backupFile.createWritable();await stream.write(JSON.stringify(document));await stream.close();
-          const root=await navigator.storage.getDirectory();
-          window.retreatDirectory=await root.getDirectoryHandle('retreats',{create:true});
-          window.showDirectoryPicker=async()=>retreatDirectory;
+          window.showDirectoryPicker=()=>{throw new Error('Folder picker must not open')};
           return document;
         }''',body)
 
@@ -224,13 +224,13 @@ class ProgressTests(unittest.TestCase):
         return dialog
 
     def sync_retreats(self):
-        return self.page.evaluate('''async()=>{const result={};for await(const [name,handle] of retreatDirectory.entries())result[name]=await(await handle.getFile()).text();return result;}''')
+        return {d.suggested_filename: Path(d.path()).read_text() for d in self.downloads}
 
     def test_sync_cache_priority_retreats_external_data_before_overwrite(self):
         self.seed([task(progressEnabled=True,progressStage='doing')]);self.connect_backup_file()
         external=self.sync_external_edit();dialog=self.sync_manual_conflict()
-        expect(dialog.get_by_role('button',name='キャッシュデータを優先',exact=True)).to_be_disabled()
-        dialog.get_by_role('button',name='退避先フォルダーを選択',exact=True).click()
+        expect(dialog.get_by_role('button',name='キャッシュデータを優先',exact=True)).to_be_enabled()
+        expect(dialog.get_by_role('button',name='退避先フォルダーを選択',exact=True)).to_have_count(0)
         dialog.get_by_role('button',name='キャッシュデータを優先',exact=True).click()
         expect(dialog).to_have_count(0)
         saved=self.backup_contents();self.assertEqual(saved['tasks'],self.stored())
@@ -245,7 +245,7 @@ class ProgressTests(unittest.TestCase):
         self.progress();self.select_chat();self.send('端末内だけにあるコメント')
         cache=self.stored()
         external=self.sync_external_edit("document.tasks[0].title='外部の名前';document.projects=[{id:'remote-project',title:'外部プロジェクト'}];document.recurringCompletions={remote:{completed:true}};")
-        dialog=self.sync_manual_conflict();dialog.get_by_role('button',name='退避先フォルダーを選択',exact=True).click()
+        dialog=self.sync_manual_conflict()
         dialog.get_by_role('button',name='保存データを優先',exact=True).click();expect(dialog).to_have_count(0)
         self.assertEqual(self.stored()[0]['title'],'外部の名前');self.assertEqual(self.backup_contents(),external)
         retreats=self.sync_retreats();self.assertEqual(len(retreats),1)
@@ -260,7 +260,6 @@ class ProgressTests(unittest.TestCase):
         self.page.get_by_label('変更時に自動で上書き保存',exact=True).uncheck()
         self.progress();self.select_chat();self.send('マージで残す端末内のコメント');cache=self.stored()
         external=self.sync_external_edit();dialog=self.sync_manual_conflict()
-        dialog.get_by_role('button',name='退避先フォルダーを選択',exact=True).click()
         dialog.get_by_role('button',name='マージする',exact=True).click();expect(dialog).to_have_count(0)
         saved=self.backup_contents();self.assertEqual(saved['tasks'][0]['title'],'別の端末で編集した名前')
         self.assertEqual(saved['tasks'][0]['progressHistory'][-1]['text'],'マージで残す端末内のコメント')
@@ -286,22 +285,39 @@ class ProgressTests(unittest.TestCase):
         expect(self.page.get_by_role('dialog',name='保存データの競合',exact=True)).to_be_visible()
         self.assertEqual(self.backup_contents(),external)
 
-    def test_sync_retreat_failure_and_remote_change_during_retreat_never_overwrite(self):
+    def test_sync_download_failure_never_overwrites(self):
         self.seed([task(progressEnabled=True,progressStage='doing')]);self.connect_backup_file()
         external=self.sync_external_edit();dialog=self.sync_manual_conflict()
-        dialog.get_by_role('button',name='退避先フォルダーを選択',exact=True).click()
-        self.page.evaluate('backupControl.fail=true')
+        self.page.evaluate("() => { HTMLAnchorElement.prototype.click=function(){throw new Error('Download unavailable')}; }")
         dialog.get_by_role('button',name='キャッシュデータを優先',exact=True).click()
         expect(dialog.get_by_role('alert').filter(has_text='反映できませんでした')).to_be_visible()
         self.assertEqual(self.backup_contents(),external)
-        self.page.evaluate('backupControl.fail=false;backupControl.holdNext=true')
+        self.assertEqual(self.downloads,[])
+
+    def test_sync_remote_change_after_download_never_overwrites(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.connect_backup_file()
+        self.sync_external_edit();dialog=self.sync_manual_conflict()
+        self.page.evaluate("""() => {
+          const click=HTMLAnchorElement.prototype.click, getFile=FileSystemFileHandle.prototype.getFile;
+          HTMLAnchorElement.prototype.click=function(){
+            click.call(this);
+            window.retreatMutation=(async()=>{
+              const doc=JSON.parse(await(await getFile.call(backupFile)).text());
+              doc.tasks[0].title='退避中にさらに変わった内容';
+              const stream=await backupFile.createWritable();await stream.write(JSON.stringify(doc));await stream.close();
+            })();
+          };
+          FileSystemFileHandle.prototype.getFile=async function(){
+            if(window.retreatMutation)await window.retreatMutation;
+            return getFile.call(this);
+          };
+        }""")
         dialog.get_by_role('button',name='キャッシュデータを優先',exact=True).click()
-        self.page.wait_for_function('!!window.releaseBackupWrite')
-        newer=self.sync_external_edit("document.tasks[0].title='退避中にさらに変わった内容';")
-        self.page.evaluate('releaseBackupWrite()')
+        self.page.evaluate('async()=>{await window.retreatMutation;}')
         expect(dialog.get_by_role('button',name='キャッシュデータを優先',exact=True)).to_be_enabled()
-        self.assertEqual(self.backup_contents(),newer)
         expect(dialog).to_be_visible()
+        self.assertEqual(self.backup_contents()['tasks'][0]['title'],'退避中にさらに変わった内容')
+        self.assertNotEqual(self.stored()[0]['title'],'退避中にさらに変わった内容')
 
     def test_sync_merge_uses_field_clocks_deletions_and_asks_for_unknown_or_equal_dates(self):
         result=self.page.evaluate('''() => {
@@ -335,9 +351,9 @@ class ProgressTests(unittest.TestCase):
         dialog=self.sync_manual_conflict()
         expect(dialog.get_by_role('button',name='保存データを優先',exact=True)).to_be_disabled()
         expect(dialog.get_by_role('button',name='マージする',exact=True)).to_be_disabled()
-        dialog.get_by_role('button',name='退避先フォルダーを選択',exact=True).click()
         dialog.get_by_role('button',name='キャッシュデータを優先',exact=True).click();expect(dialog).to_have_count(0)
-        retired=self.page.evaluate('''async()=>{for await(const [name,h] of retreatDirectory.entries())return Array.from(new Uint8Array(await(await h.getFile()).arrayBuffer()));}''')
+        self.assertEqual(len(self.downloads),1)
+        retired=list(Path(self.downloads[0].path()).read_bytes())
         self.assertEqual(retired,raw)
         self.assertEqual(self.backup_contents()['tasks'],self.stored())
 
@@ -368,7 +384,7 @@ class ProgressTests(unittest.TestCase):
         self.sync_external_edit("document.tasks[0].progressHistory[0].text='日時のない外部編集';delete document._sync;")
         # Remove the external helper's generated field clocks to model a legacy writer.
         self.page.evaluate('''async()=>{const doc=JSON.parse(await(await backupFile.getFile()).text());delete doc._sync;const s=await backupFile.createWritable();await s.write(JSON.stringify(doc));await s.close();}''')
-        dialog=self.sync_manual_conflict();dialog.get_by_role('button',name='退避先フォルダーを選択',exact=True).click()
+        dialog=self.sync_manual_conflict()
         expect(dialog.get_by_role('button',name='マージする',exact=True)).to_be_disabled()
         controls=dialog.locator('select')
         self.assertGreater(controls.count(),0)
@@ -563,6 +579,25 @@ class ProgressTests(unittest.TestCase):
         original['progressHistory'].append(dict(id='archived',kind='comment',status='note',plainComment=True,text='削除済みの返信を引用したメモ',subtaskIds=['s1'],smallTaskId='a',quote=dict(reply,id='deleted-reply')))
         if other_reply:original['progressHistory'].append(dict(reply,id='other-reply',text='別の有効な回答'))
         return original
+
+    def test_waiting_edited_after_reply_repairs_stale_quote_on_load_and_reload(self):
+        original=task(progressEnabled=True,progressStage='doing')
+        wait=dict(id='wait',kind='comment',status='waiting',text='11/13トライ予定',subtaskIds=['s1'])
+        reply=dict(id='reply',kind='comment',status='waiting',text='本日トライ完了。着荷待ち',subtaskIds=['s1'],quote=dict(wait,status='active'))
+        done=dict(id='done',kind='comment',status='active',text='用意していただけた',subtaskIds=['s2'],quote=dict(wait,id='second',status='active'))
+        original['progressHistory']=[wait,reply,dict(wait,id='second',subtaskIds=['s2']),done,
+            dict(wait,id='note-source',subtaskIds=[]),dict(done,id='note',status='note',plainComment=True,quote=dict(wait,id='note-source',status='active'))]
+        self.seed([original])
+        for _ in range(2):
+            saved=self.stored()[0];byid={e['id']:e for e in saved['progressHistory']}
+            self.assertEqual(byid['wait']['resolvedByReplyId'],'reply')
+            self.assertEqual(byid['second']['resolvedByReplyId'],'done')
+            self.assertNotIn('resolvedByReplyId',byid['reply'])
+            self.assertNotIn('resolvedByReplyId',byid['note-source'])
+            self.assertTrue(saved['subtasks'][0]['waiting'])
+            self.assertFalse(saved['subtasks'][1].get('waiting',False))
+            self.assertEqual(byid['reply']['quote']['status'],'active')
+            self.page.reload();expect(self.page.get_by_role('heading',name='TaskMatrix Pro')).to_be_visible()
 
     def test_edit_reply_reassigns_wait_and_clears_reply_without_stale_quotes_reclosing(self):
         original=self.reply_edit_task();self.seed([original]);self.progress()
