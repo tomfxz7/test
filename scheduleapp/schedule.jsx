@@ -782,7 +782,7 @@ const normalizeProgressTask = task => {
       || small?.completionConclusion || latestProgressCompletion(normalized, id);
     normalized = completeProgressSmallTask(normalized, id, conclusion);
   });
-  return syncProgressWaiting(normalized);
+  return pruneProgressDependencies(syncProgressWaiting(normalized));
 };
 // A reply may finish one small task while creating the next piece of work.
 const progressCompletionSmallId = (task, entry) => entry?.completedSmallTaskId
@@ -835,6 +835,26 @@ const getProgressDependencyNode = (task, ref) => {
   if (kind === 'task') return task.id === ref.id ? task : undefined;
   if (kind === 'subtask') return getProgressSubtasks(task).find(st => st.id === ref.id);
   if (kind === 'small') return getProgressSmallTasks(getProgressSubtasks(task).find(st => st.id === ref.parentId)).find(small => small.id === ref.id);
+};
+// Remove links whose work item was deleted. Waiting links target a whole scope:
+// deleting one request keeps the link while other requests in that scope remain.
+const pruneProgressDependencies = (task, previous) => {
+  const ids = new Set((task.progressHistory || []).map(entry => entry.id));
+  const deletedWaitScopes = new Set((previous?.progressHistory || []).filter(entry => entry.kind === 'comment'
+    && entry.status === 'waiting' && !progressEntryIsNote(entry) && !ids.has(entry.id))
+    .map(entry => progressWaitingScope(previous, entry)).filter(Boolean));
+  const prune = item => {
+    if (!item.dependencies) return item;
+    const dependencies = item.dependencies.filter(ref => {
+      const node = getProgressDependencyNode(task, ref);
+      if (!node) return false;
+      const scope = ref.scopeKind === 'task' ? 'task' : `${ref.scopeKind}:${ref.id}`;
+      return ref.kind !== 'waiting' || !deletedWaitScopes.has(scope) || node.waiting;
+    });
+    return dependencies.length === item.dependencies.length ? item : { ...item, dependencies };
+  };
+  return { ...prune(task), subtasks: getProgressSubtasks(task).map(st => ({ ...prune(st),
+    ...(st.smallTasks ? { smallTasks: getProgressSmallTasks(st).map(prune) } : {}) })) };
 };
 const progressDependencyTitle = (task, ref) => `${ref.kind === 'waiting' ? '相手待ち: ' : ''}${getProgressDependencyNode(task, ref)?.title || `${ref.title}（削除済み）`}`;
 const progressWaitingDependencyEntry = (task, ref) => {
@@ -4406,6 +4426,10 @@ const ProgressThread = ({ task: sourceTask, onUpdateTask, smallTaskTarget, showR
     setSmallTarget(scopeSmallTarget(parentId, smallId));
     setReplyTo(null); selectedEntryRef.current = { ...entry, smallTaskId: smallId }; setSelectedEntryId(entry.id);
   };
+  const renderTalkBody = entry => <ProgressTalkBody entry={entry} collapsed={collapseTalks} expanded={expandedTalk?.id === entry.id || (composerPanel && editingId === entry.id)} onExpand={() => {
+            const open = expandedTalk?.id === entry.id || (composerPanel && editingId === entry.id);
+            setComposerPanel(false); setExpandedTalk(open ? null : entry);
+          }}/>;
   const renderHistoryEntry = (entry, { extra = null, virtual = false, tone = null, synthetic = false } = {}) => <div key={entry.id} data-progress-entry-id={synthetic ? undefined : entry.id} tabIndex={0} onClick={e => selectCommentTarget(entry, e)} onKeyDown={e => { if (e.key === 'Enter' && e.target === e.currentTarget) { e.preventDefault(); selectCommentTarget(entry, e); } }} aria-current={selectedEntryId === entry.id ? 'true' : undefined} className={`flex flex-col items-stretch ${selectedEntryId === entry.id ? 'ring-2 ring-slate-300 ring-offset-2 rounded-xl' : ''} ${highlightedId === entry.id ? 'ring-2 ring-blue-400 rounded-xl' : ''}`}>
         {Number.isFinite(Date.parse(entry.createdAt)) ? <time dateTime={entry.createdAt} className="text-[10px] text-gray-500 px-1 mb-1">{new Date(entry.createdAt).toLocaleString('ja-JP')}</time> : <span className="text-[10px] text-gray-500 px-1 mb-1">日時未記録</span>}
         <div className={`progress-talk-bubble w-full rounded-xl border px-3 py-2 text-sm shadow-sm ${tone ? progressToneClasses(tone) : progressEntryClasses(entry, task)}`}>
@@ -4428,10 +4452,7 @@ const ProgressThread = ({ task: sourceTask, onUpdateTask, smallTaskTarget, showR
           </div>}
           </div>
           {entry.quote && <ProgressQuote quote={entry.quote} onNavigate={navigateQuote} task={task}/>}
-          <ProgressTalkBody entry={entry} collapsed={collapseTalks} expanded={expandedTalk?.id === entry.id || (composerPanel && editingId === entry.id)} onExpand={() => {
-            const open = expandedTalk?.id === entry.id || (composerPanel && editingId === entry.id);
-            setComposerPanel(false); setExpandedTalk(open ? null : entry);
-          }}/>
+          {renderTalkBody(entry)}
           <ProgressAttachments images={entry.images} links={entry.links}/>
           {extra}
         </div>
@@ -4439,7 +4460,7 @@ const ProgressThread = ({ task: sourceTask, onUpdateTask, smallTaskTarget, showR
   const renderConclusions = (group, kind) => group.conclusions.length > 0 && <section aria-label="結論のまとめ" className="space-y-2">
     <p className="text-xs font-bold">結論</p>
     <div data-small-task-conclusion={kind === 'small' ? group.id : undefined} data-todo-task-conclusion={kind === 'todo' ? group.id : undefined} className="whitespace-pre-wrap break-words">
-      {group.conclusions.map((entry, index) => <React.Fragment key={entry.id}>{index > 0 && '\n'}<ProgressText value={entry.text} textLinks={entry.textLinks} textFormats={entry.textFormats}/><ProgressAttachments images={entry.images} links={entry.links}/></React.Fragment>)}
+      {group.conclusions.map((entry, index) => <React.Fragment key={entry.id}>{index > 0 && '\n'}{renderTalkBody(entry)}<ProgressAttachments images={entry.images} links={entry.links}/></React.Fragment>)}
     </div>
     <div className="flex flex-wrap gap-3 text-xs">{group.conclusions.map((entry, index) => <button key={entry.id} type="button" onClick={() => editComment(entry)} className="underline">{group.conclusions.length === 1 ? '結論を編集' : `結論${index + 1}を編集`}</button>)}</div>
   </section>;
@@ -5432,7 +5453,7 @@ export default function App() {
     return next.map(task => {
       const old = previousById.get(task.id);
       if (old === task) return task;
-      return appendProgressHistory(old, withCompletionTimestamp(old, normalizeProgressTask(syncRemovedProgressTodos(old, syncProgressDueDates(old, task)))), metadata);
+      return appendProgressHistory(old, withCompletionTimestamp(old, pruneProgressDependencies(normalizeProgressTask(syncRemovedProgressTodos(old, syncProgressDueDates(old, task))), old)), metadata);
     });
   });
   const handleUpdateProgressTask = (id, update, metadata) => {
