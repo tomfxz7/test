@@ -207,6 +207,101 @@ class BoardsTests(base.ProgressTests):
         self.assertEqual(self.stored()[0]['progressHistory'][-1]['text'],'切替時も残す未送信の文章')
 
 
+
+    def test_normal_task_tiles_preserve_board_scroll(self):
+        records=[]
+        for i in range(24):
+            item=base.task('tile'+str(i),progressEnabled=True,progressStage='doing')
+            item['title']='タイル'+str(i);records.append(item)
+        self.seed(records)
+        target=self.page.get_by_role('button',name='タイル8',exact=True)
+        target.evaluate("node=>node.scrollIntoView({block:'center'})")
+        board=self.page.get_by_role('region',name='大タスクボード',exact=True)
+        scroll=board.locator('.overflow-y-auto')
+        before=scroll.evaluate('node=>node.scrollTop')
+        self.assertGreater(before,0)
+        for title in ['タイル8','タイル9','タイル8']:
+            self.page.get_by_role('button',name=title,exact=True).click()
+            self.page.evaluate('()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
+            self.assertEqual(scroll.evaluate('node=>node.scrollTop'),before)
+            expect(self.page.get_by_label('トークのタイトル',exact=True)).to_have_text(title)
+
+    def test_task_tiles_complete_empty_and_finished_todos_and_keep_purple(self):
+        empty=base.task('empty',progressEnabled=True,progressStage='doing');empty.update(title='項目なし',subtasks=[])
+        finished=base.task('finished',progressEnabled=True,progressStage='doing');finished['title']='項目完了済み'
+        for st in finished['subtasks']:st.update(completed=True)
+        unfinished=base.task('unfinished',progressEnabled=True,progressStage='doing');unfinished['title']='項目未完了'
+        waiting=dict(empty,id='waiting',title='全体で相手待ち',waiting=True)
+        self.seed([empty,finished,unfinished,waiting])
+        for id in ['empty','finished']:
+            card=self.card(id)
+            expect(card).to_have_class(base.re.compile(r'\bbg-purple-50\b'))
+            expect(card.get_by_role('button',name=('項目なし' if id=='empty' else '項目完了済み')+'を完了',exact=True)).to_have_text('タスク完了')
+        expect(self.card('unfinished').get_by_role('button',name='項目未完了を完了',exact=True)).to_have_count(0)
+        expect(self.card('waiting').get_by_role('button',name='全体で相手待ちを完了',exact=True)).to_have_count(0)
+        for id,title in [('empty','項目なし'),('finished','項目完了済み')]:
+            self.card(id).get_by_role('button',name=title+'を完了',exact=True).click()
+            expect(self.card(id)).to_have_count(0)
+            saved=next(t for t in self.stored() if t['id']==id)
+            self.assertTrue(saved['completed']);self.assertTrue(saved['completedAt']);self.assertEqual(saved['completionSource'],'manual')
+        self.page.get_by_role('button',name='完了済みタスクを表示',exact=True).click()
+        for id in ['empty','finished']:expect(self.card(id)).to_have_attribute('data-status','completed')
+        self.page.reload();self.page.get_by_role('button',name='完了済みタスクを表示',exact=True).click()
+        for id in ['empty','finished']:expect(self.card(id)).to_be_visible()
+
+
+    def change_due(self, target, due, task=False):
+        self.context(target,'期限変更',task=task)
+        dialog=self.page.get_by_role('dialog',name='期限変更',exact=True)
+        dialog.get_by_label('期限',exact=True).fill(due)
+        dialog.get_by_role('button',name='保存',exact=True).click()
+
+    def test_inherited_todo_deadlines_follow_parent_and_manual_dates_stay_fixed(self):
+        original=base.task(progressEnabled=True,progressStage='doing')
+        original.update(dueDate='2027-01-10',date='2027-01-10')
+        original['subtasks'][0]['dueDate']='2027-01-10'
+        original['subtasks'][1]['dueDate']='2027-01-07'
+        original['subtasks'].append(dict(id='hidden',title='非表示の連動項目',dueDate='2027-01-10',progressHidden=True))
+        self.seed([original]);self.open_task()
+        self.change_due(self.card(),'2027-01-20',task=True)
+        result=self.stored()[0]
+        self.assertEqual([s['dueDate'] for s in result['subtasks']],['2027-01-20','2027-01-07','2027-01-20'])
+        self.assertTrue(result['subtasks'][0]['dueDateFollowsTask'])
+        self.assertFalse(result['subtasks'][1]['dueDateFollowsTask'])
+        # Explicitly changing an inherited date detaches it, even if a later
+        # parent edit happens to land on that same date.
+        self.change_due(self.todo(),'2027-01-11')
+        self.change_due(self.card(),'2027-01-11',task=True)
+        self.change_due(self.card(),'2027-01-30',task=True)
+        result=self.stored()[0]
+        self.assertEqual([s['dueDate'] for s in result['subtasks']],['2027-01-11','2027-01-07','2027-01-30'])
+        self.page.reload();self.open_task()
+        self.change_due(self.card(),'2027-02-01',task=True)
+        result=self.stored()[0]
+        self.assertEqual([s['dueDate'] for s in result['subtasks']],['2027-01-11','2027-01-07','2027-02-01'])
+
+    def test_later_todo_deadline_extends_parent_and_other_inherited_todos(self):
+        original=base.task(progressEnabled=True,progressStage='doing')
+        original.update(dueDate='2027-01-10',date='2027-01-10')
+        for st in original['subtasks']:st['dueDate']='2027-01-10'
+        self.seed([original]);self.open_task()
+        self.change_due(self.todo(),'2027-02-10')
+        result=self.stored()[0]
+        self.assertEqual(result['dueDate'],'2027-02-10');self.assertEqual(result['date'],'2027-02-10')
+        self.assertEqual([s['dueDate'] for s in result['subtasks']],['2027-02-10','2027-02-10'])
+        self.assertFalse(result['subtasks'][0]['dueDateFollowsTask']);self.assertTrue(result['subtasks'][1]['dueDateFollowsTask'])
+        self.change_due(self.todo(),'2027-01-15')
+        self.assertEqual(self.stored()[0]['dueDate'],'2027-02-10')
+        self.change_due(self.card(),'2027-02-20',task=True)
+        self.assertEqual([s['dueDate'] for s in self.stored()[0]['subtasks']],['2027-01-15','2027-02-20'])
+        self.page.get_by_role('button',name='やるべきことを追加',exact=True).click()
+        dialog=self.page.get_by_role('dialog',name='やるべきことの追加',exact=True)
+        dialog.get_by_label('名前',exact=True).fill('親期限から追加')
+        dialog.get_by_role('button',name='保存',exact=True).click()
+        self.assertTrue(self.stored()[0]['subtasks'][-1]['dueDateFollowsTask'])
+        self.change_due(self.card(),'2027-02-25',task=True)
+        self.assertEqual(self.stored()[0]['subtasks'][-1]['dueDate'],'2027-02-25')
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(BoardsTests(name) for name in BoardsTests.__dict__ if name.startswith('test_'))
 

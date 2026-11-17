@@ -957,6 +957,31 @@ const convertProgressTodoToSmall = (task, sourceId, parentId, { title, origin } 
   return error ? { error: 'この変換先ではタスク待ちが循環します。別のやるべきことを選ぶか、関連付けを解除してください。' } : { task: result, smallId, parentId: parent.id };
 };
 
+// Track inherited deadlines separately from independently edited todo dates.
+// Older backups have no marker: an empty date or the old parent date inherits.
+const syncProgressDueDates = (previous, next) => {
+  if (!Array.isArray(next.subtasks)) return next;
+  const oldTodos = new Map((previous?.subtasks || []).map(st => [st.id, st]));
+  const parentChanged = !!previous && (previous.dueDate || '') !== (next.dueDate || '');
+  let dueDate = next.dueDate || '';
+  const updates = next.subtasks.map(st => {
+    const old = oldTodos.get(st.id);
+    const edited = !!old && (old.dueDate || '') !== (st.dueDate || '');
+    const inherited = !old ? !st.dueDate || st.dueDate === next.dueDate
+      : edited ? !st.dueDate || (parentChanged && st.dueDate === next.dueDate)
+      : typeof old.dueDateFollowsTask === 'boolean' ? old.dueDateFollowsTask
+      : !old.dueDate || (!!previous?.dueDate && old.dueDate === previous.dueDate);
+    // Extending an individual todo may extend the parent, but never shorten it.
+    if ((!old || edited) && st.dueDate && st.dueDate > dueDate) dueDate = st.dueDate;
+    return { st, inherited, changed: !old || edited };
+  });
+  const changedParent = dueDate !== (previous?.dueDate || '') || parentChanged;
+  const subtasks = updates.map(({ st, inherited, changed }) => !changed && !changedParent ? st : {
+    ...st, dueDate: inherited ? dueDate : st.dueDate, dueDateFollowsTask: inherited
+  });
+  return { ...next, ...(dueDate !== (next.dueDate || '') ? { dueDate, date: dueDate } : {}), subtasks };
+};
+
 const withCompletionTimestamp = (previous, next) => {
   if (!next.completed) {
     if (!('completedAt' in next)) return next;
@@ -4671,8 +4696,9 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask, onDeleteTask }) => {
   const doingListRef = useRef(null);
   const tileScrollTargetRef = useRef(null);
   React.useLayoutEffect(() => {
+    if (!hideTodo) { tileScrollTargetRef.current = null; return; }
     if (taskHome || !tileScrollTargetRef.current) return;
-    // Wait for detail cards to replace the tile grid, then move this board only.
+    // Only compact mode replaces tiles with detail cards that need alignment.
     const frame = requestAnimationFrame(() => {
       const list = doingListRef.current;
       const card = list && [...list.querySelectorAll('[data-progress-task-id]')].find(item => item.dataset.progressTaskId === tileScrollTargetRef.current);
@@ -4683,7 +4709,7 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask, onDeleteTask }) => {
       tileScrollTargetRef.current = null;
     });
     return () => cancelAnimationFrame(frame);
-  }, [taskHome, selectedId]);
+  }, [taskHome, selectedId, hideTodo]);
   const [smallTaskTarget, setSmallTaskTarget] = useState(null);
   const [dependencyTarget, setDependencyTarget] = useState(null);
   const [waitingTarget, setWaitingTarget] = useState(null);
@@ -4838,7 +4864,8 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask, onDeleteTask }) => {
     onReorderSmallTask={(parent, source, target, after) => reorderSmallTask(task.id, parent, source, target, after)} onReorderSubtask={(source, target, after) => reorderSubtask(task.id, source, target, after)}
     onCompleteSubtask={id => completeSubtask(task, id)} onDependency={target => setDependencyTarget({ taskId: task.id, ...target })} onWaiting={scope => setWaitingTarget({ taskId: task.id, scope })}/>;
   const tiles = <div aria-label="大タスクのタイル" className="grid grid-cols-2 gap-3">{boardTasks.map(task => <article key={task.id} data-progress-task-id={task.id} data-status={progressItemStatus(task)} onContextMenu={e => openMenu(e, task)} className={`rounded-xl border shadow-sm ${progressStatusClasses(progressItemStatus(task))}`}>
-    <button type="button" aria-label={task.title} onClick={() => { tileScrollTargetRef.current = task.id; selectTask(task); }} className="min-h-28 w-full rounded-xl p-3 text-left hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"><span className="block break-words text-sm font-bold">{task.title}</span><span className="mt-3 block text-xs">期限: {task.dueDate || '未設定'}</span></button>
+    <button type="button" aria-label={task.title} onClick={() => { tileScrollTargetRef.current = hideTodo ? task.id : null; selectTask(task); }} className="min-h-28 w-full rounded-xl p-3 text-left hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"><span className="block break-words text-sm font-bold">{task.title}</span><span className="mt-3 block text-xs">期限: {task.dueDate || '未設定'}</span></button>
+    {canCompleteProgressTask(task) && <button type="button" aria-label={`${task.title}を完了`} onClick={e => { e.stopPropagation(); completeTask(task); }} className="mx-2 mb-2 rounded-lg bg-purple-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-purple-700">タスク完了</button>}
   </article>)}{!hideTodo && <button type="button" aria-label="大タスクを追加" onClick={onAddTask} className="min-h-28 rounded-xl border-2 border-dashed bg-white/70 flex items-center justify-center text-slate-500 hover:bg-blue-50"><Plus size={28}/></button>}</div>;
   return <div className="h-full min-h-0 flex flex-col overflow-hidden" data-progress-page="">
     <style>{`
@@ -5402,7 +5429,7 @@ export default function App() {
     return next.map(task => {
       const old = previousById.get(task.id);
       if (old === task) return task;
-      return appendProgressHistory(old, withCompletionTimestamp(old, normalizeProgressTask(syncRemovedProgressTodos(old, task))), metadata);
+      return appendProgressHistory(old, withCompletionTimestamp(old, normalizeProgressTask(syncRemovedProgressTodos(old, syncProgressDueDates(old, task)))), metadata);
     });
   });
   const handleUpdateProgressTask = (id, update, metadata) => {
