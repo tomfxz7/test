@@ -652,6 +652,7 @@ class ProgressTests(unittest.TestCase):
             for index in range(2):
                 original['progressHistory'].append(dict(id=f'{scope}-{index}',kind='comment',status='waiting',text=f'{scope}の確認依頼{index}',subtaskIds=[] if scope=='root' else ['s1'],**(dict(smallTaskId='a',smallTaskTitle='複数回答待ちの作業') if scope=='small' else {})))
         self.seed([original]);self.progress()
+        self.page.get_by_role('checkbox',name='コンパクト表示',exact=True).check()
         dialog=self.page.get_by_role('dialog',name='相手待ちステータス一覧',exact=True)
         for title,count in [('進捗テスト案件',6),('既存の調査',4),('複数回答待ちの作業',2)]:
             self.page.get_by_role('button',name=title+'の相手待ち一覧',exact=True).click()
@@ -5742,6 +5743,11 @@ class ProgressTests(unittest.TestCase):
         expand=self.entry('long').get_by_role('button',name='トークを展開',exact=True)
         expand.click();popup=self.page.get_by_role('dialog',name='トークの展開表示',exact=True)
         expect(popup).to_contain_text('最後の行')
+        close_expansion=self.entry('long').get_by_role('button',name='展開を閉じる',exact=True)
+        expect(close_expansion).to_have_attribute('aria-expanded','true')
+        close_expansion.click();expect(popup).to_have_count(0)
+        expect(expand).to_have_attribute('aria-expanded','false')
+        expand.click()
         self.page.keyboard.press('Escape');expect(popup).to_have_count(0);expect(expand).to_be_focused()
         expand.click();self.page.get_by_label('履歴を検索',exact=True).click();expect(popup).to_be_visible()
         popup.get_by_role('button',name='トークの展開表示を閉じる',exact=True).click();expect(popup).to_have_count(0)
@@ -5845,5 +5851,68 @@ class ProgressTests(unittest.TestCase):
         rect=panel.bounding_box();listing=self.page.get_by_role('region',name='進捗リストボード',exact=True).bounding_box()
         self.assertLess(rect['x']+rect['width'],listing['x'])
         self.page.screenshot(path='/tmp/schedule-floating-composer.png')
+
+
+    def legacy_root_wait_fixture(self, resolved=True):
+        stamp='2026-10-29T10:03:57.852Z'
+        wait=dict(id='legacy-request',kind='comment',createdAt=stamp,text='機器リストの確認待ち',status='waiting',subtaskIds=['s1'])
+        if resolved:wait['resolvedByReplyId']='legacy-answer'
+        log=dict(id='legacy-auto-log',kind='change',createdAt=stamp,text='タスク全体を相手待ちにしました',subtaskIds=[])
+        original=task(progressEnabled=True,progressStage='doing',waiting=True,progressHistory=[wait,log])
+        if resolved:
+            original['progressHistory'].append(dict(id='legacy-answer',kind='comment',text='回答を受領',status='active',subtaskIds=['s1'],quote=dict(wait)))
+            for st in original['subtasks']:st.update(completed=True,waiting=False,completionSource='manual',completionManaged=True)
+        return original
+
+    def test_legacy_root_wait_repaired_on_load_import_and_reload(self):
+        original=self.legacy_root_wait_fixture()
+        self.seed([original]);self.progress();self.select_chat()
+        result=self.stored()[0]
+        self.assertFalse(result['waiting']);self.assertTrue(result['waitingManaged'])
+        self.assertFalse(result['completed']);self.assertEqual(result['progressHistory'],original['progressHistory'])
+        expect(self.card()).to_have_attribute('data-status','active')
+        expect(self.page.get_by_role('button',name='進捗テスト案件の相手待ち一覧',exact=True)).to_have_count(0)
+        self.page.reload();self.assertFalse(self.stored()[0]['waiting'])
+        backup=json.dumps(dict(tasks=[original],projects=[],recurringSchedules=[],recurringCompletions=[])).encode()
+        self.page.get_by_label('バックアップをインポート',exact=True).set_input_files(dict(name='legacy.json',mimeType='application/json',buffer=backup))
+        self.assertFalse(self.stored()[0]['waiting'])
+        self.assertEqual(self.stored()[0]['progressHistory'],original['progressHistory'])
+
+    def test_legacy_root_wait_preserves_live_and_manual_waits(self):
+        original=self.legacy_root_wait_fixture(resolved=False)
+        self.seed([original]);result=self.stored()[0]
+        self.assertFalse(result['waiting']);self.assertTrue(result['subtasks'][0]['waiting'])
+        root=dict(original['progressHistory'][0],id='root-live',subtaskIds=[],createdAt='2026-11-01T00:00:00Z')
+        original['progressHistory'].append(root)
+        self.seed([original]);self.assertTrue(self.stored()[0]['waiting'])
+        for variant in ['manual','later-manual','missing-time']:
+            with self.subTest(variant=variant):
+                original=self.legacy_root_wait_fixture()
+                if variant=='manual':original['progressHistory']=[e for e in original['progressHistory'] if e['kind']!='change']
+                elif variant=='later-manual':original['progressHistory'].append(dict(id='manual-setting',kind='change',text='タスク全体を相手待ちにしました',createdAt='2026-11-15T00:00:00Z',subtaskIds=[]))
+                else:
+                    for e in original['progressHistory']:e.pop('createdAt',None)
+                self.seed([original]);self.assertTrue(self.stored()[0]['waiting'])
+
+    def test_legacy_root_wait_edit_and_delete_do_not_leave_flags(self):
+        for operation in ['edit','delete']:
+            with self.subTest(operation=operation):
+                original=self.legacy_root_wait_fixture(resolved=False)
+                # Before migration, the original request still belonged to the task.
+                original['progressHistory'][0]['subtaskIds']=[]
+                original['id']='legacy-'+operation
+                self.seed([original]);self.progress();self.expand_talks()
+                self.assertTrue(self.stored()[0]['waiting'])
+                if operation=='edit':
+                    self.entry('legacy-request').get_by_role('button',name='コメントを編集',exact=True).click()
+                    self.page.get_by_label('相手待ち',exact=True).uncheck()
+                    self.page.get_by_role('button',name='編集を保存',exact=True).click()
+                else:self.entry('legacy-request').get_by_role('button',name='コメントを削除',exact=True).click()
+                self.assertFalse(self.stored()[0]['waiting'])
+                self.page.reload();self.assertFalse(self.stored()[0]['waiting'])
+        for note in [False,True]:
+            original=self.legacy_root_wait_fixture(resolved=False)
+            original['progressHistory'][0].update(status='note' if note else 'active',plainComment=note)
+            self.seed([original]);self.assertFalse(self.stored()[0]['waiting'])
 
 if __name__=='__main__':unittest.main(verbosity=2)

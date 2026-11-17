@@ -717,6 +717,19 @@ const progressWaitingScope = (task, entry) => {
   return parent ? `subtask:${parent.id}` : !source.subtaskIds?.length ? 'task' : null;
 };
 const syncProgressWaiting = task => {
+  // Legacy builds wrote a task-level flag when posting a waiting comment, but
+  // did not clear it if that comment later moved to a todo or became a note.
+  // The paired auto log proves this flag came from a talk, not a manual wait.
+  // Keep unknown/manual flags intact, especially a later unpaired setting.
+  if (task.waiting && !task.waitingManaged) {
+    const history = task.progressHistory || [];
+    const change = history.filter(entry => entry.kind === 'change' && !entry.subtaskIds?.length
+      && ['タスク全体を相手待ちにしました', 'タスク全体の相手待ちを解除しました'].includes(entry.text)).at(-1);
+    if (change?.text === 'タスク全体を相手待ちにしました' && Number.isFinite(Date.parse(change.createdAt))
+      && history.some(entry => entry.kind === 'comment' && entry.createdAt === change.createdAt)) {
+      task = { ...task, waitingManaged: true };
+    }
+  }
   const pending = new Set((task.progressHistory || []).filter(entry => entry.kind === 'comment' && entry.status === 'waiting' && !progressEntryIsNote(entry) && !entry.resolvedByReplyId).map(entry => progressWaitingScope(task, entry)));
   const sync = (node, key) => node.completed ? node : pending.has(key) ? { ...node, waiting: true, waitingManaged: true } : node.waitingManaged ? { ...node, waiting: false } : node;
   return { ...sync(task, 'task'), subtasks: getProgressSubtasks(task).map(st => ({ ...sync(st, `subtask:${st.id}`), ...(st.smallTasks ? { smallTasks: getProgressSmallTasks(st).map(small => sync(small, `small:${small.id}`)) } : {}) })) };
@@ -3850,7 +3863,7 @@ const AISummaryEditor = ({ title, latest, onSave, onClose, onShowLatest, validat
   </div>;
 };
 
-const ProgressTalkBody = ({ entry, collapsed, onExpand }) => {
+const ProgressTalkBody = ({ entry, collapsed, expanded = false, onExpand }) => {
   const body = useRef(null), [overflows, setOverflows] = useState(false);
   React.useLayoutEffect(() => {
     const node = body.current;
@@ -3862,7 +3875,7 @@ const ProgressTalkBody = ({ entry, collapsed, onExpand }) => {
   }, [entry.text, entry.textLinks, entry.textFormats, collapsed]);
   return <>
     <div ref={body} data-talk-body className="whitespace-pre-wrap break-words" style={{ lineHeight: '1.5em', ...(collapsed ? { maxHeight: '4.5em', overflow: 'hidden' } : {}) }}><ProgressText value={entry.text} textLinks={entry.textLinks} textFormats={entry.textFormats}/></div>
-    {collapsed && overflows && <button type="button" className="mt-1 text-blue-700 underline" onClick={onExpand}>トークを展開</button>}
+    {collapsed && overflows && <button type="button" className="mt-1 text-blue-700 underline" aria-expanded={expanded} onClick={onExpand}>{expanded ? '展開を閉じる' : 'トークを展開'}</button>}
   </>;
 };
 // Anchor floating panels over the boards while leaving the history interactive.
@@ -4390,7 +4403,10 @@ const ProgressThread = ({ task: sourceTask, onUpdateTask, smallTaskTarget, showR
           </div>}
           </div>
           {entry.quote && <ProgressQuote quote={entry.quote} onNavigate={navigateQuote} task={task}/>}
-          <ProgressTalkBody entry={entry} collapsed={collapseTalks} onExpand={() => { setComposerPanel(false); setExpandedTalk(entry); }}/>
+          <ProgressTalkBody entry={entry} collapsed={collapseTalks} expanded={expandedTalk?.id === entry.id || (composerPanel && editingId === entry.id)} onExpand={() => {
+            const open = expandedTalk?.id === entry.id || (composerPanel && editingId === entry.id);
+            setComposerPanel(false); setExpandedTalk(open ? null : entry);
+          }}/>
           <ProgressAttachments images={entry.images} links={entry.links}/>
           {extra}
         </div>
