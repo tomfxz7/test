@@ -4535,7 +4535,7 @@ const ProgressThread = ({ task: sourceTask, onUpdateTask, smallTaskTarget, showR
         const mode = e.ctrlKey && e.shiftKey && e.altKey ? 'premise' : e.ctrlKey && e.shiftKey ? 'small' : e.ctrlKey && e.altKey ? 'todo' : e.altKey ? 'waiting' : e.shiftKey ? 'plain' : null;
         send(e, mode);
       }
-      if (e.key === 'Escape' && !e.nativeEvent.isComposing) { if (composerPanel) { e.preventDefault(); e.stopPropagation(); setComposerPanel(false); } else if (editingId || replyTo) { e.preventDefault(); resetComposer(); } }
+      if (e.key === 'Escape' && !e.nativeEvent.isComposing) { if (composerPanel) { e.preventDefault(); e.stopPropagation(); } else if (editingId || replyTo) { e.preventDefault(); resetComposer(); } }
     }} hidden={!composerPanel && (tableOnly || summaryView)} className={`px-3 py-2 bg-white space-y-2 ${composerPanel ? 'z-20 flex flex-col min-h-0 min-w-0 rounded-2xl border shadow-xl overflow-y-auto' : tableOnly || summaryView ? 'hidden' : expandedComposer ? 'flex flex-col min-h-0 min-w-0 rounded-2xl border overflow-y-auto' : 'border-t shrink-0 max-h-[45%] overflow-y-auto'}`}>
       {composerPanel && <header className="flex shrink-0 items-center gap-2 border-b pb-2"><h2 className="flex-1 font-bold">{editingId ? 'トークを編集' : 'コメント入力'}</h2><button type="button" aria-label="入力パネルを閉じる" title="下書きを残して閉じる" onClick={() => setComposerPanel(false)} className="rounded p-2 hover:bg-slate-100"><X size={20}/></button></header>}
       {expandedComposer && !composerPanel && <header aria-label="コメント入力パネル" className="shrink-0 border-b pb-2"><h2 className="text-sm font-black">コメント入力</h2><p className="mt-1 truncate text-xs text-gray-600" title={draftTargetTitle}>{draftTargetTitle}</p></header>}
