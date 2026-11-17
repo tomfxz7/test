@@ -238,6 +238,16 @@ class BoardsTests(base.ProgressTests):
             expect(card).to_have_class(base.re.compile(r'\bbg-purple-50\b'))
             expect(card.get_by_role('button',name=('項目なし' if id=='empty' else '項目完了済み')+'を完了',exact=True)).to_have_text('タスク完了')
         expect(self.card('unfinished').get_by_role('button',name='項目未完了を完了',exact=True)).to_have_count(0)
+        # Completion shares the deadline row without adding height or width.
+        baseline=self.card('unfinished').bounding_box()
+        for id in ['empty','finished']:
+            card=self.card(id);rect=card.bounding_box()
+            self.assertAlmostEqual(rect['height'],baseline['height'],delta=1)
+            self.assertAlmostEqual(rect['width'],baseline['width'],delta=1)
+            footer=card.locator('[data-task-tile-footer]')
+            due=footer.locator('span').bounding_box();button=footer.get_by_role('button').bounding_box()
+            self.assertLessEqual(due['x']+due['width'],button['x'])
+            self.assertAlmostEqual(due['y']+due['height']/2,button['y']+button['height']/2,delta=1)
         expect(self.card('waiting').get_by_role('button',name='全体で相手待ちを完了',exact=True)).to_have_count(0)
         for id,title in [('empty','項目なし'),('finished','項目完了済み')]:
             self.card(id).get_by_role('button',name=title+'を完了',exact=True).click()
