@@ -3865,36 +3865,52 @@ const ProgressTalkBody = ({ entry, collapsed, onExpand }) => {
     {collapsed && overflows && <button type="button" className="mt-1 text-blue-700 underline" onClick={onExpand}>トークを展開</button>}
   </>;
 };
-const ProgressTalkModal = ({ entry, onClose, onEdit }) => {
-  const dialog = useRef(null), closeButton = useRef(null);
+// Anchor floating panels over the boards while leaving the history interactive.
+const useProgressPanelBounds = (anchor, active) => {
+  const [bounds, setBounds] = useState(null);
+  React.useLayoutEffect(() => {
+    if (!active) return;
+    const page = anchor.current?.closest('[data-progress-page]');
+    const first = page?.querySelector('section[aria-label="大タスクボード"]');
+    const list = page?.querySelector('section[aria-label="進捗リストボード"]');
+    if (!first || !list) return;
+    const measure = () => {
+      const left = first.getBoundingClientRect(), right = list.getBoundingClientRect();
+      const next = { position: 'fixed', left: left.left, top: left.top, width: Math.max(0, right.left - left.left - 16), height: left.height };
+      setBounds(previous => previous && Object.keys(next).every(key => previous[key] === next[key]) ? previous : next);
+    };
+    measure();
+    const observer = new ResizeObserver(measure); observer.observe(first); observer.observe(list);
+    window.addEventListener('resize', measure); document.addEventListener('scroll', measure, true);
+    return () => { observer.disconnect(); window.removeEventListener('resize', measure); document.removeEventListener('scroll', measure, true); };
+  }, [active]);
+  return bounds;
+};
+const ProgressTalkPanel = ({ entry, onClose, onEdit, bounds }) => {
+  const closeButton = useRef(null);
   useEffect(() => {
     const previous = document.activeElement;
-    closeButton.current?.focus();
+    closeButton.current?.focus({ preventScroll: true });
     const key = e => {
-      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onClose(); }
-      if (e.key === 'Tab') {
-        const controls = [...dialog.current.querySelectorAll('button,a[href],input,select,textarea,[tabindex="0"]')].filter(node => node.getClientRects().length);
-        const first = controls[0], last = controls[controls.length - 1];
-        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
-        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
-      }
+      if (e.key === 'Escape' && !e.isComposing) { e.preventDefault(); onClose(); }
     };
     document.addEventListener('keydown', key);
-    return () => { document.removeEventListener('keydown', key); previous?.focus(); };
+    return () => { document.removeEventListener('keydown', key); if (previous?.isConnected) previous.focus({ preventScroll: true }); };
   }, []);
-  return <div className="fixed inset-0 z-[85] bg-black/50 flex items-center justify-center p-4" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-    <section ref={dialog} role="dialog" aria-modal="true" aria-label="トークの展開表示" className="flex flex-col w-full max-w-5xl max-h-[90vh] rounded-xl bg-white shadow-xl text-black">
-      <header className="flex items-center gap-2 border-b p-3"><h2 className="flex-1 font-bold">トーク</h2>
-        {entry.kind === 'comment' && <button type="button" aria-label="展開したトークを編集" title="編集" className="rounded p-2 hover:bg-slate-100" onClick={() => { onClose(); onEdit(entry); }}><Pencil size={20}/></button>}
-        <button ref={closeButton} type="button" aria-label="トークの展開表示を閉じる" className="rounded p-2 hover:bg-slate-100" onClick={onClose}><X size={20}/></button>
-      </header>
-      <div className="overflow-auto p-5 text-base whitespace-pre-wrap break-words"><ProgressText value={entry.text} textLinks={entry.textLinks} textFormats={entry.textFormats}/><ProgressAttachments images={entry.images} links={entry.links}/></div>
-    </section>
-  </div>;
+  return <section role="dialog" aria-label="トークの展開表示" style={bounds} className="z-20 flex flex-col min-h-0 rounded-2xl border bg-white shadow-xl text-black">
+    <header className="flex shrink-0 items-center gap-2 border-b p-3"><h2 className="flex-1 font-bold">トーク</h2>
+      {entry.kind === 'comment' && <button type="button" aria-label="展開したトークを編集" title="編集" className="rounded p-2 hover:bg-slate-100" onClick={() => onEdit(entry)}><Pencil size={20}/></button>}
+      <button ref={closeButton} type="button" aria-label="トークの展開表示を閉じる" className="rounded p-2 hover:bg-slate-100" onClick={onClose}><X size={20}/></button>
+    </header>
+    <div className="flex-1 min-h-0 overflow-auto p-5 text-base whitespace-pre-wrap break-words"><ProgressText value={entry.text} textLinks={entry.textLinks} textFormats={entry.textFormats}/><ProgressAttachments images={entry.images} links={entry.links}/></div>
+  </section>;
 };
 const ProgressThread = ({ task: sourceTask, onUpdateTask, smallTaskTarget, showResolvedWaiting = true, collapseTalks = false, expandedComposer = false, tableView = false, onTableViewChange, summaryView = false, onSummaryViewChange, onExportAISummary, onInputAISummary, aiBusy }) => {
   const task = useMemo(() => visibleProgressTask(sourceTask), [sourceTask]);
   const [expandedTalk, setExpandedTalk] = useState(null);
+  const [composerPanel, setComposerPanel] = useState(false);
+  const threadRef = useRef(null);
+  const panelBounds = useProgressPanelBounds(threadRef, !!expandedTalk || composerPanel);
   const [text, setText] = useState('');
   const [textLinks, setTextLinks] = useState([]);
   const [textFormats, setTextFormats] = useState([]);
@@ -4291,6 +4307,10 @@ const ProgressThread = ({ task: sourceTask, onUpdateTask, smallTaskTarget, showR
       return updated;
     });
     if (!editingId) followLatestRef.current = true;
+    if (composerPanel && editingId) {
+      setExpandedTalk(history.find(entry => entry.id === editingId) || null);
+      setComposerPanel(false);
+    }
     resetComposer();
     if (preview?.task) {
       setExpandedTodoIds(ids => [...new Set([...ids, preview.parentId])]);
@@ -4370,7 +4390,7 @@ const ProgressThread = ({ task: sourceTask, onUpdateTask, smallTaskTarget, showR
           </div>}
           </div>
           {entry.quote && <ProgressQuote quote={entry.quote} onNavigate={navigateQuote} task={task}/>}
-          <ProgressTalkBody entry={entry} collapsed={collapseTalks} onExpand={() => setExpandedTalk(entry)}/>
+          <ProgressTalkBody entry={entry} collapsed={collapseTalks} onExpand={() => { setComposerPanel(false); setExpandedTalk(entry); }}/>
           <ProgressAttachments images={entry.images} links={entry.links}/>
           {extra}
         </div>
@@ -4453,8 +4473,8 @@ const ProgressThread = ({ task: sourceTask, onUpdateTask, smallTaskTarget, showR
   const showLatestSummary = () => onSummaryViewChange(true);
   const draftTargetTitle = smallTarget?.title || selected.map(st => st.title).join('、') || (filterOther ? 'その他のトーク' : task.title);
   const tableOnly = expandedComposer && (tableView || summaryView);
-  const sideComposer = expandedComposer && !tableView && !summaryView;
-  return <div className={`${sideComposer ? 'grid gap-4' : 'flex flex-col'} flex-1 min-h-0 min-w-0`} style={sideComposer ? { gridTemplateColumns: 'minmax(380px, 1fr) minmax(380px, 1.2fr)', gridTemplateRows: 'minmax(0, 1fr)' } : undefined} data-progress-thread="">
+  const sideComposer = expandedComposer && !tableView && !summaryView && !composerPanel;
+  return <div className={`${sideComposer ? 'grid gap-4' : 'flex flex-col'} flex-1 min-h-0 min-w-0`} style={sideComposer ? { gridTemplateColumns: 'minmax(380px, 1fr) minmax(380px, 1.2fr)', gridTemplateRows: 'minmax(0, 1fr)' } : undefined} data-progress-thread="" ref={threadRef}>
     <section aria-label="トーク履歴ボード" className={`flex flex-col flex-1 min-h-0 min-w-0 overflow-hidden ${expandedComposer ? 'rounded-2xl border bg-white' : ''}`}>
     <header aria-label="トーク操作" className="flex items-center gap-2 px-3 py-2 border-b bg-white shrink-0 min-w-0">
       <h2 className="text-sm font-black shrink-0">進捗リストボード</h2>
@@ -4480,6 +4500,7 @@ const ProgressThread = ({ task: sourceTask, onUpdateTask, smallTaskTarget, showR
     <div className="flex items-center justify-between gap-2 px-3 py-2 border-b bg-white shrink-0 min-w-0">
       <div aria-label="トークのタイトル" className="min-w-0 flex-1"><h3 className="text-sm font-bold text-gray-900 truncate" title={threadTitle}>{threadTitle}</h3></div>
     <div role="group" aria-label="トークの補助操作" className="flex flex-wrap justify-end gap-1 text-xs">
+      <button type="button" aria-label="コメント入力欄を大きく表示" onClick={() => { setExpandedTalk(null); setComposerPanel(true); requestAnimationFrame(() => composerRef.current?.focus()); }} className="rounded border px-2 py-0.5 text-blue-700"><Pencil size={12} className="inline mr-1"/>入力を拡大</button>
       {!tableView && !summaryView && <details data-talk-filters className="relative" onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); e.currentTarget.open = false; e.currentTarget.querySelector('summary')?.focus(); } }}>
         <summary aria-label="トークの絞り込みを開閉" className={`flex cursor-pointer list-none items-center gap-1 rounded border px-2 py-0.5 ${filteringTalks ? 'bg-blue-50 text-blue-700' : ''}`}><Filter size={12}/>絞り込み{filteringTalks && <span aria-label="絞り込み中" className="h-1.5 w-1.5 rounded-full bg-blue-600"/>}</summary>
         <div role="group" aria-label="トークの絞り込み" className="absolute right-0 top-full z-40 mt-2 w-72 max-w-[calc(100vw-2rem)] rounded-lg border bg-white p-3 shadow-lg space-y-3">
@@ -4509,15 +4530,16 @@ const ProgressThread = ({ task: sourceTask, onUpdateTask, smallTaskTarget, showR
       </div>
     </div>
     </section>
-    <form aria-label="トーク送信" onSubmit={send} onKeyDown={e => {
+    <form aria-label={composerPanel ? (editingId ? 'トークのパネル編集' : 'コメントの拡大入力') : 'トーク送信'} role={composerPanel ? 'dialog' : undefined} style={composerPanel ? panelBounds : undefined} onSubmit={send} onKeyDown={e => {
       if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.target === composerRef.current && (e.ctrlKey || e.altKey || e.shiftKey)) {
         e.preventDefault();
         const mode = e.ctrlKey && e.shiftKey && e.altKey ? 'premise' : e.ctrlKey && e.shiftKey ? 'small' : e.ctrlKey && e.altKey ? 'todo' : e.altKey ? 'waiting' : e.shiftKey ? 'plain' : null;
         send(e, mode);
       }
-      if (e.key === 'Escape' && (editingId || replyTo) && !e.nativeEvent.isComposing) { e.preventDefault(); resetComposer(); }
-    }} hidden={tableOnly || summaryView} className={`px-3 py-2 bg-white space-y-2 ${tableOnly || summaryView ? 'hidden' : expandedComposer ? 'flex flex-col min-h-0 min-w-0 rounded-2xl border overflow-y-auto' : 'border-t shrink-0 max-h-[45%] overflow-y-auto'}`}>
-      {expandedComposer && <header aria-label="コメント入力パネル" className="shrink-0 border-b pb-2"><h2 className="text-sm font-black">コメント入力</h2><p className="mt-1 truncate text-xs text-gray-600" title={draftTargetTitle}>{draftTargetTitle}</p></header>}
+      if (e.key === 'Escape' && !e.nativeEvent.isComposing) { if (composerPanel) { e.preventDefault(); e.stopPropagation(); setComposerPanel(false); } else if (editingId || replyTo) { e.preventDefault(); resetComposer(); } }
+    }} hidden={!composerPanel && (tableOnly || summaryView)} className={`px-3 py-2 bg-white space-y-2 ${composerPanel ? 'z-20 flex flex-col min-h-0 min-w-0 rounded-2xl border shadow-xl overflow-y-auto' : tableOnly || summaryView ? 'hidden' : expandedComposer ? 'flex flex-col min-h-0 min-w-0 rounded-2xl border overflow-y-auto' : 'border-t shrink-0 max-h-[45%] overflow-y-auto'}`}>
+      {composerPanel && <header className="flex shrink-0 items-center gap-2 border-b pb-2"><h2 className="flex-1 font-bold">{editingId ? 'トークを編集' : 'コメント入力'}</h2><button type="button" aria-label="入力パネルを閉じる" title="下書きを残して閉じる" onClick={() => setComposerPanel(false)} className="rounded p-2 hover:bg-slate-100"><X size={20}/></button></header>}
+      {expandedComposer && !composerPanel && <header aria-label="コメント入力パネル" className="shrink-0 border-b pb-2"><h2 className="text-sm font-black">コメント入力</h2><p className="mt-1 truncate text-xs text-gray-600" title={draftTargetTitle}>{draftTargetTitle}</p></header>}
       {!editingId && selectedEntryId && <div role="status" aria-label="コメントの送信先" className="flex items-center gap-2 text-xs font-bold"><span className="flex-1 truncate">送信先: {draftTargetTitle}</span><button type="button" className="underline" onClick={() => chooseThreadScope(filterId, filterSmallId, true)}>表示中の範囲に戻す</button></div>}
       {editingId && <div className="flex items-center gap-2 text-xs text-blue-700"><p role="status" className="flex-1 truncate" title={draftTargetTitle}>編集中: {draftTargetTitle}</p><button type="button" onClick={resetComposer} className="shrink-0 underline">編集をキャンセル</button></div>}
       {editingId && <div className="flex flex-wrap items-center gap-3 text-xs text-blue-700"><button type="button" onClick={() => { onTableViewChange(false); setSelectingReply(value => !value); }} className="underline">返信元を変更</button>{replyContext && <button type="button" onClick={() => chooseEditedReply(null)} className="underline">返信を解除</button>}</div>}
@@ -4543,18 +4565,18 @@ const ProgressThread = ({ task: sourceTask, onUpdateTask, smallTaskTarget, showR
         {conversionPreview?.error && <p role="alert" className="text-red-700">{conversionParents.length ? conversionPreview.error : '変換先になる別のやるべきことを、先に追加してください。'}</p>}
       </div>}
       {addTodo && <label className="flex items-center gap-2 text-xs text-gray-600">追加するやるべきことの期限<input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} className="border rounded-md px-2 py-1 min-w-0" title={`未入力時: ${task.dueDate || '期限なし'}`}/></label>}
-      <div className={`${expandedComposer ? 'flex-col flex-1 min-h-48 items-stretch' : 'items-end'} flex gap-2`}>
-        <div className={`${expandedComposer ? 'flex flex-col min-h-0' : ''} flex-1 min-w-0 rounded-xl border focus-within:ring-2 focus-within:ring-blue-400`}>
+      <div className={`${expandedComposer || composerPanel ? 'flex-col flex-1 min-h-48 items-stretch' : 'items-end'} flex gap-2`}>
+        <div className={`${expandedComposer || composerPanel ? 'flex flex-col min-h-0' : ''} flex-1 min-w-0 rounded-xl border focus-within:ring-2 focus-within:ring-blue-400`}>
           <ProgressComposer text={text} textLinks={textLinks} textFormats={textFormats} onChange={draft => { setText(draft.text); setTextLinks(draft.textLinks || []); setTextFormats(draft.textFormats || []); }}
-            onPasteImages={addImages} editorRef={composerRef} editing={!!editingId} expanded={expandedComposer}/>
+            onPasteImages={addImages} editorRef={composerRef} editing={!!editingId} expanded={expandedComposer || composerPanel}/>
           {(images.length > 0 || links.length > 0) && <div className="px-2 pb-2" aria-label="本文の添付プレビュー"><ProgressAttachments images={images} links={links} onRemoveImage={id => setImages(previous => previous.filter(image => image.id !== id))} onRemoveLink={id => setLinks(previous => previous.filter(link => link.id !== id))}/></div>}
         </div>
-        <button type="submit" disabled={!canSend} className={`${expandedComposer ? 'self-end' : ''} shrink-0 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-xs font-bold`}>{editingId ? '編集を保存' : '送信'}</button>
+        <button type="submit" disabled={!canSend} className={`${expandedComposer || composerPanel ? 'self-end' : ''} shrink-0 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-xs font-bold`}>{editingId ? '編集を保存' : '送信'}</button>
       </div>
       {mediaBusy && <p role="status" className="text-xs text-gray-500">画像を読み込み中…</p>}
       {mediaError && <p role="alert" className="text-xs text-red-700">{mediaError}</p>}
     </form>
-    {expandedTalk && <ProgressTalkModal entry={expandedTalk} onClose={() => setExpandedTalk(null)} onEdit={entry => { editComment(entry); requestAnimationFrame(() => composerRef.current?.focus()); }}/>}
+    {expandedTalk && <ProgressTalkPanel bounds={panelBounds} entry={history.find(entry => entry.id === expandedTalk.id) || expandedTalk} onClose={() => setExpandedTalk(null)} onEdit={entry => { setExpandedTalk(null); setComposerPanel(true); editComment(entry); requestAnimationFrame(() => composerRef.current?.focus()); }}/>}
     {quoteDetail && <QuoteSourceModal quote={quoteDetail} task={task} onClose={() => setQuoteDetail(null)}/>}
   </div>;
 };
