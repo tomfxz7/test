@@ -1321,6 +1321,25 @@ const PROGRESS_GRID_ROWS = 500, PROGRESS_GRID_COLUMNS = 100, PROGRESS_GRID_CELLS
 const progressGridError = (height, width) => height > PROGRESS_GRID_ROWS || width > PROGRESS_GRID_COLUMNS || height * width > PROGRESS_GRID_CELLS
   ? '一度に扱える表は500行・100列、合計20,000セルまでです。範囲を分けて貼り付けてください。' : '';
 const progressGridTsv = rows => rows.map(row => row.map(value => /[\t\r\n"]/.test(value) ? '"' + value.replace(/"/g, '""') + '"' : value).join('\t')).join('\r\n');
+// Office HTML includes indentation and empty o:p placeholders inside cells.
+// Normalize source whitespace before interpreting paragraph and BR boundaries.
+const progressClipboardCellText = cell => {
+  const copy = cell.cloneNode(true);
+  copy.querySelectorAll('script,style').forEach(node => node.remove());
+  const walker = document.createTreeWalker(copy, NodeFilter.SHOW_TEXT), nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  const block = node => node && /^(DIV|P|LI|UL|OL|TABLE|TR)$/.test(node.nodeName);
+  nodes.forEach(node => {
+    if (node.parentElement?.closest('pre,[style*="white-space: pre"],[style*="white-space:pre"]')) return;
+    if (/^[\t\r\n ]+$/.test(node.textContent) && /[\r\n]/.test(node.textContent)
+      && (!node.previousSibling || !node.nextSibling || block(node.previousSibling) || block(node.nextSibling))) node.remove();
+    else node.textContent = node.textContent.replace(/[\t\r\n ]+/g, ' ');
+  });
+  copy.querySelectorAll('p,div').forEach(node => {
+    if (!node.textContent.replace(/[\s\u00a0]/g, '') && node.querySelector('o\\:p') && !node.querySelector('br')) node.remove();
+  });
+  return readProgressEditor(copy).text.replace(/^\n+|\n+$/g, '');
+};
 const progressClipboardGrid = (html, plain, cellMode = false) => {
   const rectangular = rows => {
     const width = Math.max(1, ...rows.map(row => row.length));
@@ -1343,7 +1362,7 @@ const progressClipboardGrid = (html, plain, cellMode = false) => {
           if (error) return { error };
           for (let y = 0; y < height; y += 1) {
             rows[i + y] ||= [];
-            for (let x = 0; x < width; x += 1) rows[i + y][column + x] = y === 0 && x === 0 ? readProgressEditor(cell).text : '';
+            for (let x = 0; x < width; x += 1) rows[i + y][column + x] = y === 0 && x === 0 ? progressClipboardCellText(cell) : '';
           }
           column += width;
         }
@@ -1692,8 +1711,20 @@ const ProgressComposer = ({ text, textLinks, textFormats = [], onChange, onPaste
     const editor = editorRef.current;
     if (!editor || composing.current) return;
     const current = read(), wanted = progressTextLinks(text, textLinks);
-    if (current.text === text && JSON.stringify(current.textLinks) === JSON.stringify(wanted) && JSON.stringify(current.textFormats) === JSON.stringify(progressTextFormats(text,textFormats)) && (text || !editor.textContent)) return;
+    const decorateTables = () => editor.querySelectorAll('table[data-progress-table]').forEach((table, index) => {
+      const caption = table.caption || table.createCaption();
+      caption.style.cssText = 'text-align:left;white-space:normal';
+      caption.contentEditable = 'false';
+      const button = caption.querySelector('button') || document.createElement('button');
+      button.type = 'button'; button.dataset.progressEditTable = '';
+      button.setAttribute('aria-label', `表 ${index + 1} を編集`);
+      button.textContent = '✎ 編集';
+      button.className = 'rounded border bg-white px-2 py-1 text-xs text-blue-700';
+      caption.replaceChildren(button);
+    });
+    if (current.text === text && JSON.stringify(current.textLinks) === JSON.stringify(wanted) && JSON.stringify(current.textFormats) === JSON.stringify(progressTextFormats(text,textFormats)) && (text || !editor.textContent)) { decorateTables(); return; }
     editor.replaceChildren(progressEditorFragment(text, wanted, textFormats));
+    decorateTables();
   }, [text, textLinks, textFormats]);
   const format = command => { editorRef.current.focus(); document.execCommand(command,false,null); emit(); };
   const paste = e => {
@@ -1731,6 +1762,15 @@ const ProgressComposer = ({ text, textLinks, textFormats = [], onChange, onPaste
     {pasteError && <p role="alert" className="px-2 text-xs text-red-700">{pasteError}</p>}
     {tableDialog && <ProgressTableDialog initial={tableDialog.table?.rows} onApply={applyTable} onClose={() => setTableDialog(null)}/>}
     <div ref={editorRef} role="textbox" aria-multiline="true" aria-label={editing ? 'コメントの編集' : '進捗コメント'} title="Enter: 改行 / Ctrl+Enter: 送信 / Alt+Enter: 相手待ち / Shift+Enter: コメント / Ctrl+Shift+Enter: 小タスク追加 / Ctrl+Alt+Enter: やるべきこと追加 / Ctrl+Shift+Alt+Enter: 前提メモ" contentEditable suppressContentEditableWarning
+      onMouseDown={e => { if (e.target.closest('[data-progress-edit-table]')) e.preventDefault(); }}
+      onClick={e => {
+        const button = e.target.closest('[data-progress-edit-table]');
+        if (!button) return;
+        e.preventDefault();
+        const index = [...editorRef.current.querySelectorAll('table[data-progress-table]')].indexOf(button.closest('table'));
+        const table = progressTables(read().text)[index];
+        if (table) setTableDialog({ table });
+      }}
       onInput={emit} onPaste={paste} onKeyDown={e=>{ if(e.nativeEvent.isComposing)return; if((e.ctrlKey || e.metaKey) && ['b','i','u'].includes(e.key.toLowerCase())) { e.preventDefault(); e.stopPropagation(); format(({b:'bold',i:'italic',u:'underline'})[e.key.toLowerCase()]); } }} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; emit(); }}
       className={`w-full ${expanded ? 'flex-1 min-h-32' : 'min-h-10 max-h-40'} overflow-y-auto rounded-xl p-2 text-sm text-black whitespace-pre-wrap break-words focus:outline-none`}/>
     {!text && <span aria-hidden="true" className="absolute top-10 left-2 right-2 pointer-events-none text-xs text-gray-400">コメントを入力…画像・リンク貼り付け可（Ctrl+Enter で送信）</span>}
@@ -3810,8 +3850,51 @@ const AISummaryEditor = ({ title, latest, onSave, onClose, onShowLatest, validat
   </div>;
 };
 
-const ProgressThread = ({ task: sourceTask, onUpdateTask, smallTaskTarget, showResolvedWaiting = true, expandedComposer = false, tableView = false, onTableViewChange, summaryView = false, onSummaryViewChange, onExportAISummary, onInputAISummary, aiBusy }) => {
+const ProgressTalkBody = ({ entry, collapsed, onExpand }) => {
+  const body = useRef(null), [overflows, setOverflows] = useState(false);
+  React.useLayoutEffect(() => {
+    const node = body.current;
+    const measure = () => setOverflows(node.scrollHeight > parseFloat(getComputedStyle(node).lineHeight) * 3 + 1);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure); observer.observe(node);
+    return () => observer.disconnect();
+  }, [entry.text, entry.textLinks, entry.textFormats, collapsed]);
+  return <>
+    <div ref={body} data-talk-body className="whitespace-pre-wrap break-words" style={{ lineHeight: '1.5em', ...(collapsed ? { maxHeight: '4.5em', overflow: 'hidden' } : {}) }}><ProgressText value={entry.text} textLinks={entry.textLinks} textFormats={entry.textFormats}/></div>
+    {collapsed && overflows && <button type="button" className="mt-1 text-blue-700 underline" onClick={onExpand}>トークを展開</button>}
+  </>;
+};
+const ProgressTalkModal = ({ entry, onClose, onEdit }) => {
+  const dialog = useRef(null), closeButton = useRef(null);
+  useEffect(() => {
+    const previous = document.activeElement;
+    closeButton.current?.focus();
+    const key = e => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onClose(); }
+      if (e.key === 'Tab') {
+        const controls = [...dialog.current.querySelectorAll('button,a[href],input,select,textarea,[tabindex="0"]')].filter(node => node.getClientRects().length);
+        const first = controls[0], last = controls[controls.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+      }
+    };
+    document.addEventListener('keydown', key);
+    return () => { document.removeEventListener('keydown', key); previous?.focus(); };
+  }, []);
+  return <div className="fixed inset-0 z-[85] bg-black/50 flex items-center justify-center p-4" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+    <section ref={dialog} role="dialog" aria-modal="true" aria-label="トークの展開表示" className="flex flex-col w-full max-w-5xl max-h-[90vh] rounded-xl bg-white shadow-xl text-black">
+      <header className="flex items-center gap-2 border-b p-3"><h2 className="flex-1 font-bold">トーク</h2>
+        {entry.kind === 'comment' && <button type="button" aria-label="展開したトークを編集" title="編集" className="rounded p-2 hover:bg-slate-100" onClick={() => { onClose(); onEdit(entry); }}><Pencil size={20}/></button>}
+        <button ref={closeButton} type="button" aria-label="トークの展開表示を閉じる" className="rounded p-2 hover:bg-slate-100" onClick={onClose}><X size={20}/></button>
+      </header>
+      <div className="overflow-auto p-5 text-base whitespace-pre-wrap break-words"><ProgressText value={entry.text} textLinks={entry.textLinks} textFormats={entry.textFormats}/><ProgressAttachments images={entry.images} links={entry.links}/></div>
+    </section>
+  </div>;
+};
+const ProgressThread = ({ task: sourceTask, onUpdateTask, smallTaskTarget, showResolvedWaiting = true, collapseTalks = false, expandedComposer = false, tableView = false, onTableViewChange, summaryView = false, onSummaryViewChange, onExportAISummary, onInputAISummary, aiBusy }) => {
   const task = useMemo(() => visibleProgressTask(sourceTask), [sourceTask]);
+  const [expandedTalk, setExpandedTalk] = useState(null);
   const [text, setText] = useState('');
   const [textLinks, setTextLinks] = useState([]);
   const [textFormats, setTextFormats] = useState([]);
@@ -4287,7 +4370,7 @@ const ProgressThread = ({ task: sourceTask, onUpdateTask, smallTaskTarget, showR
           </div>}
           </div>
           {entry.quote && <ProgressQuote quote={entry.quote} onNavigate={navigateQuote} task={task}/>}
-          <div className="whitespace-pre-wrap break-words"><ProgressText value={entry.text} textLinks={entry.textLinks} textFormats={entry.textFormats}/></div>
+          <ProgressTalkBody entry={entry} collapsed={collapseTalks} onExpand={() => setExpandedTalk(entry)}/>
           <ProgressAttachments images={entry.images} links={entry.links}/>
           {extra}
         </div>
@@ -4471,6 +4554,7 @@ const ProgressThread = ({ task: sourceTask, onUpdateTask, smallTaskTarget, showR
       {mediaBusy && <p role="status" className="text-xs text-gray-500">画像を読み込み中…</p>}
       {mediaError && <p role="alert" className="text-xs text-red-700">{mediaError}</p>}
     </form>
+    {expandedTalk && <ProgressTalkModal entry={expandedTalk} onClose={() => setExpandedTalk(null)} onEdit={entry => { editComment(entry); requestAnimationFrame(() => composerRef.current?.focus()); }}/>}
     {quoteDetail && <QuoteSourceModal quote={quoteDetail} task={task} onClose={() => setQuoteDetail(null)}/>}
   </div>;
 };
@@ -4536,6 +4620,7 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask, onDeleteTask }) => {
     setShowResolvedWaiting(value !== 'hide');
     try { localStorage.setItem('taskmatrix.progress.resolvedWaiting', value); } catch { /* The current view still works when storage is unavailable. */ }
   };
+  const [collapseTalks, setCollapseTalks] = useState(() => { try { return localStorage.getItem('taskmatrix.progress.collapseTalks') === 'true'; } catch { return false; } });
   const [hideTodo, setHideTodo] = useState(() => { try { return localStorage.getItem('taskmatrix.progress.hideTodo') === 'true'; } catch { return false; } });
   const [tableView, setTableView] = useState(false);
   const [summaryView, setSummaryView] = useState(false);
@@ -4726,6 +4811,7 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask, onDeleteTask }) => {
     `}</style>
     <div className="px-4 py-2 bg-white/70 border-b flex flex-wrap items-center justify-between gap-3 shrink-0">
       <label className="text-xs flex items-center gap-2">返信済みの相手待ち<select aria-label="返信済みの相手待ちの表示" value={showResolvedWaiting ? 'show' : 'hide'} onChange={e => changeResolvedWaiting(e.target.value)} className="border rounded-lg bg-white px-2 py-1.5"><option value="show">青色で残す</option><option value="hide">非表示</option></select></label>
+      <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={collapseTalks} onChange={e => { const value = e.target.checked; setCollapseTalks(value); try { localStorage.setItem('taskmatrix.progress.collapseTalks', String(value)); } catch {} }}/>長いトークを3行で表示</label>
       <label className="flex items-center gap-2 rounded-lg border bg-white px-3 py-1.5 text-xs font-bold cursor-pointer"><input type="checkbox" aria-label="コンパクト表示" checked={hideTodo} onChange={toggleTodo}/>コンパクト表示</label>
       <div role="group" aria-label="進捗リストの表示切替" className="flex gap-1 shrink-0 text-xs">
         <button type="button" aria-pressed={!tableView && !summaryView} onClick={() => { setSummaryView(false); setTableView(false); }} className={`rounded border px-2 py-1 ${!tableView && !summaryView ? 'bg-blue-50 text-blue-700' : 'bg-white'}`}>トーク表示</button>
@@ -4760,7 +4846,7 @@ const ProgressPage = ({ tasks, onUpdateTask, onAddTask, onDeleteTask }) => {
         </section>}
         <section aria-label="進捗リストボード" className={`${hideTodo && selectedTask ? '' : 'rounded-2xl border border-black bg-white overflow-hidden'} flex flex-col min-h-0 min-w-0`}>
           {!selectedTask && <header className="px-3 py-2 border-b shrink-0"><h2 className="text-sm font-black">進捗リストボード</h2></header>}
-          {selectedTask ? <ProgressThreadBoundary key={selectedTask.id} resetKey={smallTaskTarget?.requestId}><ProgressThread task={selectedTask} onUpdateTask={onUpdateTask} smallTaskTarget={smallTaskTarget} showResolvedWaiting={showResolvedWaiting} expandedComposer={hideTodo} tableView={tableView} onTableViewChange={setTableView} summaryView={summaryView} onSummaryViewChange={setSummaryView} onExportAISummary={exportTaskAISummary} onInputAISummary={inputTaskAISummary} aiBusy={aiBusy}/></ProgressThreadBoundary> : <div className="flex-1 flex flex-col items-center justify-center gap-3 text-gray-400 p-6 text-sm text-center"><List size={32}/><p>カードをクリックすると、<br/>進捗と変更履歴が表示されます。</p></div>}
+          {selectedTask ? <ProgressThreadBoundary key={selectedTask.id} resetKey={smallTaskTarget?.requestId}><ProgressThread task={selectedTask} onUpdateTask={onUpdateTask} smallTaskTarget={smallTaskTarget} showResolvedWaiting={showResolvedWaiting} collapseTalks={collapseTalks} expandedComposer={hideTodo} tableView={tableView} onTableViewChange={setTableView} summaryView={summaryView} onSummaryViewChange={setSummaryView} onExportAISummary={exportTaskAISummary} onInputAISummary={inputTaskAISummary} aiBusy={aiBusy}/></ProgressThreadBoundary> : <div className="flex-1 flex flex-col items-center justify-center gap-3 text-gray-400 p-6 text-sm text-center"><List size={32}/><p>カードをクリックすると、<br/>進捗と変更履歴が表示されます。</p></div>}
         </section>
       </div>
     </div>

@@ -5691,4 +5691,83 @@ class ProgressTests(unittest.TestCase):
         expect(dialog.get_by_role('checkbox')).to_have_count(0)
         expect(dialog.get_by_role('button',name='Wordをダウンロード',exact=True)).to_be_disabled()
 
+
+    def test_powerpoint_table_source_whitespace_and_per_table_edit_buttons(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.progress();self.select_chat()
+        box=self.page.get_by_label('進捗コメント',exact=True)
+        html = """<table>
+ <tr>
+ <td>
+ <p class="MsoNormal"><span>項目</span></p>
+ </td>
+ <td><p>内容</p></td>
+ </tr>
+ <tr><td>
+ <p>一段目</p>
+ <p>二段目<br>三段目</p>
+ <p><o:p>&nbsp;</o:p></p>
+ </td><td><span>長い
+ テキスト</span></td></tr></table><p>間の文章</p><table><tr><td>別の表</td></tr><tr><td>値</td></tr></table>"""
+        self.paste_grid(box,'項目\t内容\n一段目\n二段目\n三段目\t長い テキスト',html)
+        expect(box.get_by_role('table')).to_have_count(2)
+        expect(box.get_by_role('table').first.locator('tr').nth(1).locator('td').first).to_have_text('一段目\n二段目\n三段目')
+        expect(box.get_by_role('table').first.locator('tr').nth(1).locator('td').nth(1)).to_have_text('長い テキスト')
+        box.get_by_role('button',name='表 2 を編集',exact=True).click()
+        dialog=self.page.get_by_role('dialog',name='表を編集',exact=True)
+        expect(dialog.get_by_label('1行1列',exact=True)).to_have_value('別の表')
+        dialog.get_by_label('2行1列',exact=True).fill('編集した値')
+        dialog.get_by_role('button',name='表を更新',exact=True).click()
+        expect(box.get_by_role('button',name='表 1 を編集',exact=True)).to_be_visible()
+        box.press('Control+Enter')
+        source=self.stored()[0]['progressHistory'][-1]
+        self.assertNotIn('✎',source['text']);self.assertIn('編集した値',source['text'])
+        self.entry(source['id']).get_by_role('button',name='コメントを編集',exact=True).click()
+        editor=self.page.get_by_label('コメントの編集',exact=True)
+        editor.get_by_role('button',name='表 1 を編集',exact=True).click()
+        dialog=self.page.get_by_role('dialog',name='表を編集',exact=True)
+        expect(dialog.get_by_label('2行1列',exact=True)).to_have_value('一段目\n二段目\n三段目')
+        dialog.get_by_role('button',name='キャンセル',exact=True).click()
+
+    def test_long_talk_three_lines_popup_dismiss_edit_and_preference(self):
+        long='最初の行\n二行目\n三行目\n四行目\n最後の行'
+        original=task(progressEnabled=True,progressStage='doing')
+        original['progressHistory']=[dict(id='long',kind='comment',status='active',text=long,subtaskIds=[]),dict(id='short',kind='comment',status='active',text='短いトーク',subtaskIds=[])]
+        self.seed([original]);self.progress();self.select_chat()
+        option=self.page.get_by_role('checkbox',name='長いトークを3行で表示',exact=True)
+        expect(self.entry('long').get_by_role('button',name='トークを展開',exact=True)).to_have_count(0)
+        option.check()
+        body=self.entry('long').locator('[data-talk-body]')
+        self.assertTrue(body.evaluate('node=>node.scrollHeight>node.clientHeight'))
+        expect(self.entry('short').get_by_role('button',name='トークを展開',exact=True)).to_have_count(0)
+        expand=self.entry('long').get_by_role('button',name='トークを展開',exact=True)
+        expand.click();popup=self.page.get_by_role('dialog',name='トークの展開表示',exact=True)
+        expect(popup).to_contain_text('最後の行')
+        self.page.keyboard.press('Escape');expect(popup).to_have_count(0);expect(expand).to_be_focused()
+        expand.click();self.page.mouse.click(2,2);expect(popup).to_have_count(0)
+        expand.click();popup.get_by_role('button',name='トークの展開表示を閉じる',exact=True).click();expect(popup).to_have_count(0)
+        expand.click();popup.get_by_role('button',name='展開したトークを編集',exact=True).click();expect(popup).to_have_count(0)
+        editor=self.page.get_by_label('コメントの編集',exact=True);expect(editor).to_have_text(long)
+        editor.fill(long+'\n編集済み');self.page.get_by_role('button',name='編集を保存',exact=True).click()
+        self.assertTrue(next(e for e in self.stored()[0]['progressHistory'] if e['id']=='long')['text'].endswith('編集済み'))
+        self.page.reload();self.progress();self.select_chat()
+        expect(self.page.get_by_role('checkbox',name='長いトークを3行で表示',exact=True)).to_be_checked()
+        self.page.get_by_role('checkbox',name='長いトークを3行で表示',exact=True).uncheck()
+        expect(self.entry('long').get_by_role('button',name='トークを展開',exact=True)).to_have_count(0)
+
+    def test_long_talk_wrapped_text_and_rich_table_popup(self):
+        original=task(progressEnabled=True,progressStage='doing')
+        text='折り返しの長い本文。'*180+'\n\n| 見出し | 内容 |\n| --- | --- |\n| 項目 | 値 |'
+        original['progressHistory']=[dict(id='wrapped',kind='comment',status='active',text=text,subtaskIds=[])]
+        self.seed([original]);self.progress();self.select_chat()
+        self.page.get_by_role('checkbox',name='長いトークを3行で表示',exact=True).check()
+        self.entry('wrapped').get_by_role('button',name='トークを展開',exact=True).click()
+        popup=self.page.get_by_role('dialog',name='トークの展開表示',exact=True)
+        expect(popup.get_by_role('table')).to_be_visible()
+        expect(popup.get_by_role('cell',name='値',exact=True)).to_be_visible()
+        self.page.keyboard.press('Tab')
+        expect(popup.get_by_role('button',name='展開したトークを編集',exact=True)).to_be_focused()
+        self.page.keyboard.press('Shift+Tab')
+        expect(popup.get_by_role('button',name='トークの展開表示を閉じる',exact=True)).to_be_focused()
+        self.page.keyboard.press('Escape')
+
 if __name__=='__main__':unittest.main(verbosity=2)
