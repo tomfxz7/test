@@ -54,13 +54,17 @@ class AISummaryTests(base.ProgressTests):
     def test_bulk_markdown_route_latest_blank_replacement_and_backup(self):
         self.seed([base.task(progressEnabled=True,progressStage='doing')]);self.open_task();self.export()
         editor=self.editor();image='data:image/png;base64,'+base64.b64encode(self.progress_png()).decode()
-        root='### 前回からの進捗\n\n**重要な結論**\n\n- 決定\n  - 次の行動\n\n| 担当 | 期限 |\n| --- | --- |\n| 田中 | 明日 |\n\n[仕様書](https://example.com/spec)\n\n![結果]('+image+')'
-        self.paste(editor,self.bundle(root,'項目ごとのまとめ'))
+        root='### 前回からの進捗\n\n**重要な結論**\n\n- 決定\n  - 次の行動\n\n| 担当 | 期限 |\n| --- | --- |\n| 田中 | 明日 |\n\n結果を確認した（資料1、スライド3）。\n\n![結果]('+image+')'
+        self.paste(editor,self.bundle(root,'項目ごとのまとめ') + '\n\n## 参考資料\n- 資料1｜[仕様書](https://example.com/spec)｜参照スライド3')
         expect(editor.locator('strong')).to_have_text('重要な結論');expect(editor.locator('table')).to_have_count(1)
         self.save();viewer=self.show()
         expect(viewer.locator('strong')).to_have_text('重要な結論');expect(viewer.get_by_role('img',name='結果',exact=True)).to_be_visible()
         expect(viewer.locator('table')).to_contain_text('田中')
         expect(viewer.get_by_role('link',name='仕様書',exact=True)).to_have_attribute('href','https://example.com/spec')
+        expect(viewer.get_by_role('heading',name='参考資料',exact=True)).to_have_count(1)
+        saved = self.stored()[0]['aiSummaries']
+        self.assertTrue(saved['["task","track"]']['markdown'].endswith('[仕様書](https://example.com/spec)｜参照スライド3'))
+        self.assertNotIn('参考資料', saved['["todo","s2"]']['markdown'])
         expect(viewer.get_by_role('region',name='既存の調査の要約',exact=True)).to_contain_text('項目ごとのまとめ s1')
         self.page.get_by_role('button',name='既存の調査のトークを表示',exact=True).click()
         expect(self.show()).to_contain_text('項目ごとのまとめ s1');expect(self.show()).not_to_contain_text('重要な結論')
@@ -150,8 +154,11 @@ class AISummaryTests(base.ProgressTests):
         task=base.task(progressEnabled=True,progressStage='doing');task['subtasks']=[]
         self.seed([task]);self.open_task();editor=self.editor();self.paste(editor,'# 任意の文章');self.page.get_by_role('button',name='要約を保存',exact=True).click()
         expect(self.page.get_by_role('alert')).to_contain_text('先に');self.page.get_by_role('button',name='キャンセル',exact=True).click()
-        self.export();editor=self.editor();self.paste(editor,self.bundle('全体のみの要約'));self.save()
-        self.assertEqual(len(self.stored()[0]['aiSummaries']),1);expect(self.show()).to_contain_text('全体のみの要約')
+        self.export();editor=self.editor();self.paste(editor,self.bundle('全体のみの要約') + '\n\n## 参考資料\n- [元資料](https://example.com/source)');self.save()
+        self.assertEqual(len(self.stored()[0]['aiSummaries']),1)
+        viewer = self.show()
+        expect(viewer).to_contain_text('全体のみの要約')
+        expect(viewer.get_by_role('link',name='元資料',exact=True)).to_have_count(1)
 
 
     def test_real_ids_keep_underscores_when_pasted_as_markdown_or_styled_html(self):
@@ -221,7 +228,7 @@ class AISummaryTests(base.ProgressTests):
             with self.page.expect_download() as download:self.context('AI要約用Wordを出力' if include else 'AI要約用Wordを出力（前回要約なし）')
             with zipfile.ZipFile(download.value.path()) as archive:
                 text='\n'.join(node.text or '' for node in ET.fromstring(archive.read('word/document.xml')).iter() if node.tag.endswith('}t'))
-                for phrase in ['対応優先順序','要約上の整理・提案','PowerPoint','SharePoint・OneDrive','関連スライド','スライド番号','未閲覧・部分閲覧','再掲できない場合','図表名・要点','同じ会話内の過去の回答' if not include else '前回の要約（参考情報）']:
+                for phrase in ['対応優先順序','要約上の整理・提案','PowerPoint','SharePoint・OneDrive','関連スライド','スライド番号','未閲覧・部分閲覧','再掲できない場合','図表名・要点','同じURLは1回だけ','スクリーンショットや画像書き出し','取得して再掲できる実画像','説明 → 実画像 → 短いキャプション','末尾の参考資料に実画像は置かず','同じ会話内の過去の回答' if not include else '前回の要約（参考情報）']:
                     self.assertIn(phrase,text)
                 targets=[node.attrib.get('Target') for node in ET.fromstring(archive.read('word/_rels/document.xml.rels'))]
                 for url in [task['urls'][0],task['subtasks'][0]['urls'][0],task['subtasks'][0]['smallTasks'][0]['urls'][0],'https://example.com/results.pptx']:

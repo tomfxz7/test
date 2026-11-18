@@ -1,4 +1,4 @@
-"""Rebuild the Copilot setup ZIP and Word/text knowledge files using the standard library."""
+"""Rebuild the Copilot setup and skill ZIPs and Word/text knowledge files."""
 from pathlib import Path
 from xml.sax.saxutils import escape
 import xml.etree.ElementTree as ET
@@ -30,11 +30,20 @@ def build():
             assert archive.testzip() is None
             for name in archive.namelist():
                 ET.fromstring(archive.read(name))
+    skill = ROOT / 'skills/task-talk-summary/SKILL.md'
+    skill_package = ROOT / 'task-talk-summary-skill.zip'
+    with zipfile.ZipFile(skill_package, 'w', zipfile.ZIP_DEFLATED) as archive:
+        archive.write(skill, 'SKILL.md')
+    with zipfile.ZipFile(skill_package) as archive:
+        assert archive.namelist() == ['SKILL.md']
+        assert archive.read('SKILL.md') == skill.read_bytes()
+        print(f'Built {skill_package.name}: SKILL.md at the archive root')
+
     package = ROOT / 'copilot-summary-agent.zip'
     with zipfile.ZipFile(package, 'w', zipfile.ZIP_DEFLATED) as archive:
-        for path in sorted(ROOT.iterdir()):
-            if path.suffix in ['.md', '.txt', '.docx']:
-                archive.write(path, path.name)
+        documents = [path for path in ROOT.iterdir() if path.suffix in ['.md', '.txt', '.docx']]
+        for path in sorted([*documents, skill, skill_package]):
+            archive.write(path, path.relative_to(ROOT))
     with zipfile.ZipFile(package) as archive:
         assert archive.testzip() is None
         assert archive.read('instructions.txt').decode() == (ROOT / 'instructions.md').read_text()
