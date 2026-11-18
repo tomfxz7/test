@@ -1235,7 +1235,7 @@ const progressTalkMatchesFilters = (entry, task, type, status) => {
 };
 const ProgressTable = ({ rows }) => <span className="block max-w-full overflow-x-auto my-2">
   <table aria-label="トークの表" className="w-full border-collapse" style={{ minWidth: rows[0].length * 100 }}>
-    <tbody>{rows.map((row,i)=><tr key={i}>{row.map((cell,j)=>React.createElement(i===0?'th':'td',{key:j,className:`border border-gray-400 p-2 whitespace-pre-wrap break-words text-left align-top ${i===0?'bg-slate-100 font-bold':'bg-white'}`,style:{minWidth:100}},<ProgressText value={cell}/>))}</tr>)}</tbody>
+    <tbody>{rows.map((row,i)=><tr key={i}>{row.map((cell,j)=>React.createElement(i===0?'th':'td',{key:j,scope:i===0?'col':undefined,className:`border border-gray-400 p-2 whitespace-pre-wrap break-words text-left align-top ${i===0?'bg-slate-100 font-bold':'bg-white'}`,style:{minWidth:100}},<ProgressText value={cell}/>))}</tr>)}</tbody>
   </table>
 </span>;
 // Rich text is stored as validated ranges over plain text, never arbitrary HTML.
@@ -1504,10 +1504,29 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
   });
   const [error, setError] = useState('');
   const dialogRef = useRef(null);
+  const [position, setPosition] = useState(null);
+  const windowDrag = useRef(null);
+  const focusFirstCell = () => dialogRef.current?.querySelector('[role="grid"] textarea')?.focus();
+  const constrainPosition = (left, top) => {
+    const { offsetWidth, offsetHeight } = dialogRef.current;
+    return {
+      left: Math.max(8, Math.min(left, window.innerWidth - offsetWidth - 8)),
+      top: Math.max(8, Math.min(top, window.innerHeight - offsetHeight - 8))
+    };
+  };
+  useEffect(() => {
+    const fitToViewport = () => {
+      setPosition(current => current && constrainPosition(current.left, current.top));
+    };
+    window.addEventListener('resize', fitToViewport);
+    return () => window.removeEventListener('resize', fitToViewport);
+  }, []);
   useEffect(() => {
     const previous = document.activeElement;
-    dialogRef.current?.querySelector('textarea')?.focus();
-    return () => previous?.focus();
+    focusFirstCell();
+    return () => {
+      if (document.activeElement === document.body) previous?.focus({ preventScroll: true });
+    };
   }, []);
   const [selection, setSelection] = useState({ row: 0, column: 0, endRow: 0, endColumn: 0 });
   const [editingCell, setEditingCell] = useState(null);
@@ -1535,7 +1554,7 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
     });
     setEditingCell(null); setContextMenu(null); setSelection({ row: 0, column: 0, endRow: 0, endColumn: 0 }); setError('');
     setNotice(direction === 'undo' ? '操作を元に戻しました。' : '操作をやり直しました。');
-    requestAnimationFrame(() => dialogRef.current?.querySelector('textarea')?.focus());
+    requestAnimationFrame(focusFirstCell);
   };
   const closeMenu = () => { setContextMenu(null); menuAnchor.current?.focus(); };
   const openContextMenu = (event, row, column, keyboard = false) => {
@@ -1556,6 +1575,9 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
     setNotice(''); setError(''); setEditingCell(null);
     setSelection(previous => extend ? { ...previous, endRow: row, endColumn: column } : { row, column, endRow: row, endColumn: column });
   };
+  const updateCell = (row, column, value) => {
+    setRows(previous => previous.map((cells, i) => i === row ? cells.map((cell, j) => j === column ? value : cell) : cells));
+  };
   const clearCells = () => {
     setRows(previous => previous.map((row, i) => row.map((value, j) => i >= bounds.top && i <= bounds.bottom && j >= bounds.left && j <= bounds.right ? '' : value)));
     setEditingCell(null); setNotice('選択セルの内容を削除しました。');
@@ -1571,7 +1593,7 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
       ? (previous.filter((_, i) => i < start || i > end).length ? previous.filter((_, i) => i < start || i > end) : [Array(previous[0].length).fill('')])
       : previous.map(values => { const retained = values.filter((_, j) => j < start || j > end); return retained.length ? retained : ['']; }));
     selectCell(0, 0); setNotice(row ? '選択行を削除しました。' : '選択列を削除しました。');
-    requestAnimationFrame(() => dialogRef.current?.querySelector('textarea')?.focus());
+    requestAnimationFrame(focusFirstCell);
   };
   const pasteCells = (event, row, column) => {
     const plain = event.clipboardData?.getData('text/plain') || '';
@@ -1595,7 +1617,8 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
   const insertColumn = index => setRows(previous => previous[0].length >= maxColumns ? previous : previous.map(row => [...row.slice(0, index), '', ...row.slice(index)]));
   const confirmTable = () => {
     if (!rows.some(row => row.some(cell => cell.trim()))) { setError('表に内容を入力してください。'); return; }
-    onApply(rows);
+    const applyError = onApply(rows);
+    if (applyError) setError(applyError);
   };
   const edgeControl = (axis, index, count, limit, insert, remove = false) => {
     const column = axis === 'column';
@@ -1615,9 +1638,15 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
         {remove ? <Minus size={14}/> : <Plus size={14}/>}</button>;
     });
   };
-  return <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-3" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-    <section ref={dialogRef} role="dialog" aria-modal="true" aria-label={initial ? '表を編集' : '表を作成'} className="bg-white rounded-xl shadow-xl p-4 w-full max-w-3xl max-h-[85vh] overflow-auto text-black space-y-3"
-      onCopy={e => { if (editingCell) return; e.preventDefault(); e.clipboardData.setData('text/plain', selectedTsv()); }}
+  return <div className="fixed inset-0 z-[100] pointer-events-none flex items-center justify-center p-2">
+    <section ref={dialogRef} role="dialog" aria-label={initial ? '表を編集' : '表を作成'}
+      style={position} className={`pointer-events-auto ${position ? 'absolute w-[calc(100%-1rem)]' : 'w-full'} max-w-3xl bg-white border rounded-xl shadow-xl max-h-[85dvh] overflow-auto text-black`}
+      onPaste={e => e.stopPropagation()}
+      onCopy={e => {
+        e.stopPropagation();
+        if (editingCell || e.target.hasAttribute('data-cell-editor')) return;
+        e.preventDefault(); e.clipboardData.setData('text/plain', selectedTsv());
+      }}
       onKeyDown={e => {
         e.stopPropagation();
         if (e.nativeEvent.isComposing) return;
@@ -1630,28 +1659,49 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
           e.preventDefault(); deleteAxis(e.altKey ? 'row' : 'column'); return;
         }
         if (e.key === 'Escape') { e.preventDefault(); if (contextMenu) closeMenu(); else onClose(); }
-        if (e.key === 'Tab') {
-          const items = [...dialogRef.current.querySelectorAll('button:not(:disabled), textarea, select')];
-          if (e.shiftKey && e.target === items[0]) { e.preventDefault(); items[items.length - 1].focus(); }
-          else if (!e.shiftKey && e.target === items[items.length - 1]) { e.preventDefault(); items[0].focus(); }
-        }
       }}>
-      <div className="flex justify-between items-center"><h3 className="font-bold">{initial ? '表を編集' : '表を作成'}</h3><button type="button" aria-label="表の画面を閉じる" onClick={onClose}><X size={18}/></button></div>
+      <div className="sticky top-0 z-30 bg-white px-4 pt-3 pb-2 space-y-2 border-b">
+        <div className="flex justify-between items-center gap-2">
+          <h3 className="font-bold flex-1 cursor-move select-none touch-none"
+            onPointerDown={e => {
+              if (e.button !== 0 || windowDrag.current) return;
+              const { left, top } = dialogRef.current.getBoundingClientRect();
+              windowDrag.current = { id: e.pointerId, x: e.clientX - left, y: e.clientY - top };
+              e.currentTarget.setPointerCapture(e.pointerId);
+            }}
+            onPointerMove={e => {
+              const drag = windowDrag.current;
+              if (drag?.id === e.pointerId) setPosition(constrainPosition(e.clientX - drag.x, e.clientY - drag.y));
+            }}
+            onLostPointerCapture={() => { windowDrag.current = null; }}
+          >{initial ? '表を編集' : '表を作成'}</h3>
+          <button type="button" aria-label="表の画面を閉じる" onClick={onClose}><X size={18}/></button>
+        </div>
+        <div className="flex flex-wrap gap-3 text-sm">
+          <label>行数（見出しを含む）<select aria-label="表の行数" value={rows.length} onChange={e => resize(Number(e.target.value), rows[0].length)} className="border rounded p-1 ml-2">{Array.from({ length: maxRows }, (_, i) => <option key={i} value={i + 1}>{i + 1}</option>)}</select></label>
+          <label>列数<select aria-label="表の列数" value={rows[0].length} onChange={e => resize(rows.length, Number(e.target.value))} className="border rounded p-1 ml-2">{Array.from({ length: maxColumns }, (_, i) => <option key={i} value={i + 1}>{i + 1}</option>)}</select></label>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs" role="toolbar" aria-label="表の範囲操作">
+          <button type="button" className="border rounded px-2 py-1" onClick={copyCells}>選択セルをコピー</button>
+          <button type="button" className="border rounded px-2 py-1" onClick={clearCells}>選択セルの内容を削除</button>
+          <button type="button" className="border rounded px-2 py-1" onClick={() => deleteAxis('row')}>選択行を削除</button>
+          <button type="button" className="border rounded px-2 py-1" onClick={() => deleteAxis('column')}>選択列を削除</button>
+          <button type="button" aria-label="表の操作を元に戻す" title="Ctrl/⌘+Z" disabled={!gridState.past.length} onClick={() => historyChange('undo')} className="border rounded px-2 py-1 disabled:opacity-30">元に戻す</button>
+          <button type="button" aria-label="表の操作をやり直す" title="Ctrl/⌘+Y / Ctrl/⌘+Shift+Z" disabled={!gridState.future.length} onClick={() => historyChange('redo')} className="border rounded px-2 py-1 disabled:opacity-30">やり直す</button>
+          <span role="status">{notice || `${bounds.bottom - bounds.top + 1}行・${bounds.right - bounds.left + 1}列を選択中`}</span>
+        </div>
+        <label className="block text-xs font-medium">
+          セルの全文編集（{selection.row + 1}行{selection.column + 1}列）
+          <textarea data-cell-editor aria-label="セルの全文編集" rows={3}
+            value={rows[selection.row]?.[selection.column] ?? ''}
+            onFocus={() => setEditingCell(null)}
+            onChange={e => updateCell(selection.row, selection.column, e.target.value)}
+            className="mt-1 block w-full min-h-10 max-h-[25dvh] resize-y rounded border p-2 text-sm font-normal"/>
+        </label>
+      </div>
+      <div className="p-4 space-y-3">
       <p className="text-xs text-gray-600">先頭行は見出しです。各セルに入力してください。行・列を減らすと、削除されるセルの内容は失われます。</p>
-      <div className="flex flex-wrap gap-3 text-sm">
-        <label>行数（見出しを含む）<select aria-label="表の行数" value={rows.length} onChange={e => resize(Number(e.target.value), rows[0].length)} className="border rounded p-1 ml-2">{Array.from({ length: maxRows }, (_, i) => <option key={i} value={i + 1}>{i + 1}</option>)}</select></label>
-        <label>列数<select aria-label="表の列数" value={rows[0].length} onChange={e => resize(rows.length, Number(e.target.value))} className="border rounded p-1 ml-2">{Array.from({ length: maxColumns }, (_, i) => <option key={i} value={i + 1}>{i + 1}</option>)}</select></label>
-      </div>
       <p className="text-xs text-gray-600">セルをドラッグして範囲選択。ダブルクリック・Enterでセル内を編集できます。Excelの範囲を貼り付けると、必要な行・列を自動で追加します。</p>
-      <div className="flex flex-wrap gap-2 text-xs" role="toolbar" aria-label="表の範囲操作">
-        <button type="button" className="border rounded px-2 py-1" onClick={copyCells}>選択セルをコピー</button>
-        <button type="button" className="border rounded px-2 py-1" onClick={clearCells}>選択セルの内容を削除</button>
-        <button type="button" className="border rounded px-2 py-1" onClick={() => deleteAxis('row')}>選択行を削除</button>
-        <button type="button" className="border rounded px-2 py-1" onClick={() => deleteAxis('column')}>選択列を削除</button>
-        <button type="button" aria-label="表の操作を元に戻す" title="Ctrl/⌘+Z" disabled={!gridState.past.length} onClick={() => historyChange('undo')} className="border rounded px-2 py-1 disabled:opacity-30">元に戻す</button>
-        <button type="button" aria-label="表の操作をやり直す" title="Ctrl/⌘+Y / Ctrl/⌘+Shift+Z" disabled={!gridState.future.length} onClick={() => historyChange('redo')} className="border rounded px-2 py-1 disabled:opacity-30">やり直す</button>
-        <span role="status">{notice || `${bounds.bottom - bounds.top + 1}行・${bounds.right - bounds.left + 1}列を選択中`}</span>
-      </div>
       <p className="text-xs text-gray-600">四辺の＋で行・列を挿入、−で行・列を削除できます。選択範囲の右クリックでも操作できます。</p>
       <style>{`[data-progress-page] [data-progress-table-insert]:not(:disabled) { border-color: #8b5cf6 !important; } [data-progress-page] [data-progress-table-delete] { border-color: #ef4444 !important; }`}</style>
       <div className="overflow-x-auto p-10">
@@ -1659,12 +1709,19 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
           <table role="grid" aria-label="表のセル編集" aria-rowcount={rows.length} aria-colcount={rows[0].length} className="w-full border-collapse table-fixed" style={{ height: rows.length * 64 }}><tbody>{rows.map((row, i) => <tr key={i} className="h-16">{row.map((cell, j) => <td key={j} role="gridcell" aria-selected={i >= bounds.top && i <= bounds.bottom && j >= bounds.left && j <= bounds.right} className={`border p-1 ${i === 0 ? 'bg-slate-100' : ''}`}><textarea aria-label={`${i + 1}行${j + 1}列`} value={cell}
       onPointerDown={e => {
         if (e.button !== 0 || (editingCell?.row === i && editingCell?.column === j)) return;
-        e.preventDefault(); e.currentTarget.focus(); e.currentTarget.select(); dragging.current = true; selectCell(i, j, e.shiftKey);
+        if (e.shiftKey) {
+          e.preventDefault();
+          e.currentTarget.focus({ preventScroll: true });
+        }
+        dragging.current = true;
+        selectCell(i, j, e.shiftKey);
       }}
       onPointerEnter={() => { if (dragging.current) setSelection(previous => ({ ...previous, endRow: i, endColumn: j })); }}
       onContextMenu={e => openContextMenu(e, i, j)}
       onCompositionStart={() => setEditingCell({ row: i, column: j })}
-      onDoubleClick={e => { selectCell(i, j); setEditingCell({ row: i, column: j }); e.currentTarget.focus(); }}
+      // Keep the first click's caret when a second click switches into editing.
+      onMouseDown={e => { if (e.detail > 1 && !(editingCell?.row === i && editingCell?.column === j)) e.preventDefault(); }}
+      onDoubleClick={() => { selectCell(i, j); setEditingCell({ row: i, column: j }); }}
       onFocus={() => { if (!dragging.current && !(i >= bounds.top && i <= bounds.bottom && j >= bounds.left && j <= bounds.right)) selectCell(i, j); }}
       onPaste={e => pasteCells(e, bounds.top, bounds.left)}
       onKeyDown={e => {
@@ -1673,6 +1730,7 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
         if ((e.ctrlKey || e.metaKey) && e.key==='Enter') return;
         const editing = editingCell?.row === i && editingCell?.column === j;
         if (e.key === 'Escape' && editing) { e.preventDefault(); e.stopPropagation(); setEditingCell(null); return; }
+        if (e.key === 'Tab' && (e.shiftKey ? i === 0 && j === 0 : i === rows.length - 1 && j === rows[0].length - 1)) return;
         if (e.key === 'Tab' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
           e.preventDefault(); e.stopPropagation();
           let row = i, column = !editing && e.shiftKey && e.key !== 'Tab' ? selection.endColumn : j;
@@ -1683,24 +1741,23 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
           selectCell(row, column, e.shiftKey && e.key !== 'Tab' && !editing);
           if (!e.shiftKey || e.key === 'Tab' || editing) {
             const next = dialogRef.current?.querySelector(`[aria-label="${row + 1}行${column + 1}列"]`);
-            next?.focus(); next?.select();
+            next?.focus();
           }
           return;
         }
         if (editing) return;
         if ((e.key === 'Delete'  || e.key === 'Backspace') && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); clearCells(); }
         else if (e.key === 'F2' || e.key === 'Enter') { e.preventDefault(); setEditingCell({ row: i, column: j }); e.currentTarget.setSelectionRange(cell.length, cell.length); }
-        else if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
-          e.preventDefault(); const nextRow = Math.max(0, Math.min(rows.length - 1, selection.endRow + (e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0)));
+        else if (['ArrowLeft', 'ArrowRight'].includes(e.key)) {
+          e.preventDefault(); const nextRow = selection.endRow;
           const nextColumn = Math.max(0, Math.min(rows[0].length - 1, selection.endColumn + (e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0)));
           selectCell(nextRow, nextColumn, e.shiftKey);
           if (!e.shiftKey) dialogRef.current?.querySelector(`[aria-label="${nextRow + 1}行${nextColumn + 1}列"]`)?.focus();
         } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
           setEditingCell({ row: i, column: j });
-          setRows(previous => previous.map((r, ri) => ri === i ? r.map((v, ci) => ci === j ? e.key : v) : r)); e.preventDefault();
         }
       }}
-      onChange={e => { const value = e.target.value; setRows(previous => previous.map((r, ri) => ri === i ? r.map((v, ci) => ci === j ? value : v) : r)); }}
+      onChange={e => updateCell(i, j, e.target.value)}
       className={`block h-12 w-full resize-none p-1 text-sm border rounded ${i >= bounds.top && i <= bounds.bottom && j >= bounds.left && j <= bounds.right ? 'bg-violet-100 ring-1 ring-violet-500' : 'bg-white'}`} rows={2}/></td>)}</tr>)}</tbody></table>
           {Array.from({ length: rows[0].length + 1 }, (_, index) => edgeControl('column', index, rows[0].length, maxColumns, insertColumn))}
           {Array.from({ length: rows.length + 1 }, (_, index) => edgeControl('row', index, rows.length, maxRows, insertRow))}
@@ -1732,6 +1789,7 @@ const ProgressTableDialog = ({ initial, onApply, onClose }) => {
       </div>}
       {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
       <div className="flex justify-end gap-2"><button type="button" onClick={onClose} className="border rounded px-3 py-2">キャンセル</button><button type="button" className="bg-blue-600 text-white rounded px-3 py-2" onClick={confirmTable}>{initial ? '表を更新' : '表を挿入'}</button></div>
+      </div>
     </section>
   </div>;
 };
@@ -1743,15 +1801,20 @@ const ProgressComposer = ({ text, textLinks, textFormats = [], onChange, onPaste
   const tables = progressTables(text);
   const selectionRef = useRef(null);
   const openTable = edit => {
+    if (tableDialog) return;
     const selection = window.getSelection();
     selectionRef.current = selection?.rangeCount && editorRef.current.contains(selection.anchorNode) ? selection.getRangeAt(0).cloneRange() : null;
     const table = tables[Math.min(tableIndex, tables.length - 1)];
-    setTableDialog(edit ? { table } : {});
+    setTableDialog(edit ? { table, source: text } : {});
   };
   const applyTable = rows => {
     const markdown = progressTableText(rows);
     if (tableDialog.table) {
-      const { start, end } = tableDialog.table, delta = markdown.length - (end - start);
+      const original = tableDialog.table;
+      const matches = tables.filter(table => JSON.stringify(table.rows) === JSON.stringify(original.rows));
+      const target = text === tableDialog.source ? original : matches.length === 1 ? matches[0] : null;
+      if (!target) return '編集中に元の表が変更されました。表を開き直してください。';
+      const { start, end } = target, delta = markdown.length - (end - start);
       onChange({ text: text.slice(0, start) + markdown + text.slice(end), textFormats: progressTextFormats(text,textFormats).filter(mark=>mark.end<=start || mark.start>=end).map(mark=>mark.start>=end?{...mark,start:mark.start+delta,end:mark.end+delta}:mark), textLinks: progressTextLinks(text, textLinks).filter(link => link.end <= start || link.start >= end).map(link => link.start >= end ? { ...link, start: link.start + delta, end: link.end + delta } : link) });
     } else {
       editorRef.current.focus();
@@ -1825,9 +1888,10 @@ const ProgressComposer = ({ text, textLinks, textFormats = [], onChange, onPaste
         const button = e.target.closest('[data-progress-edit-table]');
         if (!button) return;
         e.preventDefault();
+        if (tableDialog) return;
         const index = [...editorRef.current.querySelectorAll('table[data-progress-table]')].indexOf(button.closest('table'));
         const table = progressTables(read().text)[index];
-        if (table) setTableDialog({ table });
+        if (table) setTableDialog({ table, source: text });
       }}
       onInput={emit} onPaste={paste} onKeyDown={e=>{ if(e.nativeEvent.isComposing)return; if((e.ctrlKey || e.metaKey) && ['b','i','u'].includes(e.key.toLowerCase())) { e.preventDefault(); e.stopPropagation(); format(({b:'bold',i:'italic',u:'underline'})[e.key.toLowerCase()]); } }} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; emit(); }}
       className={`w-full ${expanded ? 'flex-1 min-h-32' : 'min-h-10 max-h-40'} overflow-y-auto rounded-xl p-2 text-sm text-black whitespace-pre-wrap break-words focus:outline-none`}/>

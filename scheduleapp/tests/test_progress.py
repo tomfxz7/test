@@ -5473,6 +5473,65 @@ class ProgressTests(unittest.TestCase):
                 source=self.stored()[0]['subtasks'][0] if scope=='parent' else self.stored()[0]['subtasks'][0]['smallTasks'][0]
                 self.assertEqual(source['dependencies'][-1]['id'],added['id'])
 
+    def test_grid_partial_edit_and_full_cell_editor_stay_in_sync(self):
+        self.seed([task(progressEnabled=True,progressStage='doing')]);self.progress();self.select_chat()
+        original = 'ABC DEF'
+        self.create_table(body=original)
+        self.page.get_by_role('button',name='表を編集',exact=True).click()
+        dialog = self.page.get_by_role('dialog',name='表を編集',exact=True)
+        cell = dialog.get_by_label('2行1列',exact=True)
+        full = dialog.get_by_role('textbox',name='セルの全文編集',exact=True)
+        cell.click(position={'x': 6, 'y': 9})
+        expect(full).to_have_value(original)
+        start, end = cell.evaluate('node => [node.selectionStart, node.selectionEnd]')
+        self.assertEqual(start, end)
+        cell.press('X')
+        expect(full).to_have_value(original[:start] + 'X' + original[start:])
+        long_value = '\n'.join(f'長いセルの内容 {i}' for i in range(12))
+        full.fill(long_value)
+        expect(cell).to_have_value(long_value)
+        self.assertTrue(full.evaluate('node => node.scrollHeight > node.clientHeight'))
+        dialog.get_by_label('2行2列',exact=True).click()
+        expect(full).to_have_value('田中')
+        cell.click()
+        expect(full).to_have_value(long_value)
+        full.press('Control+Enter')
+        expect(dialog).to_have_count(0)
+        self.page.get_by_role('button',name='表を編集',exact=True).click()
+        expect(dialog.get_by_label('2行1列',exact=True)).to_have_value(long_value)
+
+    def test_grid_window_drags_and_background_still_scrolls(self):
+        original = task(progressEnabled=True,progressStage='doing')
+        original['progressHistory'] = [
+            dict(id=f'entry-{i}',kind='comment',status='active',text=f'トーク {i}',subtaskIds=[])
+            for i in range(35)
+        ]
+        self.seed([original]);self.progress();self.select_chat()
+        self.create_table()
+        composer = self.page.get_by_role('textbox',name='進捗コメント',exact=True)
+        composer.evaluate("node => { node.focus(); const range = document.createRange(); range.selectNodeContents(node); range.collapse(false); getSelection().removeAllRanges(); getSelection().addRange(range); }")
+        self.page.keyboard.insert_text('\n' + ('長い下書き\n' * 35))
+        self.page.get_by_role('button',name='表を編集',exact=True).click()
+        dialog = self.page.get_by_role('dialog',name='表を編集',exact=True)
+        heading = dialog.get_by_role('heading',name='表を編集',exact=True).bounding_box()
+        before = dialog.bounding_box()
+        self.page.mouse.move(heading['x'] + 25, heading['y'] + 10)
+        self.page.mouse.down()
+        self.page.mouse.move(heading['x'] - 365,heading['y'] - 100,steps=8)
+        self.page.mouse.up()
+        self.assertLess(dialog.bounding_box()['x'],before['x'] - 300)
+        self.assertLess(dialog.bounding_box()['y'],before['y'])
+        log = self.page.get_by_role('log',name='進捗履歴',exact=True)
+        for region in [log, composer]:
+            region.evaluate('node => { node.scrollTop = node.scrollHeight; }')
+            initial = region.evaluate('node => node.scrollTop')
+            self.assertGreater(initial, 0)
+            region.hover()
+            self.page.mouse.wheel(0,-250)
+            self.page.wait_for_function("""({label, top}) => document.querySelector(`[aria-label="${label}"]`).scrollTop < top""",
+                                        arg={'label': region.get_attribute('aria-label'), 'top': initial})
+            expect(dialog).to_be_visible()
+
     def test_grid_editor_arrows_tab_and_control_enter_confirm_without_sending(self):
         self.seed([task(progressEnabled=True,progressStage='doing')]);self.progress();self.select_chat()
         self.page.get_by_role('button',name='表を作成',exact=True).click()
